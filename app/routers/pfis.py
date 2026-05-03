@@ -1,0 +1,191 @@
+from typing import Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, Query, status
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.database import get_db
+from app.dependencies import require_roles
+from app.models.user import User
+from app.models.enums import UserRole
+from app.schemas.common import StandardResponse
+from app.schemas.pfi import (
+    PfiCreate, PfiGenerateRequest, PfiOut,
+    PaymentCreate, PaymentOut, PaymentConfirmRequest,
+    StandalonePfiCreate, PfiConfirmPaymentRequest,
+)
+from app.services.pfi_service import PfiService, PaymentService
+
+router = APIRouter(tags=["Finance"])
+
+
+# ── PFI endpoints ──────────────────────────────────────────────────────────────
+
+@router.post(
+    "/operations/{operation_id}/pfis/generate",
+    response_model=StandardResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def generate_pfi(
+    operation_id: UUID,
+    body: PfiGenerateRequest,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a PFI PDF from operation data and link it. Bunker Manager only."""
+    pfi = await PfiService.generate_pfi(operation_id, body, current_user, db)
+    return StandardResponse.ok(
+        data=PfiOut.model_validate(pfi).model_dump(),
+        message=f"PFI {pfi.pfi_number} generated and linked to operation",
+    )
+
+
+@router.post(
+    "/operations/{operation_id}/pfis",
+    response_model=StandardResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_pfi(
+    operation_id: UUID,
+    body: PfiCreate,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Link a PFI to an operation and advance its status. Bunker Manager only."""
+    pfi = await PfiService.create_pfi(operation_id, body, current_user, db)
+    return StandardResponse.ok(
+        data=PfiOut.model_validate(pfi).model_dump(),
+        message=f"PFI {pfi.pfi_number} linked to operation",
+    )
+
+
+@router.get("/operations/{operation_id}/pfis", response_model=StandardResponse)
+async def list_pfis(
+    operation_id: UUID,
+    current_user: User = Depends(
+        require_roles(UserRole.bunker_manager, UserRole.finance_manager)
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all PFIs for an operation. BM and Finance Manager only."""
+    pfis = await PfiService.list_pfis(operation_id, db)
+    items = [PfiOut.model_validate(p).model_dump() for p in pfis]
+    return StandardResponse.ok(data=items, message="PFIs retrieved")
+
+
+@router.get("/pfis/{pfi_id}", response_model=StandardResponse)
+async def get_pfi(
+    pfi_id: UUID,
+    current_user: User = Depends(
+        require_roles(UserRole.bunker_manager, UserRole.finance_manager)
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get a single PFI by ID. BM and Finance Manager only."""
+    pfi = await PfiService.get_pfi(pfi_id, db)
+    return StandardResponse.ok(
+        data=PfiOut.model_validate(pfi).model_dump(),
+        message="PFI retrieved",
+    )
+
+
+# ── Payment endpoints ──────────────────────────────────────────────────────────
+
+@router.post(
+    "/operations/{operation_id}/payments",
+    response_model=StandardResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_payment(
+    operation_id: UUID,
+    body: PaymentCreate,
+    current_user: User = Depends(require_roles(UserRole.finance_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record a payment against a PFI. Finance Manager only."""
+    payment = await PaymentService.record_payment(operation_id, body, current_user, db)
+    return StandardResponse.ok(
+        data=PaymentOut.model_validate(payment).model_dump(),
+        message=f"Payment voucher {payment.voucher_number} recorded",
+    )
+
+
+@router.post(
+    "/operations/{operation_id}/payments/{payment_id}/confirm",
+    response_model=StandardResponse,
+)
+async def confirm_payment(
+    operation_id: UUID,
+    payment_id: UUID,
+    body: PaymentConfirmRequest = PaymentConfirmRequest(),
+    current_user: User = Depends(require_roles(UserRole.finance_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Confirm a payment, advancing operation to payment_confirmed. Finance Manager only."""
+    payment = await PaymentService.confirm_payment(operation_id, payment_id, current_user, db)
+    return StandardResponse.ok(
+        data=PaymentOut.model_validate(payment).model_dump(),
+        message=f"Payment {payment.voucher_number} confirmed",
+    )
+
+
+@router.get("/operations/{operation_id}/payments", response_model=StandardResponse)
+async def list_payments(
+    operation_id: UUID,
+    current_user: User = Depends(
+        require_roles(UserRole.bunker_manager, UserRole.finance_manager)
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all payments for an operation. BM and Finance Manager only."""
+    payments = await PaymentService.list_payments(operation_id, db)
+    items = [PaymentOut.model_validate(p).model_dump() for p in payments]
+    return StandardResponse.ok(data=items, message="Payments retrieved")
+
+
+# ── Standalone PFI endpoints (PFI-first flow) ─────────────────────────────────
+
+@router.post(
+    "/pfis",
+    response_model=StandardResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_standalone_pfi(
+    body: StandalonePfiCreate,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a PFI before an operation exists. BM or FM."""
+    pfi = await PfiService.create_standalone_pfi(body, current_user, db)
+    return StandardResponse.ok(
+        data=PfiOut.model_validate(pfi).model_dump(),
+        message=f"PFI {pfi.pfi_number} created",
+    )
+
+
+@router.get("/pfis", response_model=StandardResponse)
+async def list_all_pfis(
+    status: Optional[str] = Query(None),
+    unlinked_only: bool = Query(False),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """List all PFIs (global). BM and FM."""
+    pfis = await PfiService.list_all_pfis(db, status_filter=status, unlinked_only=unlinked_only)
+    items = [PfiOut.model_validate(p).model_dump() for p in pfis]
+    return StandardResponse.ok(data=items, message="PFIs retrieved")
+
+
+@router.post("/pfis/{pfi_id}/confirm-payment", response_model=StandardResponse)
+async def confirm_pfi_payment(
+    pfi_id: UUID,
+    body: PfiConfirmPaymentRequest,
+    current_user: User = Depends(require_roles(UserRole.finance_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """FM confirms PFI payment — advances PFI to 'paid', notifies BM. Finance Manager only."""
+    pfi = await PfiService.confirm_pfi_payment(pfi_id, body, current_user, db)
+    return StandardResponse.ok(
+        data=PfiOut.model_validate(pfi).model_dump(),
+        message=f"PFI {pfi.pfi_number} payment confirmed",
+    )

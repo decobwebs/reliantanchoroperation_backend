@@ -1,0 +1,1124 @@
+from typing import List, Optional, Tuple, Dict, Any
+from datetime import datetime
+from uuid import UUID
+from decimal import Decimal
+
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, and_, func
+from sqlalchemy.orm import selectinload
+from fastapi import HTTPException, status
+
+from app.models.truck import Truck, TruckOperation, TruckSafetyAudit
+from app.models.operation import Operation, TaskAssignment, TruckFeedback
+from app.models.audit import AuditLog
+from app.models.user import User
+from app.models.enums import (
+    UserRole, TruckStatus, TruckOpStatus, FeedbackStatus, OperationStatus
+)
+from app.schemas.truck import (
+    TruckCreate, TruckUpdate,
+    TruckOperationCreate, TruckOperationUpdate,
+    TruckFeedbackCreate,
+    TruckSafetyAuditCreate,
+)
+from app.services.notification_service import notify
+from app.services.state_machine import StateMachine, StateMachineError
+from app.models.operation import OperationStatusHistory
+
+
+async def _get_operation_or_404(operation_id: UUID, db: AsyncSession) -> Operation:
+    result = await db.execute(
+        select(Operation).where(
+            and_(Operation.id == operation_id, Operation.deleted_at.is_(None))
+        )
+    )
+    operation = result.scalar_one_or_none()
+    if not operation:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+    return operation
+
+
+async def _assert_lo_assigned(operation_id: UUID, current_user: User, db: AsyncSession) -> None:
+    """Raise 403 if the logistics officer is not assigned to this operation."""
+    if current_user.role in (UserRole.bunker_manager, UserRole.ops_supervisor):
+        return
+    result = await db.execute(
+        select(TaskAssignment).where(
+            and_(
+                TaskAssignment.operation_id == operation_id,
+                TaskAssignment.assigned_to == current_user.id,
+            )
+        )
+    )
+    if not result.scalar_one_or_none():
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not assigned to this operation",
+        )
+
+
+async def _transition_operation(
+    operation: Operation,
+    to_status: OperationStatus,
+    current_user: User,
+    db: AsyncSession,
+    reason: str = "",
+) -> None:
+    """Silently transitions an operation status, writing history but not raising on SM errors."""
+    try:
+        StateMachine.validate_transition(
+            operation.type, operation.status, to_status, current_user.role
+        )
+    except StateMachineError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    from_status = operation.status
+    operation.status = to_status
+    operation.updated_at = datetime.utcnow()
+
+    history = OperationStatusHistory(
+        operation_id=operation.id,
+        from_status=from_status,
+        to_status=to_status,
+        changed_by=current_user.id,
+        reason=reason,
+        metadata_={},
+    )
+    db.add(history)
+
+
+class TruckService:
+
+    # ── Truck registry ────────────────────────────────────────────────────────
+
+    @staticmethod
+    async def list_trucks(
+        db: AsyncSession,
+        active_only: bool = True,
+    ) -> List[Truck]:
+        conditions = []
+        if active_only:
+            conditions.append(Truck.is_active == True)
+
+        stmt = (
+            select(Truck)
+            .where(and_(*conditions) if conditions else True)
+            .order_by(Truck.created_at.desc())
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def create_truck(
+        data: TruckCreate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> Truck:
+        # Check for duplicate truck number
+        existing = await db.execute(
+            select(Truck).where(Truck.truck_number == data.truck_number)
+        )
+        if existing.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Truck number '{data.truck_number}' already exists",
+            )
+
+        truck = Truck(
+            truck_number=data.truck_number,
+            capacity_mt=data.capacity_mt,
+            driver_name=data.driver_name,
+            driver_phone=data.driver_phone,
+            current_location=data.current_location,
+            notes=data.notes,
+            status=TruckStatus.available,
+            is_active=True,
+        )
+        db.add(truck)
+        await db.flush()
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            action="CREATE_TRUCK",
+            entity_type="truck",
+            entity_id=truck.id,
+            changes={"truck_number": data.truck_number, "capacity_mt": str(data.capacity_mt)},
+        )
+        db.add(audit)
+
+        await db.flush()
+        await db.refresh(truck)
+        return truck
+
+    @staticmethod
+    async def update_truck(
+        truck_id: UUID,
+        data: TruckUpdate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> Truck:
+        result = await db.execute(select(Truck).where(Truck.id == truck_id))
+        truck = result.scalar_one_or_none()
+        if not truck:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found")
+
+        update_data = data.model_dump(exclude_unset=True)
+        changes = {}
+        for field, value in update_data.items():
+            old_val = getattr(truck, field, None)
+            changes[field] = {"from": str(old_val), "to": str(value)}
+            setattr(truck, field, value)
+
+        truck.updated_at = datetime.utcnow()
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            action="UPDATE_TRUCK",
+            entity_type="truck",
+            entity_id=truck.id,
+            changes=changes,
+        )
+        db.add(audit)
+
+        await db.flush()
+        await db.refresh(truck)
+        return truck
+
+    # ── Truck operations on a specific operation ──────────────────────────────
+
+    @staticmethod
+    async def list_truck_operations(
+        operation_id: UUID,
+        current_user: User,
+        db: AsyncSession,
+    ) -> List[TruckOperation]:
+        await _get_operation_or_404(operation_id, db)
+
+        stmt = (
+            select(TruckOperation)
+            .options(
+                selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.safety_audit),
+            )
+            .where(TruckOperation.operation_id == operation_id)
+            .order_by(TruckOperation.created_at.asc())
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def add_truck_to_operation(
+        operation_id: UUID,
+        data: TruckOperationCreate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        await _get_operation_or_404(operation_id, db)
+        await _assert_lo_assigned(operation_id, current_user, db)
+
+        # Verify truck exists and is active
+        truck_result = await db.execute(
+            select(Truck).where(and_(Truck.id == data.truck_id, Truck.is_active == True))
+        )
+        if not truck_result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found or inactive")
+
+        truck_op = TruckOperation(
+            operation_id=operation_id,
+            truck_id=data.truck_id,
+            logged_by=current_user.id,
+            quantity_loaded_mt=data.quantity_loaded_mt,
+            loading_location=data.loading_location,
+            discharge_location=data.discharge_location,
+            destination_vessel_id=data.destination_vessel_id,
+            notes=data.notes,
+            status=TruckOpStatus.pending,
+        )
+        db.add(truck_op)
+        await db.flush()
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="ADD_TRUCK_TO_OPERATION",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            changes={"truck_id": str(data.truck_id)},
+        )
+        db.add(audit)
+
+        await db.flush()
+
+        result = await db.execute(
+            select(TruckOperation)
+            .options(
+                selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.safety_audit),
+            )
+            .where(TruckOperation.id == truck_op.id)
+        )
+        return result.scalar_one()
+
+    @staticmethod
+    async def update_truck_operation(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        data: TruckOperationUpdate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        await _get_operation_or_404(operation_id, db)
+        await _assert_lo_assigned(operation_id, current_user, db)
+
+        result = await db.execute(
+            select(TruckOperation)
+            .options(
+                selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.safety_audit),
+            )
+            .where(
+                and_(
+                    TruckOperation.id == truck_op_id,
+                    TruckOperation.operation_id == operation_id,
+                )
+            )
+        )
+        truck_op = result.scalar_one_or_none()
+        if not truck_op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+
+        update_data = data.model_dump(exclude_unset=True)
+        changes = {}
+        for field, value in update_data.items():
+            old_val = getattr(truck_op, field, None)
+            changes[field] = {"from": str(old_val), "to": str(value)}
+            setattr(truck_op, field, value)
+
+        truck_op.updated_at = datetime.utcnow()
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="UPDATE_TRUCK_OPERATION",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            changes=changes,
+        )
+        db.add(audit)
+
+        await db.flush()
+        await db.refresh(truck_op)
+        return truck_op
+
+    # ── Safety Audit ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    async def submit_safety_audit(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        data: TruckSafetyAuditCreate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckSafetyAudit:
+        await _get_operation_or_404(operation_id, db)
+        await _assert_lo_assigned(operation_id, current_user, db)
+
+        result = await db.execute(
+            select(TruckOperation)
+            .options(selectinload(TruckOperation.safety_audit))
+            .where(
+                and_(
+                    TruckOperation.id == truck_op_id,
+                    TruckOperation.operation_id == operation_id,
+                )
+            )
+        )
+        truck_op = result.scalar_one_or_none()
+        if not truck_op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+
+        conducted_at = data.conducted_at or datetime.utcnow()
+
+        if truck_op.safety_audit:
+            audit_record = truck_op.safety_audit
+            audit_record.conducted_by = current_user.id
+            audit_record.conductor_name = current_user.full_name
+            audit_record.conducted_at = conducted_at
+            audit_record.result = data.result
+            audit_record.checklist = data.checklist or []
+            audit_record.notes = data.notes
+            audit_record.updated_at = datetime.utcnow()
+        else:
+            audit_record = TruckSafetyAudit(
+                truck_op_id=truck_op_id,
+                operation_id=operation_id,
+                truck_id=truck_op.truck_id,
+                conducted_by=current_user.id,
+                conductor_name=current_user.full_name,
+                conducted_at=conducted_at,
+                result=data.result,
+                checklist=data.checklist or [],
+                notes=data.notes,
+            )
+            db.add(audit_record)
+
+        audit_log = AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="SUBMIT_SAFETY_AUDIT",
+            entity_type="truck_safety_audit",
+            entity_id=truck_op_id,
+            changes={"result": str(data.result)},
+        )
+        db.add(audit_log)
+
+        await db.flush()
+        await db.refresh(audit_record)
+        return audit_record
+
+    @staticmethod
+    async def waive_audit_item(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        item: str,
+        waiver_notes: Optional[str],
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckSafetyAudit:
+        await _get_operation_or_404(operation_id, db)
+
+        result = await db.execute(
+            select(TruckSafetyAudit).where(
+                TruckSafetyAudit.truck_op_id == truck_op_id
+            )
+        )
+        audit_record = result.scalar_one_or_none()
+        if not audit_record:
+            raise HTTPException(status_code=404, detail="Safety audit not found")
+
+        # Only failed items can be waived
+        checklist = audit_record.checklist or []
+        item_found = any(c.get("item") == item for c in checklist)
+        if not item_found:
+            raise HTTPException(status_code=422, detail=f"Checklist item '{item}' not found in this audit")
+        item_passed = next((c.get("passed", False) for c in checklist if c.get("item") == item), False)
+        if item_passed:
+            raise HTTPException(status_code=422, detail="Cannot waive a checklist item that already passed")
+
+        # Upsert waiver
+        existing = [w for w in (audit_record.waivers or []) if w.get("item") != item]
+        existing.append({
+            "item": item,
+            "waived_by": str(current_user.id),
+            "waived_by_name": current_user.full_name,
+            "waived_at": datetime.utcnow().isoformat(),
+            "notes": waiver_notes,
+        })
+        audit_record.waivers = existing
+        audit_record.updated_at = datetime.utcnow()
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="WAIVE_AUDIT_ITEM",
+            entity_type="truck_safety_audit",
+            entity_id=truck_op_id,
+            changes={"item": item, "notes": waiver_notes},
+        ))
+
+        await db.flush()
+        await db.refresh(audit_record)
+        return audit_record
+
+    # ── Lifecycle transitions ─────────────────────────────────────────────────
+
+    @staticmethod
+    async def start_transit(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        gps_lat: Optional[Decimal],
+        gps_lng: Optional[Decimal],
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        await _get_operation_or_404(operation_id, db)
+        await _assert_lo_assigned(operation_id, current_user, db)
+
+        result = await db.execute(
+            select(TruckOperation)
+            .options(selectinload(TruckOperation.truck))
+            .where(
+                and_(
+                    TruckOperation.id == truck_op_id,
+                    TruckOperation.operation_id == operation_id,
+                )
+            )
+        )
+        truck_op = result.scalar_one_or_none()
+        if not truck_op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+
+        if truck_op.status != TruckOpStatus.pending and truck_op.status != TruckOpStatus.loading:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot start transit from status '{truck_op.status.value}'",
+            )
+
+        truck_op.transit_start_at = datetime.utcnow()
+        truck_op.status = TruckOpStatus.in_transit
+        if gps_lat is not None:
+            truck_op.gps_start_lat = gps_lat
+        if gps_lng is not None:
+            truck_op.gps_start_lng = gps_lng
+        truck_op.updated_at = datetime.utcnow()
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="START_TRANSIT",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            changes={"status": "in_transit", "transit_start_at": datetime.utcnow().isoformat()},
+        )
+        db.add(audit)
+
+        await db.flush()
+        await db.refresh(truck_op)
+        return truck_op
+
+    @staticmethod
+    async def end_transit(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        gps_lat: Optional[Decimal],
+        gps_lng: Optional[Decimal],
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        await _get_operation_or_404(operation_id, db)
+        await _assert_lo_assigned(operation_id, current_user, db)
+
+        result = await db.execute(
+            select(TruckOperation)
+            .options(selectinload(TruckOperation.truck))
+            .where(
+                and_(
+                    TruckOperation.id == truck_op_id,
+                    TruckOperation.operation_id == operation_id,
+                )
+            )
+        )
+        truck_op = result.scalar_one_or_none()
+        if not truck_op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+
+        if truck_op.status != TruckOpStatus.in_transit:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot end transit from status '{truck_op.status.value}'",
+            )
+
+        truck_op.transit_end_at = datetime.utcnow()
+        truck_op.status = TruckOpStatus.arrived
+        if gps_lat is not None:
+            truck_op.gps_end_lat = gps_lat
+        if gps_lng is not None:
+            truck_op.gps_end_lng = gps_lng
+        truck_op.updated_at = datetime.utcnow()
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="END_TRANSIT",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            changes={"status": "arrived", "transit_end_at": datetime.utcnow().isoformat()},
+        )
+        db.add(audit)
+
+        await db.flush()
+        await db.refresh(truck_op)
+        return truck_op
+
+    @staticmethod
+    async def start_discharge(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        await _get_operation_or_404(operation_id, db)
+        await _assert_lo_assigned(operation_id, current_user, db)
+
+        result = await db.execute(
+            select(TruckOperation)
+            .options(selectinload(TruckOperation.truck))
+            .where(
+                and_(
+                    TruckOperation.id == truck_op_id,
+                    TruckOperation.operation_id == operation_id,
+                )
+            )
+        )
+        truck_op = result.scalar_one_or_none()
+        if not truck_op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+
+        if truck_op.status != TruckOpStatus.arrived:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot start discharge from status '{truck_op.status.value}'",
+            )
+
+        truck_op.discharge_start_at = datetime.utcnow()
+        truck_op.status = TruckOpStatus.discharging
+        truck_op.updated_at = datetime.utcnow()
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="START_DISCHARGE",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            changes={"status": "discharging", "discharge_start_at": datetime.utcnow().isoformat()},
+        )
+        db.add(audit)
+
+        await db.flush()
+        await db.refresh(truck_op)
+        return truck_op
+
+    @staticmethod
+    async def end_discharge(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        quantity_discharged_mt: Decimal,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        await _get_operation_or_404(operation_id, db)
+        await _assert_lo_assigned(operation_id, current_user, db)
+
+        result = await db.execute(
+            select(TruckOperation)
+            .options(selectinload(TruckOperation.truck))
+            .where(
+                and_(
+                    TruckOperation.id == truck_op_id,
+                    TruckOperation.operation_id == operation_id,
+                )
+            )
+        )
+        truck_op = result.scalar_one_or_none()
+        if not truck_op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+
+        if truck_op.status != TruckOpStatus.discharging:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot end discharge from status '{truck_op.status.value}'",
+            )
+
+        truck_op.discharge_end_at = datetime.utcnow()
+        truck_op.quantity_discharged_mt = quantity_discharged_mt
+        truck_op.status = TruckOpStatus.completed
+        truck_op.updated_at = datetime.utcnow()
+
+        # Calculate variance
+        if truck_op.quantity_loaded_mt is not None:
+            truck_op.variance_mt = truck_op.quantity_loaded_mt - quantity_discharged_mt
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="END_DISCHARGE",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            changes={
+                "status": "completed",
+                "quantity_discharged_mt": str(quantity_discharged_mt),
+                "variance_mt": str(truck_op.variance_mt) if truck_op.variance_mt is not None else None,
+            },
+        )
+        db.add(audit)
+
+        await db.flush()
+        await db.refresh(truck_op)
+        return truck_op
+
+    # ── Feedback workflow ─────────────────────────────────────────────────────
+
+    @staticmethod
+    async def submit_feedback(
+        operation_id: UUID,
+        data: TruckFeedbackCreate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckFeedback:
+        operation = await _get_operation_or_404(operation_id, db)
+        await _assert_lo_assigned(operation_id, current_user, db)
+
+        feedback = TruckFeedback(
+            operation_id=operation_id,
+            submitted_by=current_user.id,
+            truck_ids=[str(tid) for tid in data.truck_ids],
+            readiness_summary=data.readiness_summary,
+            truck_details=data.truck_details,
+            status=FeedbackStatus.pending,
+            version=1,
+        )
+        db.add(feedback)
+        await db.flush()
+
+        # Transition operation to feedback_submitted
+        await _transition_operation(
+            operation, OperationStatus.feedback_submitted, current_user, db,
+            reason="Feedback submitted by logistics officer"
+        )
+
+        # Notify BM — find all bunker managers
+        bm_result = await db.execute(
+            select(User).where(User.role == UserRole.bunker_manager)
+        )
+        bm_users = bm_result.scalars().all()
+        for bm in bm_users:
+            await notify(
+                db=db,
+                user_id=bm.id,
+                type_="approval_needed",
+                title="Truck Feedback Submitted",
+                message=f"Logistics officer {current_user.full_name} has submitted truck feedback for operation {operation.operation_number}",
+                priority="high",
+                operation_id=operation_id,
+                action_url=f"/operations/{operation_id}/feedback/{feedback.id}",
+            )
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="SUBMIT_FEEDBACK",
+            entity_type="truck_feedback",
+            entity_id=feedback.id,
+            changes={"status": "pending", "truck_count": len(data.truck_ids)},
+        )
+        db.add(audit)
+
+        await db.flush()
+        await db.refresh(feedback)
+        return feedback
+
+    @staticmethod
+    async def list_feedback(
+        operation_id: UUID,
+        current_user: User,
+        db: AsyncSession,
+    ) -> List[TruckFeedback]:
+        await _get_operation_or_404(operation_id, db)
+
+        stmt = (
+            select(TruckFeedback)
+            .where(TruckFeedback.operation_id == operation_id)
+            .order_by(TruckFeedback.submitted_at.desc())
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def approve_feedback(
+        operation_id: UUID,
+        feedback_id: UUID,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckFeedback:
+        operation = await _get_operation_or_404(operation_id, db)
+
+        result = await db.execute(
+            select(TruckFeedback).where(
+                and_(
+                    TruckFeedback.id == feedback_id,
+                    TruckFeedback.operation_id == operation_id,
+                )
+            )
+        )
+        feedback = result.scalar_one_or_none()
+        if not feedback:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found")
+
+        if feedback.status not in (FeedbackStatus.pending, FeedbackStatus.resubmitted):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot approve feedback with status '{feedback.status.value}'",
+            )
+
+        feedback.status = FeedbackStatus.approved
+        feedback.reviewed_by = current_user.id
+        feedback.reviewed_at = datetime.utcnow()
+
+        # Transition operation to active (feedback approval activates the operation)
+        await _transition_operation(
+            operation, OperationStatus.active, current_user, db,
+            reason="Feedback approved — operation is now active"
+        )
+
+        # Notify the submitter
+        await notify(
+            db=db,
+            user_id=feedback.submitted_by,
+            type_="approved",
+            title="Feedback Approved — Operation Active",
+            message=f"Your truck feedback for operation {operation.operation_number} has been approved. Operation is now active.",
+            priority="high",
+            operation_id=operation_id,
+            action_url=f"/operations/{operation_id}",
+            channels=["in_app", "whatsapp"],
+            wa_template="operation_active",
+            wa_kwargs={"operation_number": operation.operation_number},
+        )
+
+        # Notify all finance managers
+        from app.models.enums import UserRole as _UserRole
+        fm_result = await db.execute(select(User).where(User.role == _UserRole.finance_manager))
+        for fm in fm_result.scalars().all():
+            await notify(
+                db=db, user_id=fm.id, type_="operation_active",
+                title=f"Operation Active — {operation.operation_number}",
+                message=f"Operation {operation.operation_number} is now active. Finance processing may be required.",
+                priority="normal",
+                operation_id=operation_id,
+            )
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="APPROVE_FEEDBACK",
+            entity_type="truck_feedback",
+            entity_id=feedback.id,
+            changes={"status": {"from": "pending", "to": "approved"}},
+        )
+        db.add(audit)
+
+        await db.flush()
+        await db.refresh(feedback)
+        return feedback
+
+    @staticmethod
+    async def reject_feedback(
+        operation_id: UUID,
+        feedback_id: UUID,
+        reason: str,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckFeedback:
+        # Enforce minimum length in service layer as well
+        if len(reason.strip()) < 10:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Rejection reason must be at least 10 characters",
+            )
+
+        operation = await _get_operation_or_404(operation_id, db)
+
+        result = await db.execute(
+            select(TruckFeedback).where(
+                and_(
+                    TruckFeedback.id == feedback_id,
+                    TruckFeedback.operation_id == operation_id,
+                )
+            )
+        )
+        feedback = result.scalar_one_or_none()
+        if not feedback:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found")
+
+        if feedback.status not in (FeedbackStatus.pending, FeedbackStatus.resubmitted):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot reject feedback with status '{feedback.status.value}'",
+            )
+
+        feedback.status = FeedbackStatus.rejected
+        feedback.reviewed_by = current_user.id
+        feedback.reviewed_at = datetime.utcnow()
+        feedback.rejection_reason = reason.strip()
+
+        # Transition operation back to feedback_rejected
+        await _transition_operation(
+            operation, OperationStatus.feedback_rejected, current_user, db,
+            reason=f"Feedback rejected: {reason}"
+        )
+
+        # HIGH priority notification to LO
+        await notify(
+            db=db,
+            user_id=feedback.submitted_by,
+            type_="rejected",
+            title="Truck Feedback Rejected",
+            message=f"Your truck feedback for operation {operation.operation_number} was rejected. Reason: {reason}",
+            priority="high",
+            operation_id=operation_id,
+            action_url=f"/operations/{operation_id}/feedback/{feedback.id}",
+        )
+
+        audit = AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="REJECT_FEEDBACK",
+            entity_type="truck_feedback",
+            entity_id=feedback.id,
+            changes={"status": {"from": "pending", "to": "rejected"}, "reason": reason},
+        )
+        db.add(audit)
+
+        await db.flush()
+        await db.refresh(feedback)
+        return feedback
+
+    # ── Truck Profile ─────────────────────────────────────────────────────────
+
+    @staticmethod
+    async def get_truck(truck_id: UUID, db: AsyncSession) -> Truck:
+        result = await db.execute(select(Truck).where(Truck.id == truck_id))
+        truck = result.scalar_one_or_none()
+        if not truck:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found")
+        return truck
+
+    @staticmethod
+    async def get_truck_profile(truck_id: UUID, db: AsyncSession) -> Dict[str, Any]:
+        """Full truck profile: truck details, computed stats, and operation history."""
+        truck_result = await db.execute(select(Truck).where(Truck.id == truck_id))
+        truck = truck_result.scalar_one_or_none()
+        if not truck:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found")
+
+        history_result = await db.execute(
+            select(TruckOperation)
+            .options(
+                selectinload(TruckOperation.operation),
+                selectinload(TruckOperation.logger),
+                selectinload(TruckOperation.destination_vessel),
+            )
+            .where(TruckOperation.truck_id == truck_id)
+            .order_by(TruckOperation.created_at.desc())
+        )
+        truck_ops = list(history_result.scalars().all())
+
+        total_loaded = sum((op.quantity_loaded_mt or Decimal("0")) for op in truck_ops)
+        total_discharged = sum((op.quantity_discharged_mt or Decimal("0")) for op in truck_ops)
+        total_variance = sum((op.variance_mt or Decimal("0")) for op in truck_ops)
+        efficiency_pct: Optional[float] = None
+        if total_loaded > 0:
+            efficiency_pct = round(float(total_discharged / total_loaded) * 100, 1)
+
+        stats = {
+            "total_operations": len(truck_ops),
+            "total_loaded_mt": str(total_loaded),
+            "total_discharged_mt": str(total_discharged),
+            "total_variance_mt": str(total_variance),
+            "efficiency_pct": efficiency_pct,
+        }
+
+        history = []
+        for top in truck_ops:
+            op = top.operation
+            user = top.logger
+            history.append({
+                "id": str(top.id),
+                "operation_id": str(top.operation_id),
+                "operation_number": op.operation_number if op else "—",
+                "operation_type": op.type.value if op else "—",
+                "operation_status": op.status.value if op else "—",
+                "quantity_loaded_mt": str(top.quantity_loaded_mt) if top.quantity_loaded_mt is not None else None,
+                "quantity_discharged_mt": str(top.quantity_discharged_mt) if top.quantity_discharged_mt is not None else None,
+                "variance_mt": str(top.variance_mt) if top.variance_mt is not None else None,
+                "loading_location": top.loading_location,
+                "discharge_location": top.discharge_location,
+                "destination_vessel_name": top.destination_vessel.vessel_name if top.destination_vessel else None,
+                "transit_start_at": top.transit_start_at.isoformat() if top.transit_start_at else None,
+                "transit_end_at": top.transit_end_at.isoformat() if top.transit_end_at else None,
+                "discharge_start_at": top.discharge_start_at.isoformat() if top.discharge_start_at else None,
+                "discharge_end_at": top.discharge_end_at.isoformat() if top.discharge_end_at else None,
+                "status": top.status.value,
+                "logged_by_id": str(top.logged_by),
+                "logged_by_name": user.full_name if user else "Unknown",
+                "logged_by_role": user.role.value if user else "unknown",
+                "notes": top.notes,
+                "created_at": top.created_at.isoformat(),
+            })
+
+        total_spillage = sum((op.spillage_mt or Decimal("0")) for op in truck_ops)
+        stats["total_spillage_mt"] = str(total_spillage)
+
+        # Enrich history with new telemetry fields
+        for item, top in zip(history, truck_ops):
+            item.update({
+                "product_type": top.product_type,
+                "quantity_remaining_mt": str(top.quantity_remaining_mt) if top.quantity_remaining_mt is not None else None,
+                "spillage_mt": str(top.spillage_mt) if top.spillage_mt is not None else None,
+                "temperature_celsius": str(top.temperature_celsius) if top.temperature_celsius is not None else None,
+                "departed_parking_at": top.departed_parking_at.isoformat() if top.departed_parking_at else None,
+                "arrived_loading_at": top.arrived_loading_at.isoformat() if top.arrived_loading_at else None,
+                "departed_loading_at": top.departed_loading_at.isoformat() if top.departed_loading_at else None,
+                "arrived_discharge_at": top.arrived_discharge_at.isoformat() if top.arrived_discharge_at else None,
+                "events": top.events or [],
+            })
+
+        return {"truck": truck, "stats": stats, "history": history}
+
+    # ── Truck telemetry milestone methods ──────────────────────────────────────
+
+    @staticmethod
+    async def _get_truck_op(operation_id: UUID, truck_op_id: UUID, db: AsyncSession) -> TruckOperation:
+        result = await db.execute(
+            select(TruckOperation).where(
+                and_(TruckOperation.id == truck_op_id, TruckOperation.operation_id == operation_id)
+            )
+        )
+        top = result.scalar_one_or_none()
+        if not top:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+        return top
+
+    @staticmethod
+    def _append_event(top: TruckOperation, event_type: str, description: str, user_id: UUID, ts: Optional[datetime] = None) -> None:
+        events = list(top.events or [])
+        events.append({
+            "timestamp": (ts or datetime.utcnow()).isoformat(),
+            "type": event_type,
+            "description": description,
+            "user_id": str(user_id),
+        })
+        top.events = events
+        top.updated_at = datetime.utcnow()
+
+    @staticmethod
+    async def record_depart_parking(
+        operation_id: UUID, truck_op_id: UUID, body, current_user: User, db: AsyncSession
+    ) -> TruckOperation:
+        from app.schemas.truck import TruckDepartParkingRequest
+        top = await TruckService._get_truck_op(operation_id, truck_op_id, db)
+        top.departed_parking_at = body.departed_parking_at or datetime.utcnow()
+        if body.gps_lat:
+            top.gps_start_lat = body.gps_lat
+        if body.gps_lng:
+            top.gps_start_lng = body.gps_lng
+        if top.status == TruckOpStatus.pending:
+            top.status = TruckOpStatus.in_transit
+        TruckService._append_event(top, "depart_parking", body.notes or "Departed from parking/depot", current_user.id, top.departed_parking_at)
+        await db.flush()
+        await db.refresh(top)
+        return top
+
+    @staticmethod
+    async def record_arrived_loading(
+        operation_id: UUID, truck_op_id: UUID, body, current_user: User, db: AsyncSession
+    ) -> TruckOperation:
+        top = await TruckService._get_truck_op(operation_id, truck_op_id, db)
+        top.arrived_loading_at = body.arrived_loading_at or datetime.utcnow()
+        if body.loading_location:
+            top.loading_location = body.loading_location
+        TruckService._append_event(top, "arrived_loading", body.notes or f"Arrived at loading point{': ' + top.loading_location if top.loading_location else ''}", current_user.id, top.arrived_loading_at)
+        await db.flush()
+        await db.refresh(top)
+        return top
+
+    @staticmethod
+    async def record_departed_loading(
+        operation_id: UUID, truck_op_id: UUID, body, current_user: User, db: AsyncSession
+    ) -> TruckOperation:
+        top = await TruckService._get_truck_op(operation_id, truck_op_id, db)
+        top.departed_loading_at = body.departed_loading_at or datetime.utcnow()
+        top.transit_start_at = top.departed_loading_at
+        top.quantity_loaded_mt = body.quantity_loaded_mt
+        if body.product_type:
+            top.product_type = body.product_type
+        if top.status in (TruckOpStatus.pending, TruckOpStatus.in_transit):
+            top.status = TruckOpStatus.loading
+        TruckService._append_event(top, "departed_loading", f"Departed loading point with {body.quantity_loaded_mt} MT loaded", current_user.id, top.departed_loading_at)
+        await db.flush()
+        await db.refresh(top)
+        return top
+
+    @staticmethod
+    async def record_arrived_discharge(
+        operation_id: UUID, truck_op_id: UUID, body, current_user: User, db: AsyncSession
+    ) -> TruckOperation:
+        top = await TruckService._get_truck_op(operation_id, truck_op_id, db)
+        top.arrived_discharge_at = body.arrived_discharge_at or datetime.utcnow()
+        top.transit_end_at = top.arrived_discharge_at
+        if body.discharge_location:
+            top.discharge_location = body.discharge_location
+        top.status = TruckOpStatus.arrived
+        TruckService._append_event(top, "arrived_discharge", body.notes or f"Arrived at discharge location{': ' + top.discharge_location if top.discharge_location else ''}", current_user.id, top.arrived_discharge_at)
+        await db.flush()
+        await db.refresh(top)
+        return top
+
+    @staticmethod
+    async def record_custom_event(
+        operation_id: UUID, truck_op_id: UUID, body, current_user: User, db: AsyncSession
+    ) -> TruckOperation:
+        top = await TruckService._get_truck_op(operation_id, truck_op_id, db)
+        TruckService._append_event(top, body.event_type, body.description, current_user.id, body.timestamp)
+        await db.flush()
+        await db.refresh(top)
+        return top
+
+    @staticmethod
+    async def submit_operation_completion(
+        operation_id: UUID, body, current_user: User, db: AsyncSession
+    ) -> Operation:
+        """Supervisor submits completion report → transitions operation to pending_completion."""
+        operation = await _get_operation_or_404(operation_id, db)
+
+        if operation.status != OperationStatus.active:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Operation must be Active to submit completion. Current status: {operation.status.value}",
+            )
+
+        try:
+            StateMachine.validate_transition(operation.type, operation.status, OperationStatus.pending_completion, current_user.role)
+        except StateMachineError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+        from_status = operation.status
+        operation.status = OperationStatus.pending_completion
+        operation.completion_notes = body.readiness_summary
+        operation.updated_at = datetime.utcnow()
+
+        db.add(OperationStatusHistory(
+            operation_id=operation.id,
+            from_status=from_status,
+            to_status=OperationStatus.pending_completion,
+            changed_by=current_user.id,
+            reason=body.readiness_summary,
+            metadata_={"submitted_by_role": current_user.role.value},
+        ))
+
+        # Notify all BMs
+        bm_result = await db.execute(
+            select(User).where(and_(User.role == UserRole.bunker_manager, User.is_active == True))
+        )
+        for bm in bm_result.scalars().all():
+            await notify(
+                db=db, user_id=bm.id, type_="completion_pending",
+                title=f"Completion Report — {operation.operation_number}",
+                message=f"{current_user.full_name} submitted a completion report for {operation.operation_number}: {body.readiness_summary[:100]}",
+                priority="high",
+                operation_id=operation.id,
+                action_url=f"/operations/{operation.id}",
+                channels=["in_app", "whatsapp"],
+                wa_template="operation_update",
+                wa_kwargs={"operation_number": operation.operation_number, "status": "Completion pending review"},
+            )
+
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=operation.id,
+            action="SUBMIT_COMPLETION", entity_type="operation", entity_id=operation.id,
+            changes={"summary": body.readiness_summary},
+        ))
+
+        await db.flush()
+        await db.refresh(operation)
+        return operation
