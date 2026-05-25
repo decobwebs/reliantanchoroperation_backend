@@ -15,6 +15,7 @@ from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.audit_log import AuditLogMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
+from app.middleware.max_body_size import MaxBodySizeMiddleware
 from app.services.document_service import ensure_storage_bucket
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
@@ -79,6 +80,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(MaxBodySizeMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)  # outermost — added last
 
 # ── Exception handlers ─────────────────────────────────────────────────────────
