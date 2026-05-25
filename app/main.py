@@ -1,15 +1,20 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
+import socket
 import sys
 
 from app.config import settings
-from app.routers import health, auth, operations, admin, tasks, trucks, vessels, bdns, notifications, pfis, documents, analytics, portal, invoices, vouchers
+from app.routers import health, auth, operations, admin, tasks, trucks, vessels, bdns, notifications, pfis, documents, analytics, portal, invoices, vouchers, vessel_activities
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
+from app.middleware.audit_log import AuditLogMiddleware
+from app.services.document_service import ensure_storage_bucket
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -43,25 +48,36 @@ _validate_config()
 
 # ── Application factory ────────────────────────────────────────────────────────
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await ensure_storage_bucket()
+    yield
+
+
 app = FastAPI(
     title="RAOMS — Reliant Anchor Operations Management System",
     description="FastAPI backend for managing maritime bunker (fuel) operations.",
     version="1.0.0",
     docs_url="/docs" if settings.is_development else None,
     redoc_url="/redoc" if settings.is_development else None,
+    lifespan=lifespan,
 )
 
 # ── Middleware (outermost → innermost) ─────────────────────────────────────────
-# Order matters: CORS first, then rate limiting, then request ID.
+# Execution order: CORS → RequestID → RateLimit → AuditLog → route handler
+# AuditLogMiddleware is innermost so it only logs requests that pass rate limiting.
+app.add_middleware(AuditLogMiddleware)   # innermost — added first
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
+    allow_origin_regex=settings.CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-app.add_middleware(RateLimitMiddleware)
-app.add_middleware(RequestIDMiddleware)
 
 # ── Exception handlers ─────────────────────────────────────────────────────────
 
@@ -93,6 +109,22 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
             "data": None,
             "message": "Validation failed",
             "errors": errors,
+        },
+    )
+
+
+@app.exception_handler(socket.gaierror)
+async def dns_exception_handler(request: Request, exc: socket.gaierror):
+    logger.error("DNS lookup failed: %s", str(exc))
+    return JSONResponse(
+        status_code=503,
+        content={
+            "success": False,
+            "data": None,
+            "message": "Network/DNS lookup failed",
+            "errors": [
+                "A configured external host could not be resolved. Check DATABASE_URL, SUPABASE_URL, DNS/internet connectivity, and firewall/VPN settings."
+            ],
         },
     )
 
@@ -130,6 +162,7 @@ app.include_router(analytics.router, prefix=API_PREFIX)
 app.include_router(portal.router, prefix=API_PREFIX)
 app.include_router(invoices.router, prefix=API_PREFIX)
 app.include_router(vouchers.router, prefix=API_PREFIX)
+app.include_router(vessel_activities.router, prefix=API_PREFIX)
 
 
 @app.get("/", include_in_schema=False)
