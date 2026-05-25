@@ -14,6 +14,7 @@ from app.routers import health, auth, operations, admin, tasks, trucks, vessels,
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.audit_log import AuditLogMiddleware
+from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.services.document_service import ensure_storage_bucket
 
 # ── Logging setup ──────────────────────────────────────────────────────────────
@@ -65,7 +66,7 @@ app = FastAPI(
 )
 
 # ── Middleware (outermost → innermost) ─────────────────────────────────────────
-# Execution order: CORS → RequestID → RateLimit → AuditLog → route handler
+# Execution order: SecurityHeaders → CORS → RequestID → RateLimit → AuditLog → route handler
 # AuditLogMiddleware is innermost so it only logs requests that pass rate limiting.
 app.add_middleware(AuditLogMiddleware)   # innermost — added first
 app.add_middleware(RateLimitMiddleware)
@@ -78,6 +79,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)  # outermost — added last
 
 # ── Exception handlers ─────────────────────────────────────────────────────────
 
