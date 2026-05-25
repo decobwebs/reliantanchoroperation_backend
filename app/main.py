@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -8,6 +9,19 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
 import socket
 import sys
+
+# ── Sentry (optional — only when SENTRY_DSN is set) ───────────────────────────
+_sentry_dsn = os.environ.get("SENTRY_DSN", "")
+if _sentry_dsn:
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        integrations=[FastApiIntegration(), SqlalchemyIntegration()],
+        traces_sample_rate=0.2,
+        send_default_pii=False,
+    )
 
 from app.config import settings
 from app.routers import health, auth, operations, admin, tasks, trucks, vessels, bdns, notifications, pfis, documents, analytics, portal, invoices, vouchers, vessel_activities
