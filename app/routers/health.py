@@ -10,10 +10,21 @@ router = APIRouter(tags=["Health"])
 
 
 @router.get("/health", response_model=StandardResponse)
-async def health_check(db: AsyncSession = Depends(get_db)):
-    """
-    Health check endpoint. Verifies API is running and DB is reachable.
-    """
+async def health_check():
+    """Lightweight liveness probe — confirms the process is up (no DB call)."""
+    return StandardResponse.ok(
+        data={
+            "status": "ok",
+            "timestamp": datetime.utcnow().isoformat(),
+            "version": "1.0.0",
+        },
+        message="RAOMS API is running",
+    )
+
+
+@router.get("/health/deep", response_model=StandardResponse)
+async def health_check_deep(db: AsyncSession = Depends(get_db)):
+    """Deep health check — verifies API is running and DB is reachable. Used by Render."""
     db_status = "ok"
     db_error = None
     try:
@@ -26,7 +37,7 @@ async def health_check(db: AsyncSession = Depends(get_db)):
         "status": "ok" if db_status == "ok" else "degraded",
         "timestamp": datetime.utcnow().isoformat(),
         "version": "1.0.0",
-        "database": db_status,
+        "db": db_status,
     }
     if db_error:
         data["db_error"] = db_error
