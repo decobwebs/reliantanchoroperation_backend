@@ -1403,10 +1403,15 @@ class TruckService:
         """Supervisor submits completion report → transitions operation to pending_completion."""
         operation = await _get_operation_or_404(operation_id, db)
 
-        if operation.status != OperationStatus.active:
+        # Money-first flow: completion is submitted after payment is confirmed.
+        # 'active' is accepted for backward compatibility (delivery-during-active).
+        if operation.status not in (OperationStatus.active, OperationStatus.payment_confirmed):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Operation must be Active to submit completion. Current status: {operation.status.value}",
+                detail=(
+                    "Completion can only be submitted while the operation is Active or "
+                    f"after payment is confirmed. Current status: {operation.status.value}"
+                ),
             )
 
         try:
