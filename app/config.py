@@ -24,7 +24,8 @@ class Settings(BaseSettings):
         return self.SUPABASE_JWKS_URL or f"{self.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
 
     # CORS
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173"
+    CORS_ORIGIN_REGEX: str = r"http://(localhost|127\.0\.0\.1):\d+"
 
     # Email (Resend) — optional; graceful degradation if missing
     RESEND_API_KEY: str = ""
@@ -43,13 +44,16 @@ class Settings(BaseSettings):
 
     @property
     def cors_origins_list(self) -> List[str]:
-        return [origin.strip() for origin in self.CORS_ORIGINS.split(",")]
+        return [origin.strip().rstrip("/") for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
 
     @property
     def is_development(self) -> bool:
         return self.FLASK_ENV == "development"
 
-    model_config = {"env_file": ".env", "extra": "ignore"}
+    model_config = {
+        "env_file": os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),
+        "extra": "ignore",
+    }
 
 
 settings = Settings()

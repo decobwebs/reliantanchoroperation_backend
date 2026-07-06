@@ -113,11 +113,12 @@ class BdnService:
         db.add(bdn)
         await db.flush()
 
-        # Transition operation to bdn_pending
-        await _transition_operation(
-            operation, OperationStatus.bdn_pending, current_user, db,
-            reason="BDN created by marine manager"
-        )
+        # Transition operation to bdn_pending (no-op if already there — BM may have set it manually)
+        if operation.status != OperationStatus.bdn_pending:
+            await _transition_operation(
+                operation, OperationStatus.bdn_pending, current_user, db,
+                reason="BDN created by marine manager"
+            )
 
         # Notify BM
         bm_result = await db.execute(
@@ -198,12 +199,13 @@ class BdnService:
         bdn.reviewed_by = current_user.id
         bdn.approved_at = datetime.utcnow()
 
-        # Transition operation to bdn_approved
+        # Transition operation to bdn_approved (no-op if already there — multiple BDN scenario)
         operation = await _get_operation_or_404(bdn.operation_id, db)
-        await _transition_operation(
-            operation, OperationStatus.bdn_approved, current_user, db,
-            reason="BDN approved by bunker manager"
-        )
+        if operation.status != OperationStatus.bdn_approved:
+            await _transition_operation(
+                operation, OperationStatus.bdn_approved, current_user, db,
+                reason="BDN approved by bunker manager"
+            )
 
         # Notify Finance Manager
         fm_result = await db.execute(

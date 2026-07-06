@@ -210,6 +210,10 @@ class TruckOperationOut(BaseModel):
     loading_location: Optional[str] = None
     discharge_location: Optional[str] = None
     destination_vessel_id: Optional[UUID] = None
+    destination_vessel_name: Optional[str] = None
+    discharge_approved: Optional[bool] = None
+    discharge_approved_by: Optional[UUID] = None
+    discharge_approved_at: Optional[datetime] = None
     departed_parking_at: Optional[datetime] = None
     arrived_loading_at: Optional[datetime] = None
     departed_loading_at: Optional[datetime] = None
@@ -230,6 +234,7 @@ class TruckOperationOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     truck: Optional[TruckOut] = None
+    supervisor: Optional[Any] = None
     safety_audit: Optional[TruckSafetyAuditOut] = None
 
     model_config = {"from_attributes": True}
@@ -285,7 +290,37 @@ class TruckDischargeEndRequest(BaseModel):
     spillage_mt: Optional[Decimal] = None
     temperature_celsius: Optional[Decimal] = None
     discharge_end_at: Optional[datetime] = None
+    destination_vessel_id: Optional[UUID] = None
+    destination_vessel_name: Optional[str] = None
     notes: Optional[str] = None
+
+    @field_validator("destination_vessel_name", "notes", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+
+class DischargeApproveRequest(BaseModel):
+    notes: Optional[str] = None
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def strip_notes(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+
+class DischargeEditRequest(BaseModel):
+    quantity_discharged_mt: Optional[Decimal] = None
+    spillage_mt: Optional[Decimal] = None
+    temperature_celsius: Optional[Decimal] = None
+    destination_vessel_id: Optional[UUID] = None
+    destination_vessel_name: Optional[str] = None
+    notes: Optional[str] = None
+
+    @field_validator("destination_vessel_name", "notes", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
 
 
 class TruckCompletionRequest(BaseModel):

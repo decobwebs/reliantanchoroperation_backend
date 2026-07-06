@@ -32,3 +32,4 @@ class Vessel(Base):
     truck_operations = relationship("TruckOperation", foreign_keys="TruckOperation.destination_vessel_id", back_populates="destination_vessel")
     discharge_events_as_source = relationship("VesselDischargeEvent", foreign_keys="VesselDischargeEvent.source_vessel_id", back_populates="source_vessel")
     discharge_events_as_dest = relationship("VesselDischargeEvent", foreign_keys="VesselDischargeEvent.destination_vessel_id", back_populates="destination_vessel")
+    vessel_activities = relationship("VesselActivity", back_populates="vessel")

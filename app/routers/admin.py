@@ -113,14 +113,18 @@ async def list_audit_logs(
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     user_id: Optional[UUID] = Query(None),
+    actor_email: Optional[str] = Query(None, description="Search by actor email (partial)"),
     operation_id: Optional[UUID] = Query(None),
-    action: Optional[str] = Query(None),
+    action: Optional[str] = Query(None, description="Filter by action keyword"),
+    entity_type: Optional[str] = Query(None, description="Filter by entity type (api, document, operation, auth…)"),
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
     current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
-    """List audit logs with optional filters."""
+    """List audit logs with optional filters. BM only."""
+    from sqlalchemy import join as sa_join
+
     conditions = []
     if user_id:
         conditions.append(AuditLog.user_id == user_id)
@@ -128,29 +132,35 @@ async def list_audit_logs(
         conditions.append(AuditLog.operation_id == operation_id)
     if action:
         conditions.append(AuditLog.action.ilike(f"%{action}%"))
+    if entity_type:
+        conditions.append(AuditLog.entity_type == entity_type)
     if date_from:
         conditions.append(AuditLog.created_at >= date_from)
     if date_to:
         conditions.append(AuditLog.created_at <= date_to)
 
-    count_stmt = select(func.count()).select_from(AuditLog)
+    # Base stmt with user join for actor_email search
+    base_stmt = (
+        select(AuditLog)
+        .join(User, AuditLog.user_id == User.id, isouter=True)
+        .options(selectinload(AuditLog.user))
+        .order_by(AuditLog.created_at.desc())
+    )
+    count_base = select(func.count()).select_from(AuditLog).join(User, AuditLog.user_id == User.id, isouter=True)
+
+    if actor_email:
+        email_cond = User.email.ilike(f"%{actor_email}%")
+        conditions.append(email_cond)
+
     if conditions:
-        count_stmt = count_stmt.where(and_(*conditions))
-    count_result = await db.execute(count_stmt)
+        base_stmt = base_stmt.where(and_(*conditions))
+        count_base = count_base.where(and_(*conditions))
+
+    count_result = await db.execute(count_base)
     total = count_result.scalar_one()
 
     offset = (page - 1) * per_page
-    stmt = (
-        select(AuditLog)
-        .options(selectinload(AuditLog.user))
-        .order_by(AuditLog.created_at.desc())
-        .offset(offset)
-        .limit(per_page)
-    )
-    if conditions:
-        stmt = stmt.where(and_(*conditions))
-
-    result = await db.execute(stmt)
+    result = await db.execute(base_stmt.offset(offset).limit(per_page))
     logs = result.scalars().all()
 
     items = [

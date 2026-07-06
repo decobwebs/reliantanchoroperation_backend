@@ -12,8 +12,10 @@ from app.models.truck import Truck, TruckOperation, TruckSafetyAudit
 from app.models.operation import Operation, TaskAssignment, TruckFeedback
 from app.models.audit import AuditLog
 from app.models.user import User
+from app.models.bdn import RobEntry
+from app.models.vessel import Vessel
 from app.models.enums import (
-    UserRole, TruckStatus, TruckOpStatus, FeedbackStatus, OperationStatus
+    UserRole, TruckStatus, TruckOpStatus, FeedbackStatus, OperationStatus, RobEntryType
 )
 from app.schemas.truck import (
     TruckCreate, TruckUpdate,
@@ -198,6 +200,7 @@ class TruckService:
             select(TruckOperation)
             .options(
                 selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.supervisor),
                 selectinload(TruckOperation.safety_audit),
             )
             .where(TruckOperation.operation_id == operation_id)
@@ -222,6 +225,22 @@ class TruckService:
         )
         if not truck_result.scalar_one_or_none():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found or inactive")
+
+        # Prevent duplicate: same truck can only have one non-cancelled record per operation
+        dup_result = await db.execute(
+            select(TruckOperation).where(
+                and_(
+                    TruckOperation.operation_id == operation_id,
+                    TruckOperation.truck_id == data.truck_id,
+                    TruckOperation.status != TruckOpStatus.cancelled,
+                )
+            )
+        )
+        if dup_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="This truck is already assigned to this operation",
+            )
 
         truck_op = TruckOperation(
             operation_id=operation_id,
@@ -253,6 +272,7 @@ class TruckService:
             select(TruckOperation)
             .options(
                 selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.supervisor),
                 selectinload(TruckOperation.safety_audit),
             )
             .where(TruckOperation.id == truck_op.id)
@@ -274,6 +294,7 @@ class TruckService:
             select(TruckOperation)
             .options(
                 selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.supervisor),
                 selectinload(TruckOperation.safety_audit),
             )
             .where(
@@ -307,7 +328,6 @@ class TruckService:
         db.add(audit)
 
         await db.flush()
-        await db.refresh(truck_op)
         return truck_op
 
     # ── Safety Audit ─────────────────────────────────────────────────────────
@@ -446,7 +466,11 @@ class TruckService:
 
         result = await db.execute(
             select(TruckOperation)
-            .options(selectinload(TruckOperation.truck))
+            .options(
+                selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.supervisor),
+                selectinload(TruckOperation.safety_audit),
+            )
             .where(
                 and_(
                     TruckOperation.id == truck_op_id,
@@ -483,7 +507,6 @@ class TruckService:
         db.add(audit)
 
         await db.flush()
-        await db.refresh(truck_op)
         return truck_op
 
     @staticmethod
@@ -500,7 +523,11 @@ class TruckService:
 
         result = await db.execute(
             select(TruckOperation)
-            .options(selectinload(TruckOperation.truck))
+            .options(
+                selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.supervisor),
+                selectinload(TruckOperation.safety_audit),
+            )
             .where(
                 and_(
                     TruckOperation.id == truck_op_id,
@@ -537,7 +564,6 @@ class TruckService:
         db.add(audit)
 
         await db.flush()
-        await db.refresh(truck_op)
         return truck_op
 
     @staticmethod
@@ -552,7 +578,11 @@ class TruckService:
 
         result = await db.execute(
             select(TruckOperation)
-            .options(selectinload(TruckOperation.truck))
+            .options(
+                selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.supervisor),
+                selectinload(TruckOperation.safety_audit),
+            )
             .where(
                 and_(
                     TruckOperation.id == truck_op_id,
@@ -564,7 +594,7 @@ class TruckService:
         if not truck_op:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
 
-        if truck_op.status != TruckOpStatus.arrived:
+        if truck_op.status in (TruckOpStatus.discharging, TruckOpStatus.completed):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Cannot start discharge from status '{truck_op.status.value}'",
@@ -585,14 +615,13 @@ class TruckService:
         db.add(audit)
 
         await db.flush()
-        await db.refresh(truck_op)
         return truck_op
 
     @staticmethod
     async def end_discharge(
         operation_id: UUID,
         truck_op_id: UUID,
-        quantity_discharged_mt: Decimal,
+        body,  # TruckDischargeEndRequest
         current_user: User,
         db: AsyncSession,
     ) -> TruckOperation:
@@ -601,7 +630,11 @@ class TruckService:
 
         result = await db.execute(
             select(TruckOperation)
-            .options(selectinload(TruckOperation.truck))
+            .options(
+                selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.supervisor),
+                selectinload(TruckOperation.safety_audit),
+            )
             .where(
                 and_(
                     TruckOperation.id == truck_op_id,
@@ -613,14 +646,32 @@ class TruckService:
         if not truck_op:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
 
-        if truck_op.status != TruckOpStatus.discharging:
+        if truck_op.status == TruckOpStatus.completed:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Cannot end discharge from status '{truck_op.status.value}'",
+                detail="Discharge already completed",
             )
 
-        truck_op.discharge_end_at = datetime.utcnow()
+        quantity_discharged_mt = body.quantity_discharged_mt
+        truck_op.discharge_end_at = body.discharge_end_at or datetime.utcnow()
         truck_op.quantity_discharged_mt = quantity_discharged_mt
+        if body.quantity_remaining_mt is not None:
+            truck_op.quantity_remaining_mt = body.quantity_remaining_mt
+        if body.spillage_mt is not None:
+            truck_op.spillage_mt = body.spillage_mt
+        if body.temperature_celsius is not None:
+            truck_op.temperature_celsius = body.temperature_celsius
+        if body.notes:
+            truck_op.notes = body.notes
+
+        # Update destination vessel (supervisor may change it at discharge time)
+        if body.destination_vessel_id is not None:
+            truck_op.destination_vessel_id = body.destination_vessel_id
+            truck_op.destination_vessel_name = None  # clear free-text if system vessel set
+        elif body.destination_vessel_name:
+            truck_op.destination_vessel_name = body.destination_vessel_name
+            truck_op.destination_vessel_id = None  # clear FK if free-text vessel provided
+
         truck_op.status = TruckOpStatus.completed
         truck_op.updated_at = datetime.utcnow()
 
@@ -628,7 +679,19 @@ class TruckService:
         if truck_op.quantity_loaded_mt is not None:
             truck_op.variance_mt = truck_op.quantity_loaded_mt - quantity_discharged_mt
 
-        audit = AuditLog(
+        # Set discharge approval gate:
+        # - vessel specified → False (pending BM approval before ROB is written)
+        # - no vessel → None (approval not applicable)
+        has_vessel = bool(truck_op.destination_vessel_id or truck_op.destination_vessel_name)
+        truck_op.discharge_approved = False if has_vessel else None
+
+        vessel_label = ""
+        if truck_op.destination_vessel_id:
+            vessel_label = f" → system vessel (ID: {str(truck_op.destination_vessel_id)[:8]})"
+        elif truck_op.destination_vessel_name:
+            vessel_label = f" → {truck_op.destination_vessel_name}"
+
+        db.add(AuditLog(
             user_id=current_user.id,
             operation_id=operation_id,
             action="END_DISCHARGE",
@@ -638,12 +701,266 @@ class TruckService:
                 "status": "completed",
                 "quantity_discharged_mt": str(quantity_discharged_mt),
                 "variance_mt": str(truck_op.variance_mt) if truck_op.variance_mt is not None else None,
+                "destination": vessel_label or "no vessel specified",
+                "discharge_approved": truck_op.discharge_approved,
             },
-        )
-        db.add(audit)
+        ))
 
         await db.flush()
-        await db.refresh(truck_op)
+        return truck_op
+
+    @staticmethod
+    async def approve_discharge(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        notes: Optional[str],
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        await _get_operation_or_404(operation_id, db)
+
+        result = await db.execute(
+            select(TruckOperation)
+            .options(
+                selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.supervisor),
+                selectinload(TruckOperation.safety_audit),
+            )
+            .where(
+                and_(
+                    TruckOperation.id == truck_op_id,
+                    TruckOperation.operation_id == operation_id,
+                )
+            )
+        )
+        truck_op = result.scalar_one_or_none()
+        if not truck_op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+
+        if truck_op.discharge_approved is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Discharge approval not required — no vessel was specified",
+            )
+        if truck_op.discharge_approved is True:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Discharge already approved",
+            )
+
+        truck_op.discharge_approved = True
+        truck_op.discharge_approved_by = current_user.id
+        truck_op.discharge_approved_at = datetime.utcnow()
+        truck_op.updated_at = datetime.utcnow()
+
+        # Write ROB entry now that BM has approved (system vessels only)
+        if truck_op.destination_vessel_id:
+            dv_result = await db.execute(
+                select(Vessel)
+                .where(Vessel.id == truck_op.destination_vessel_id)
+                .with_for_update()
+            )
+            dest_vessel = dv_result.scalar_one_or_none()
+            if dest_vessel and truck_op.quantity_discharged_mt:
+                qty = truck_op.quantity_discharged_mt
+                rob_before = dest_vessel.current_rob_mt
+                rob_after = rob_before + qty
+                dest_vessel.current_rob_mt = rob_after
+                truck_label = truck_op.truck.truck_number if truck_op.truck else str(truck_op.id)[:8]
+                db.add(RobEntry(
+                    vessel_id=dest_vessel.id,
+                    operation_id=operation_id,
+                    entry_type=RobEntryType.replenishment,
+                    quantity_mt=qty,
+                    rob_before_mt=rob_before,
+                    rob_after_mt=rob_after,
+                    recorded_by=current_user.id,
+                    truck_operation_id=truck_op.id,
+                    source_description=f"Truck delivery (BM approved): {truck_label}",
+                    notes=(
+                        f"Approved by BM {current_user.full_name}. "
+                        f"Discharged {float(qty):.3f} MT from truck {truck_label} into vessel {dest_vessel.vessel_name}."
+                        + (f" Notes: {notes}" if notes else "")
+                    ),
+                ))
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="APPROVE_DISCHARGE",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            changes={
+                "approved_by": current_user.full_name,
+                "approved_by_role": current_user.role.value,
+                "destination_vessel_id": str(truck_op.destination_vessel_id) if truck_op.destination_vessel_id else None,
+                "destination_vessel_name": truck_op.destination_vessel_name,
+                "quantity_discharged_mt": str(truck_op.quantity_discharged_mt),
+                "notes": notes,
+            },
+        ))
+
+        await db.flush()
+        return truck_op
+
+    @staticmethod
+    async def edit_discharge_record(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        data,  # DischargeEditRequest
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        await _get_operation_or_404(operation_id, db)
+
+        result = await db.execute(
+            select(TruckOperation)
+            .options(
+                selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.supervisor),
+                selectinload(TruckOperation.safety_audit),
+            )
+            .where(
+                and_(
+                    TruckOperation.id == truck_op_id,
+                    TruckOperation.operation_id == operation_id,
+                )
+            )
+        )
+        truck_op = result.scalar_one_or_none()
+        if not truck_op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+
+        if truck_op.status != TruckOpStatus.completed:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Can only edit discharge records for completed truck operations",
+            )
+
+        was_approved = truck_op.discharge_approved is True
+        old_vessel_id = truck_op.destination_vessel_id
+        old_qty = truck_op.quantity_discharged_mt
+        changes: dict = {"edited_by": current_user.full_name, "edited_by_role": "bunker_manager"}
+
+        if data.quantity_discharged_mt is not None:
+            changes["quantity_discharged_mt"] = {"from": str(old_qty), "to": str(data.quantity_discharged_mt)}
+            truck_op.quantity_discharged_mt = data.quantity_discharged_mt
+            if truck_op.quantity_loaded_mt is not None:
+                truck_op.variance_mt = truck_op.quantity_loaded_mt - data.quantity_discharged_mt
+
+        if data.spillage_mt is not None:
+            changes["spillage_mt"] = str(data.spillage_mt)
+            truck_op.spillage_mt = data.spillage_mt
+
+        if data.temperature_celsius is not None:
+            changes["temperature_celsius"] = str(data.temperature_celsius)
+            truck_op.temperature_celsius = data.temperature_celsius
+
+        vessel_changed = False
+        if data.destination_vessel_id is not None:
+            changes["destination_vessel_id"] = {"from": str(old_vessel_id), "to": str(data.destination_vessel_id)}
+            truck_op.destination_vessel_id = data.destination_vessel_id
+            truck_op.destination_vessel_name = None
+            vessel_changed = old_vessel_id != data.destination_vessel_id
+        elif data.destination_vessel_name is not None:
+            changes["destination_vessel_name"] = data.destination_vessel_name
+            if truck_op.destination_vessel_id:
+                changes["destination_vessel_id_cleared"] = str(truck_op.destination_vessel_id)
+            truck_op.destination_vessel_name = data.destination_vessel_name
+            truck_op.destination_vessel_id = None
+            vessel_changed = True
+
+        if data.notes is not None:
+            truck_op.notes = data.notes
+
+        truck_op.updated_at = datetime.utcnow()
+
+        # If discharge was already approved AND vessel/qty changed on a tracked vessel → write correction
+        new_qty = truck_op.quantity_discharged_mt
+        if was_approved and old_vessel_id:
+            qty_changed = data.quantity_discharged_mt is not None and data.quantity_discharged_mt != old_qty
+            if vessel_changed or qty_changed:
+                # Reverse the old entry on the old vessel
+                old_vessel_result = await db.execute(
+                    select(Vessel).where(Vessel.id == old_vessel_id).with_for_update()
+                )
+                old_vessel = old_vessel_result.scalar_one_or_none()
+                if old_vessel and old_qty:
+                    rob_before_correction = old_vessel.current_rob_mt
+                    rob_after_correction = rob_before_correction - old_qty
+                    old_vessel.current_rob_mt = rob_after_correction
+                    truck_label = truck_op.truck.truck_number if truck_op.truck else str(truck_op.id)[:8]
+                    db.add(RobEntry(
+                        vessel_id=old_vessel.id,
+                        operation_id=operation_id,
+                        entry_type=RobEntryType.correction,
+                        quantity_mt=-old_qty,
+                        rob_before_mt=rob_before_correction,
+                        rob_after_mt=rob_after_correction,
+                        recorded_by=current_user.id,
+                        truck_operation_id=truck_op.id,
+                        source_description=f"BM correction — reversed truck delivery: {truck_label}",
+                        notes=f"BM {current_user.full_name} edited discharge record. Reversed previous delivery of {float(old_qty):.3f} MT.",
+                    ))
+
+                # Write new entry if new vessel is in system
+                new_vessel_id = truck_op.destination_vessel_id
+                if new_vessel_id and new_qty:
+                    new_vessel_result = await db.execute(
+                        select(Vessel).where(Vessel.id == new_vessel_id).with_for_update()
+                    )
+                    new_vessel = new_vessel_result.scalar_one_or_none()
+                    if new_vessel:
+                        rob_before_new = new_vessel.current_rob_mt
+                        rob_after_new = rob_before_new + new_qty
+                        new_vessel.current_rob_mt = rob_after_new
+                        db.add(RobEntry(
+                            vessel_id=new_vessel.id,
+                            operation_id=operation_id,
+                            entry_type=RobEntryType.replenishment,
+                            quantity_mt=new_qty,
+                            rob_before_mt=rob_before_new,
+                            rob_after_mt=rob_after_new,
+                            recorded_by=current_user.id,
+                            truck_operation_id=truck_op.id,
+                            source_description=f"BM correction — updated truck delivery: {truck_label}",
+                            notes=f"BM {current_user.full_name} edited discharge record. New delivery: {float(new_qty):.3f} MT.",
+                        ))
+            elif qty_changed and not vessel_changed and old_vessel_id:
+                # Same vessel, qty changed only — write a correction for the difference
+                same_vessel_result = await db.execute(
+                    select(Vessel).where(Vessel.id == old_vessel_id).with_for_update()
+                )
+                same_vessel = same_vessel_result.scalar_one_or_none()
+                if same_vessel and old_qty and new_qty:
+                    diff = new_qty - old_qty
+                    rob_before_diff = same_vessel.current_rob_mt
+                    rob_after_diff = rob_before_diff + diff
+                    same_vessel.current_rob_mt = rob_after_diff
+                    truck_label = truck_op.truck.truck_number if truck_op.truck else str(truck_op.id)[:8]
+                    db.add(RobEntry(
+                        vessel_id=same_vessel.id,
+                        operation_id=operation_id,
+                        entry_type=RobEntryType.correction,
+                        quantity_mt=diff,
+                        rob_before_mt=rob_before_diff,
+                        rob_after_mt=rob_after_diff,
+                        recorded_by=current_user.id,
+                        truck_operation_id=truck_op.id,
+                        source_description=f"BM quantity correction: {truck_label}",
+                        notes=f"BM {current_user.full_name} corrected discharge qty from {float(old_qty):.3f} to {float(new_qty):.3f} MT.",
+                    ))
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="BM_EDITED_DISCHARGE_RECORD",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            changes=changes,
+        ))
+
+        await db.flush()
         return truck_op
 
     # ── Feedback workflow ─────────────────────────────────────────────────────
@@ -970,7 +1287,13 @@ class TruckService:
     @staticmethod
     async def _get_truck_op(operation_id: UUID, truck_op_id: UUID, db: AsyncSession) -> TruckOperation:
         result = await db.execute(
-            select(TruckOperation).where(
+            select(TruckOperation)
+            .options(
+                selectinload(TruckOperation.truck),
+                selectinload(TruckOperation.supervisor),
+                selectinload(TruckOperation.safety_audit),
+            )
+            .where(
                 and_(TruckOperation.id == truck_op_id, TruckOperation.operation_id == operation_id)
             )
         )
@@ -1006,7 +1329,6 @@ class TruckService:
             top.status = TruckOpStatus.in_transit
         TruckService._append_event(top, "depart_parking", body.notes or "Departed from parking/depot", current_user.id, top.departed_parking_at)
         await db.flush()
-        await db.refresh(top)
         return top
 
     @staticmethod
@@ -1019,7 +1341,6 @@ class TruckService:
             top.loading_location = body.loading_location
         TruckService._append_event(top, "arrived_loading", body.notes or f"Arrived at loading point{': ' + top.loading_location if top.loading_location else ''}", current_user.id, top.arrived_loading_at)
         await db.flush()
-        await db.refresh(top)
         return top
 
     @staticmethod
@@ -1036,7 +1357,6 @@ class TruckService:
             top.status = TruckOpStatus.loading
         TruckService._append_event(top, "departed_loading", f"Departed loading point with {body.quantity_loaded_mt} MT loaded", current_user.id, top.departed_loading_at)
         await db.flush()
-        await db.refresh(top)
         return top
 
     @staticmethod
@@ -1051,7 +1371,6 @@ class TruckService:
         top.status = TruckOpStatus.arrived
         TruckService._append_event(top, "arrived_discharge", body.notes or f"Arrived at discharge location{': ' + top.discharge_location if top.discharge_location else ''}", current_user.id, top.arrived_discharge_at)
         await db.flush()
-        await db.refresh(top)
         return top
 
     @staticmethod
@@ -1061,7 +1380,6 @@ class TruckService:
         top = await TruckService._get_truck_op(operation_id, truck_op_id, db)
         TruckService._append_event(top, body.event_type, body.description, current_user.id, body.timestamp)
         await db.flush()
-        await db.refresh(top)
         return top
 
     @staticmethod

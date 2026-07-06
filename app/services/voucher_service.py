@@ -22,16 +22,12 @@ from app.utils.number_generator import generate_expense_voucher_number
 class VoucherService:
 
     @staticmethod
-    async def create_voucher(
-        operation_id: UUID,
+    async def _build_voucher(
+        operation_id: Optional[UUID],
         data: VoucherCreate,
         current_user: User,
         db: AsyncSession,
     ) -> Voucher:
-        op = await db.get(Operation, operation_id)
-        if not op or op.deleted_at is not None:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
-
         voucher_number = await generate_expense_voucher_number(db)
 
         amount_ngn = None
@@ -72,10 +68,43 @@ class VoucherService:
                 "currency": data.currency,
             },
         ))
+        return voucher
 
+    @staticmethod
+    async def create_voucher(
+        operation_id: UUID,
+        data: VoucherCreate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> Voucher:
+        op = await db.get(Operation, operation_id)
+        if not op or op.deleted_at is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+
+        voucher = await VoucherService._build_voucher(operation_id, data, current_user, db)
         await db.commit()
         await db.refresh(voucher)
         return voucher
+
+    @staticmethod
+    async def create_vouchers(
+        operation_id: UUID,
+        items: List[VoucherCreate],
+        current_user: User,
+        db: AsyncSession,
+    ) -> List[Voucher]:
+        op = await db.get(Operation, operation_id)
+        if not op or op.deleted_at is not None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+
+        vouchers = [
+            await VoucherService._build_voucher(operation_id, item, current_user, db)
+            for item in items
+        ]
+        await db.commit()
+        for voucher in vouchers:
+            await db.refresh(voucher)
+        return vouchers
 
     @staticmethod
     async def create_standalone_voucher(
@@ -84,42 +113,7 @@ class VoucherService:
         db: AsyncSession,
     ) -> Voucher:
         """Create a voucher not tied to a specific operation."""
-        voucher_number = await generate_expense_voucher_number(db)
-
-        amount_ngn = None
-        if data.currency == "NGN":
-            amount_ngn = data.amount
-        elif data.exchange_rate and data.exchange_rate > 0:
-            amount_ngn = data.amount * data.exchange_rate
-
-        voucher = Voucher(
-            voucher_number=voucher_number,
-            operation_id=None,
-            pfi_id=data.pfi_id,
-            recorded_by=current_user.id,
-            category=data.category,
-            amount=data.amount,
-            currency=data.currency,
-            exchange_rate=data.exchange_rate,
-            amount_ngn=amount_ngn,
-            supplier_name=data.supplier_name,
-            description=data.description,
-            payment_date=data.payment_date,
-            notes=data.notes,
-            status=VoucherStatus.draft,
-        )
-        db.add(voucher)
-        await db.flush()
-
-        db.add(AuditLog(
-            user_id=current_user.id,
-            operation_id=None,
-            action="CREATE_VOUCHER",
-            entity_type="voucher",
-            entity_id=voucher.id,
-            changes={"voucher_number": voucher_number, "category": data.category.value, "amount": str(data.amount)},
-        ))
-
+        voucher = await VoucherService._build_voucher(None, data, current_user, db)
         await db.commit()
         await db.refresh(voucher)
         return voucher

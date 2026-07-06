@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
 from app.models.operation import Operation, OperationStatusHistory, TaskAssignment
+from app.models.bdn import VesselActivity
 from app.models.finance import PFI
 from app.models.audit import AuditLog
 from app.models.user import User
@@ -233,8 +234,16 @@ class OperationService:
             conditions.append(Operation.client_id == current_user.id)
         elif current_user.role in (UserRole.bunker_manager, UserRole.finance_manager):
             pass  # see all operations
+        elif current_user.role == UserRole.marine_manager:
+            # Marine managers see operations via vessel activity assignments (not tasks)
+            task_op_ids_stmt = select(TaskAssignment.operation_id).where(TaskAssignment.assigned_to == current_user.id)
+            va_op_ids_stmt = select(VesselActivity.operation_id).where(VesselActivity.assigned_to == current_user.id)
+            task_result = await db.execute(task_op_ids_stmt)
+            va_result = await db.execute(va_op_ids_stmt)
+            assigned_op_ids = list({row[0] for row in task_result.fetchall()} | {row[0] for row in va_result.fetchall()})
+            conditions.append(Operation.id.in_(assigned_op_ids))
         else:
-            # task-scoped roles: logistics_officer, ops_supervisor, marine_manager
+            # task-scoped roles: logistics_officer, ops_supervisor
             assigned_op_ids_stmt = select(TaskAssignment.operation_id).where(TaskAssignment.assigned_to == current_user.id)
             assigned_result = await db.execute(assigned_op_ids_stmt)
             assigned_op_ids = [row[0] for row in assigned_result.fetchall()]

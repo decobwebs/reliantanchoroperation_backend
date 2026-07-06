@@ -1,3 +1,6 @@
+import socket
+
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy import MetaData
@@ -44,8 +47,19 @@ async def get_db() -> AsyncSession:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except Exception as error:
             await session.rollback()
+            exc = error
+            while exc:
+                if isinstance(exc, socket.gaierror):
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            "Database host could not be resolved. Check DATABASE_URL, "
+                            "DNS/internet connectivity, and the Supabase pooler hostname."
+                        ),
+                    )
+                exc = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
             raise
         finally:
             await session.close()

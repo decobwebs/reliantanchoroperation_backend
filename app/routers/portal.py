@@ -21,6 +21,7 @@ from app.schemas.common import StandardResponse, PaginatedResponse
 from app.schemas.document import DocumentOut
 from app.schemas.bdn import BdnOut
 from app.schemas.invoice import InvoiceOut
+from app.services.document_service import create_signed_supabase_url
 from app.services.milestone_service import list_milestones
 from app.models.finance import Invoice
 from app.models.enums import InvoiceStatus
@@ -204,7 +205,11 @@ async def portal_list_invoices(
         .order_by(Invoice.created_at.desc())
     )
     invoices = inv_result.scalars().all()
-    items = [InvoiceOut.model_validate(inv).model_dump() for inv in invoices]
+    items = []
+    for inv in invoices:
+        item = InvoiceOut.model_validate(inv).model_dump()
+        item["pdf_url"] = await create_signed_supabase_url(item.get("pdf_url"))
+        items.append(item)
     return StandardResponse.ok(data=items, message="Invoices retrieved")
 
 

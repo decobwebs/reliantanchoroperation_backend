@@ -4,121 +4,138 @@ from app.models.enums import OperationStatus, OperationType, UserRole
 
 # ── Transition maps per operation type ────────────────────────────────────────
 #
+# COMMERCIAL FLOW (all types):
+#   PFI (advance payment from client) PRECEDES operations.
+#   BDN (actual delivery record) drives the Tax Invoice.
+#   Invoice closes the operation — it is the final billing document.
+#
 # TRUCK ONLY:
 #   draft → tasks_assigned → awaiting_feedback → feedback_submitted
-#   → active (BM approves) → pending_completion (supervisor reports done)
-#   → completed (BM closes) → archived
+#   → active → pfi_linked → payment_processing → payment_confirmed
+#   → pending_completion (delivery done) → invoiced → completed → archived
 #
 # FULL OPERATION:
 #   draft → tasks_assigned → awaiting_feedback → feedback_submitted
-#   → active (BM approves) → vessel_operations → bdn_pending → bdn_approved
-#   → pfi_linked → payment_processing → payment_confirmed → invoiced
-#   → completed → archived
+#   → active → pfi_linked → payment_processing → payment_confirmed
+#   → vessel_operations → bdn_pending → bdn_approved → invoiced → completed → archived
 #
 # VESSEL ONLY:
-#   draft → tasks_assigned → active (BM activates, no truck feedback needed)
-#   → vessel_operations → bdn_pending → bdn_approved
-#   → pfi_linked → payment_processing → payment_confirmed → invoiced
-#   → completed → archived
+#   draft → tasks_assigned → active → pfi_linked → payment_processing → payment_confirmed
+#   → vessel_operations → bdn_pending → bdn_approved → invoiced → completed → archived
+#
+# BACKWARD COMPAT paths (for operations created under the old flow):
+#   bdn_approved → pfi_linked  (old: PFI after BDN)
+#   payment_confirmed → invoiced  (old: Invoice directly after payment, no delivery step)
+#   active → vessel_operations  (old: no PFI gate before ops)
 
 TRUCK_ONLY_TRANSITIONS: Dict[str, List[str]] = {
-    "draft": ["tasks_assigned", "cancelled"],
-    "tasks_assigned": ["awaiting_feedback", "cancelled"],
-    "awaiting_feedback": ["feedback_submitted"],
+    "draft":              ["tasks_assigned", "cancelled"],
+    "tasks_assigned":     ["awaiting_feedback", "cancelled"],
+    "awaiting_feedback":  ["feedback_submitted"],
     "feedback_submitted": ["active", "feedback_rejected"],
-    "feedback_rejected": ["feedback_submitted"],
-    "feedback_approved": ["active"],
-    "active": ["pfi_linked", "pending_completion", "cancelled"],
-    "pfi_linked": ["payment_processing"],
+    "feedback_rejected":  ["feedback_submitted"],
+    "feedback_approved":  ["active"],                            # legacy compat
+    # Primary new path: PFI → payment → delivery → invoice
+    "active":             ["pfi_linked", "pending_completion", "cancelled"],  # pending_completion = compat
+    "pfi_linked":         ["payment_processing"],
     "payment_processing": ["payment_confirmed"],
-    "payment_confirmed": ["invoiced"],
-    "invoiced": ["completed"],
-    "pending_completion": ["completed", "active"],
-    "completed": ["archived"],
+    "payment_confirmed":  ["pending_completion", "invoiced"],    # invoiced = compat skip
+    "pending_completion": ["invoiced", "active"],
+    "invoiced":           ["completed"],
+    "completed":          ["archived"],
 }
 
 FULL_OPERATION_TRANSITIONS: Dict[str, List[str]] = {
-    "draft": ["tasks_assigned", "cancelled"],
-    "tasks_assigned": ["awaiting_feedback", "cancelled"],
-    "awaiting_feedback": ["feedback_submitted"],
+    "draft":              ["tasks_assigned", "cancelled"],
+    "tasks_assigned":     ["awaiting_feedback", "cancelled"],
+    "awaiting_feedback":  ["feedback_submitted"],
     "feedback_submitted": ["active", "feedback_rejected"],
-    "feedback_rejected": ["feedback_submitted"],
-    "feedback_approved": ["active"],              # backward compat for legacy records
-    "active": ["vessel_operations", "cancelled"],
-    "vessel_operations": ["bdn_pending"],
-    "bdn_pending": ["bdn_approved", "vessel_operations"],
-    "bdn_approved": ["pfi_linked", "vessel_operations"],
-    "pfi_linked": ["payment_processing"],
+    "feedback_rejected":  ["feedback_submitted"],
+    "feedback_approved":  ["active"],                            # legacy compat
+    # Primary new path: PFI → payment → ops → BDN → invoice
+    "active":             ["pfi_linked", "vessel_operations", "cancelled"],   # vessel_operations = compat
+    "pfi_linked":         ["payment_processing"],
     "payment_processing": ["payment_confirmed"],
-    "payment_confirmed": ["invoiced"],
-    "invoiced": ["completed"],
-    "completed": ["archived"],
+    "payment_confirmed":  ["vessel_operations", "invoiced"],     # vessel_operations = new, invoiced = compat
+    "vessel_operations":  ["bdn_pending"],
+    "bdn_pending":        ["bdn_approved", "vessel_operations"],
+    "bdn_approved":       ["invoiced", "pfi_linked", "vessel_operations"],   # invoiced = new, pfi_linked = compat
+    "invoiced":           ["completed"],
+    "completed":          ["archived"],
 }
 
 VESSEL_ONLY_TRANSITIONS: Dict[str, List[str]] = {
-    "draft": ["tasks_assigned", "cancelled"],
-    "tasks_assigned": ["active", "cancelled"],   # no truck feedback for vessel-only
-    "active": ["vessel_operations", "cancelled"],
-    "vessel_operations": ["bdn_pending"],
-    "bdn_pending": ["bdn_approved", "vessel_operations"],
-    "bdn_approved": ["pfi_linked", "vessel_operations"],
-    "pfi_linked": ["payment_processing"],
+    "draft":              ["tasks_assigned", "cancelled"],
+    "tasks_assigned":     ["active", "cancelled"],               # no truck feedback for vessel-only
+    # Primary new path: PFI → payment → ops → BDN → invoice
+    "active":             ["pfi_linked", "vessel_operations", "cancelled"],   # vessel_operations = compat
+    "pfi_linked":         ["payment_processing"],
     "payment_processing": ["payment_confirmed"],
-    "payment_confirmed": ["invoiced"],
-    "invoiced": ["completed"],
-    "completed": ["archived"],
+    "payment_confirmed":  ["vessel_operations", "invoiced"],     # vessel_operations = new, invoiced = compat
+    "vessel_operations":  ["bdn_pending"],
+    "bdn_pending":        ["bdn_approved", "vessel_operations"],
+    "bdn_approved":       ["invoiced", "pfi_linked", "vessel_operations"],   # invoiced = new, pfi_linked = compat
+    "invoiced":           ["completed"],
+    "completed":          ["archived"],
 }
 
 # ── Transition permission map ──────────────────────────────────────────────────
 
 TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     # Creation & assignment
-    "draft->tasks_assigned": ["bunker_manager"],
-    "tasks_assigned->awaiting_feedback": ["bunker_manager", "system"],
-    "tasks_assigned->active": ["bunker_manager"],          # vessel-only direct activation
+    "draft->tasks_assigned":            ["bunker_manager"],
+    "tasks_assigned->awaiting_feedback":["bunker_manager", "system"],
+    "tasks_assigned->active":           ["bunker_manager"],           # vessel-only direct activation
 
     # Truck feedback loop
-    "awaiting_feedback->feedback_submitted": ["logistics_officer"],
-    "feedback_submitted->active": ["bunker_manager"],      # approval → active
-    "feedback_submitted->feedback_rejected": ["bunker_manager"],
-    "feedback_rejected->feedback_submitted": ["logistics_officer"],
+    "awaiting_feedback->feedback_submitted":  ["logistics_officer"],
+    "feedback_submitted->active":             ["bunker_manager"],
+    "feedback_submitted->feedback_rejected":  ["bunker_manager"],
+    "feedback_rejected->feedback_submitted":  ["logistics_officer"],
+    "feedback_approved->active":              ["bunker_manager"],     # legacy compat
 
-    # Legacy compat: old feedback_approved records can advance
-    "feedback_approved->active": ["bunker_manager"],
+    # ── Finance gate (PFI before operations) ─────────────────────────────────
+    "active->pfi_linked":               ["bunker_manager", "finance_manager"],
 
-    # Truck-only: BM links PFI when physical ops are done
-    "active->pfi_linked": ["bunker_manager"],
+    # ── Old compat: BM links PFI after BDN (operations that pre-date redesign)
+    "bdn_approved->pfi_linked":         ["bunker_manager"],
 
-    # Truck-only completion (alternate path without finance)
-    "active->pending_completion": ["logistics_officer", "ops_supervisor"],
-    "pending_completion->active": ["bunker_manager"],      # send back to supervisor
-    "pending_completion->completed": ["bunker_manager"],
-
-    # Vessel operations
-    "active->vessel_operations": ["ops_supervisor", "bunker_manager"],
-    "vessel_operations->bdn_pending": ["marine_manager"],
-    "bdn_pending->bdn_approved": ["bunker_manager"],
-    "bdn_pending->vessel_operations": ["bunker_manager"],  # reject BDN → back to ops
-    "bdn_approved->pfi_linked": ["bunker_manager"],
-    "bdn_approved->vessel_operations": ["system", "bunker_manager"],
-
-    # Finance
-    "pfi_linked->payment_processing": ["finance_manager"],
+    # Payment processing
+    "pfi_linked->payment_processing":   ["finance_manager"],
     "payment_processing->payment_confirmed": ["finance_manager"],
-    "payment_confirmed->invoiced": ["finance_manager"],
+
+    # ── Vessel operations (only after payment confirmed in new flow) ──────────
+    "active->vessel_operations":        ["ops_supervisor", "bunker_manager"],    # compat
+    "payment_confirmed->vessel_operations": ["ops_supervisor", "bunker_manager"],
+    "vessel_operations->bdn_pending":   ["bunker_manager", "marine_manager"],
+    "bdn_pending->bdn_approved":        ["bunker_manager"],
+    "bdn_pending->vessel_operations":   ["bunker_manager"],
+    "bdn_approved->vessel_operations":  ["system", "bunker_manager"],
+
+    # ── Truck delivery completion ─────────────────────────────────────────────
+    "active->pending_completion":       ["logistics_officer", "ops_supervisor"], # compat
+    "payment_confirmed->pending_completion": ["logistics_officer", "ops_supervisor"],
+    "pending_completion->active":       ["bunker_manager"],
+    "pending_completion->invoiced":     ["finance_manager"],
+
+    # ── Invoicing ─────────────────────────────────────────────────────────────
+    # New path: BDN approved → invoice (FM raises final invoice based on actual BDN)
+    "bdn_approved->invoiced":           ["finance_manager"],
+    # Old compat: payment confirmed → invoiced (skips delivery step)
+    "payment_confirmed->invoiced":      ["finance_manager"],
 
     # Closure
-    "invoiced->completed": ["bunker_manager"],
-    "completed->archived": ["bunker_manager", "system"],
+    "invoiced->completed":              ["bunker_manager"],
+    "completed->archived":              ["bunker_manager", "system"],
 
     # Emergency cancel from any non-terminal status
-    "ANY->cancelled": ["bunker_manager"],
+    "ANY->cancelled":                   ["bunker_manager"],
 }
 
 _TYPE_MAP: Dict[str, Dict[str, List[str]]] = {
     OperationType.full_operation: FULL_OPERATION_TRANSITIONS,
-    OperationType.vessel_only: VESSEL_ONLY_TRANSITIONS,
-    OperationType.truck_only: TRUCK_ONLY_TRANSITIONS,
+    OperationType.vessel_only:    VESSEL_ONLY_TRANSITIONS,
+    OperationType.truck_only:     TRUCK_ONLY_TRANSITIONS,
 }
 
 

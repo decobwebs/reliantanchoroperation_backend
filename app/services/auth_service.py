@@ -16,15 +16,49 @@ from app.models.enums import UserRole
 _jwks_cache: Optional[List[Dict]] = None
 
 
+def _service_unavailable(exc: httpx.RequestError, service: str) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=(
+            f"{service} is unreachable. Check SUPABASE_URL, DNS/internet "
+            f"connectivity, and firewall/VPN settings. ({exc.__class__.__name__})"
+        ),
+    )
+
+
+def _error_detail(response: httpx.Response, fallback: str) -> str:
+    """Extract an error message from a Supabase response without assuming JSON.
+
+    Supabase/GoTrue normally returns JSON errors, but gateways, paused projects,
+    and 5xx pages can return empty or HTML bodies. Falls back gracefully so the
+    error path never raises JSONDecodeError.
+    """
+    try:
+        data = response.json()
+    except ValueError:
+        return fallback
+    if isinstance(data, dict):
+        return (
+            data.get("error_description")
+            or data.get("msg")
+            or data.get("message")
+            or fallback
+        )
+    return fallback
+
+
 async def _get_jwks() -> List[Dict]:
     """Fetch and cache Supabase JWKS keys."""
     global _jwks_cache
     if _jwks_cache is not None:
         return _jwks_cache
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(settings.jwks_url, timeout=10.0)
-        resp.raise_for_status()
-        _jwks_cache = resp.json().get("keys", [])
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(settings.jwks_url, timeout=10.0)
+            resp.raise_for_status()
+            _jwks_cache = resp.json().get("keys", [])
+    except httpx.RequestError as exc:
+        raise _service_unavailable(exc, "Supabase JWKS") from exc
     return _jwks_cache
 
 
@@ -124,29 +158,31 @@ class AuthService:
     @staticmethod
     async def register(email: str, password: str, full_name: str, phone: Optional[str], role: UserRole, db: AsyncSession) -> Dict[str, Any]:
         """Register a new user via Supabase Auth and sync to local DB."""
-        async with httpx.AsyncClient() as client:
-            # Create user in Supabase Auth using service key
-            response = await client.post(
-                f"{AuthService.SUPABASE_AUTH_URL}/admin/users",
-                headers={
-                    "apikey": settings.SUPABASE_SERVICE_KEY,
-                    "Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "email": email,
-                    "password": password,
-                    "email_confirm": True,
-                    "user_metadata": {"full_name": full_name},
-                },
-                timeout=60.0,
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                # Create user in Supabase Auth using service key
+                response = await client.post(
+                    f"{AuthService.SUPABASE_AUTH_URL}/admin/users",
+                    headers={
+                        "apikey": settings.SUPABASE_SERVICE_KEY,
+                        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "email": email,
+                        "password": password,
+                        "email_confirm": True,
+                        "user_metadata": {"full_name": full_name},
+                    },
+                    timeout=60.0,
+                )
+        except httpx.RequestError as exc:
+            raise _service_unavailable(exc, "Supabase Auth") from exc
 
         if response.status_code not in (200, 201):
-            error_detail = response.json().get("msg", "Registration failed")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=error_detail,
+                detail=_error_detail(response, "Registration failed"),
             )
 
         supabase_user = response.json()
@@ -175,22 +211,24 @@ class AuthService:
     @staticmethod
     async def login(email: str, password: str) -> Dict[str, Any]:
         """Authenticate user via Supabase Auth and return tokens."""
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{AuthService.SUPABASE_AUTH_URL}/token?grant_type=password",
-                headers={
-                    "apikey": settings.SUPABASE_ANON_KEY,
-                    "Content-Type": "application/json",
-                },
-                json={"email": email, "password": password},
-                timeout=60.0,
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{AuthService.SUPABASE_AUTH_URL}/token?grant_type=password",
+                    headers={
+                        "apikey": settings.SUPABASE_ANON_KEY,
+                        "Content-Type": "application/json",
+                    },
+                    json={"email": email, "password": password},
+                    timeout=60.0,
+                )
+        except httpx.RequestError as exc:
+            raise _service_unavailable(exc, "Supabase Auth") from exc
 
         if response.status_code != 200:
-            error_detail = response.json().get("error_description", "Invalid credentials")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=error_detail,
+                detail=_error_detail(response, "Invalid credentials"),
             )
 
         return response.json()
@@ -198,16 +236,19 @@ class AuthService:
     @staticmethod
     async def refresh_token(refresh_token: str) -> Dict[str, Any]:
         """Refresh access token using refresh token."""
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{AuthService.SUPABASE_AUTH_URL}/token?grant_type=refresh_token",
-                headers={
-                    "apikey": settings.SUPABASE_ANON_KEY,
-                    "Content-Type": "application/json",
-                },
-                json={"refresh_token": refresh_token},
-                timeout=60.0,
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{AuthService.SUPABASE_AUTH_URL}/token?grant_type=refresh_token",
+                    headers={
+                        "apikey": settings.SUPABASE_ANON_KEY,
+                        "Content-Type": "application/json",
+                    },
+                    json={"refresh_token": refresh_token},
+                    timeout=60.0,
+                )
+        except httpx.RequestError as exc:
+            raise _service_unavailable(exc, "Supabase Auth") from exc
 
         if response.status_code != 200:
             raise HTTPException(
@@ -220,30 +261,36 @@ class AuthService:
     @staticmethod
     async def logout(access_token: str) -> None:
         """Invalidate the user's session in Supabase."""
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{AuthService.SUPABASE_AUTH_URL}/logout",
-                headers={
-                    "apikey": settings.SUPABASE_ANON_KEY,
-                    "Authorization": f"Bearer {access_token}",
-                },
-                timeout=60.0,
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{AuthService.SUPABASE_AUTH_URL}/logout",
+                    headers={
+                        "apikey": settings.SUPABASE_ANON_KEY,
+                        "Authorization": f"Bearer {access_token}",
+                    },
+                    timeout=60.0,
+                )
+        except httpx.RequestError as exc:
+            raise _service_unavailable(exc, "Supabase Auth") from exc
 
     @staticmethod
     async def change_password(access_token: str, new_password: str) -> None:
         """Change user password via Supabase Auth."""
-        async with httpx.AsyncClient() as client:
-            response = await client.put(
-                f"{AuthService.SUPABASE_AUTH_URL}/user",
-                headers={
-                    "apikey": settings.SUPABASE_ANON_KEY,
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-                json={"password": new_password},
-                timeout=60.0,
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.put(
+                    f"{AuthService.SUPABASE_AUTH_URL}/user",
+                    headers={
+                        "apikey": settings.SUPABASE_ANON_KEY,
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"password": new_password},
+                    timeout=60.0,
+                )
+        except httpx.RequestError as exc:
+            raise _service_unavailable(exc, "Supabase Auth") from exc
 
         if response.status_code != 200:
             raise HTTPException(
@@ -254,32 +301,38 @@ class AuthService:
     @staticmethod
     async def forgot_password(email: str) -> None:
         """Send password reset email via Supabase Auth."""
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                f"{AuthService.SUPABASE_AUTH_URL}/recover",
-                headers={
-                    "apikey": settings.SUPABASE_ANON_KEY,
-                    "Content-Type": "application/json",
-                },
-                json={"email": email},
-                timeout=60.0,
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.post(
+                    f"{AuthService.SUPABASE_AUTH_URL}/recover",
+                    headers={
+                        "apikey": settings.SUPABASE_ANON_KEY,
+                        "Content-Type": "application/json",
+                    },
+                    json={"email": email},
+                    timeout=60.0,
+                )
+        except httpx.RequestError:
+            pass
         # Always succeed to prevent email enumeration
 
     @staticmethod
     async def reset_password(token: str, new_password: str) -> None:
         """Reset password using a recovery token."""
-        async with httpx.AsyncClient() as client:
-            response = await client.put(
-                f"{AuthService.SUPABASE_AUTH_URL}/user",
-                headers={
-                    "apikey": settings.SUPABASE_ANON_KEY,
-                    "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json",
-                },
-                json={"password": new_password},
-                timeout=60.0,
-            )
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.put(
+                    f"{AuthService.SUPABASE_AUTH_URL}/user",
+                    headers={
+                        "apikey": settings.SUPABASE_ANON_KEY,
+                        "Authorization": f"Bearer {token}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"password": new_password},
+                    timeout=60.0,
+                )
+        except httpx.RequestError as exc:
+            raise _service_unavailable(exc, "Supabase Auth") from exc
 
         if response.status_code != 200:
             raise HTTPException(

@@ -45,6 +45,26 @@ class TaskService:
                 detail="Assigned user not found",
             )
 
+        # Prevent duplicate: same user + task_type on same operation while non-terminal
+        dup_result = await db.execute(
+            select(TaskAssignment).where(
+                and_(
+                    TaskAssignment.operation_id == operation_id,
+                    TaskAssignment.assigned_to == data.assigned_to,
+                    TaskAssignment.task_type == data.task_type,
+                    TaskAssignment.status.not_in([TaskStatus.cancelled, TaskStatus.completed]),
+                )
+            )
+        )
+        if dup_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"An active {data.task_type.value.replace('_', ' ')} task is already "
+                    f"assigned to this user for this operation."
+                ),
+            )
+
         task = TaskAssignment(
             operation_id=operation_id,
             assigned_to=data.assigned_to,

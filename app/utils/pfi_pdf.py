@@ -125,6 +125,7 @@ def generate_pfi_pdf(
     client_email: str,
     client_phone: Optional[str],
     prepared_by_name: str,
+    prepared_by_role: str = "Bunker Manager",
 ) -> bytes:
     """Return PDF bytes for a PFI document."""
 
@@ -399,7 +400,7 @@ def generate_pfi_pdf(
     story.append(Paragraph("NOTES & PAYMENT TERMS", H3))
     story.append(Spacer(1, 1.5*mm))
     terms = [
-        f"1.  This Pro-Forma Invoice is valid for {validity_days} days from the date of issue ({_fmt_date(valid_until)}).",
+        f"1.  This Pro-Forma Invoice is valid for {validity_days} days from the date of issue ({_fmt_date(issue_date)}). Expires: {_fmt_date(valid_until)}.",
         "2.  Payment must be received in full before operations commence.",
         "3.  All prices are in the stated currency and exclude any bank charges.",
         "4.  Quantities are estimates; final billing will be based on actual volumes delivered.",
@@ -418,7 +419,7 @@ def generate_pfi_pdf(
     sig_left = [
         Paragraph("PREPARED BY", LABEL),
         Paragraph(prepared_by_name, H2),
-        Paragraph("Bunker Manager", SMALL),
+        Paragraph(prepared_by_role, SMALL),
         Paragraph("Reliant Anchor Logistics Limited", SMALL),
         Spacer(1, 2*mm),
         Paragraph("Signature: _______________________", SMALL),

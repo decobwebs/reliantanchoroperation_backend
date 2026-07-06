@@ -8,9 +8,10 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
+from sqlalchemy.orm import selectinload
 
-from app.models.finance import Invoice
+from app.models.finance import Invoice, Payment
 from app.models.bdn import BDN
 from app.models.operation import Operation
 from app.models.user import User
@@ -18,10 +19,50 @@ from app.models.audit import AuditLog
 from app.models.enums import BdnStatus, InvoiceStatus, OperationStatus
 from app.schemas.invoice import InvoiceCreate, InvoiceSendRequest, InvoiceMarkPaidRequest
 from app.utils.number_generator import generate_invoice_number
+from app.utils.invoice_pdf import generate_invoice_pdf
 from app.services.email_service import email_pfi_linked
+from app.services.document_service import _upload_to_supabase
 
 
 class InvoiceService:
+
+    @staticmethod
+    async def _generate_and_upload_pdf(
+        invoice: Invoice,
+        operation: Operation,
+        generated_by: User,
+        db: AsyncSession,
+    ) -> str:
+        bdn = None
+        if invoice.bdn_id:
+            bdn = await db.get(BDN, invoice.bdn_id)
+
+        client = operation.client
+        pdf_bytes = generate_invoice_pdf(
+            invoice_number=invoice.invoice_number,
+            issue_date=invoice.created_at or datetime.utcnow(),
+            due_date=invoice.due_date,
+            operation_number=operation.operation_number,
+            operation_type=operation.type.value if hasattr(operation.type, "value") else str(operation.type),
+            operation_version=operation.version,
+            product_type=operation.product_type,
+            loading_location=operation.loading_location,
+            discharge_location=operation.discharge_location,
+            bdn_number=bdn.bdn_number if bdn else None,
+            quantity_delivered_mt=bdn.quantity_delivered_mt if bdn else operation.actual_volume_mt or operation.expected_volume_mt,
+            client_name=client.full_name if client else "-",
+            client_email=client.email if client else "-",
+            client_phone=client.phone if client else None,
+            generated_by_name=generated_by.full_name,
+            amount=invoice.amount,
+            tax_amount=invoice.tax_amount,
+            total_amount=invoice.total_amount,
+            currency=invoice.currency,
+            exchange_rate=invoice.exchange_rate,
+            notes=invoice.notes,
+        )
+        storage_path = f"invoices/{operation.id}/{invoice.invoice_number}.pdf"
+        return await _upload_to_supabase(pdf_bytes, storage_path, "application/pdf")
 
     @staticmethod
     async def create_invoice(
@@ -38,7 +79,9 @@ class InvoiceService:
         from app.models.enums import OperationType
 
         op_result = await db.execute(
-            select(Operation).where(
+            select(Operation)
+            .options(selectinload(Operation.client))
+            .where(
                 Operation.id == operation_id,
                 Operation.deleted_at.is_(None),
             )
@@ -50,21 +93,23 @@ class InvoiceService:
         is_truck_only = op.type == OperationType.truck_only
 
         if is_truck_only:
-            # Truck-only: invoice on payment_confirmed (no BDN)
+            # Truck-only: invoice after delivery confirmed (pending_completion)
+            # or directly from payment_confirmed (old compat flow).
             allowed_statuses = {
-                OperationStatus.payment_confirmed,
+                OperationStatus.pending_completion,  # new path: delivery done → invoice
+                OperationStatus.payment_confirmed,   # old compat
                 OperationStatus.invoiced,
                 OperationStatus.completed,
             }
             if op.status not in allowed_statuses:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Truck-only invoice requires payment_confirmed status. "
-                           f"Current status: '{op.status.value}'.",
+                    detail=f"Truck-only invoice requires delivery confirmation (pending_completion) "
+                           f"or payment_confirmed. Current status: '{op.status.value}'.",
                 )
             bdn_id = None
         else:
-            # Vessel / full operation: BDN is required
+            # Vessel / full operation: BDN is required — Invoice is driven by actual delivery.
             if not data.bdn_id:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -83,8 +128,11 @@ class InvoiceService:
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Approved BDN not found for this operation",
                 )
+            # New path: invoice from bdn_approved (BDN drives invoice, payment was advance).
+            # Old compat: invoice from payment_confirmed (pre-redesign flow).
             allowed_statuses = {
-                OperationStatus.bdn_approved,
+                OperationStatus.bdn_approved,        # new primary path
+                OperationStatus.payment_confirmed,   # old compat
                 OperationStatus.invoiced,
                 OperationStatus.completed,
             }
@@ -92,7 +140,7 @@ class InvoiceService:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=f"Cannot invoice an operation in '{op.status.value}' status. "
-                           f"Operation must be in bdn_approved or later.",
+                           f"BDN must be approved first.",
                 )
             # Prevent duplicate invoices for the same BDN
             existing = await db.execute(
@@ -125,8 +173,12 @@ class InvoiceService:
         )
         db.add(invoice)
 
-        # Advance operation status
-        if op.status in (OperationStatus.bdn_approved, OperationStatus.payment_confirmed):
+        # Advance operation status to invoiced
+        if op.status in (
+            OperationStatus.bdn_approved,
+            OperationStatus.pending_completion,
+            OperationStatus.payment_confirmed,
+        ):
             op.status = OperationStatus.invoiced
             op.updated_at = datetime.utcnow()
 
@@ -144,6 +196,8 @@ class InvoiceService:
             },
         ))
 
+        await db.flush()
+        invoice.pdf_url = await InvoiceService._generate_and_upload_pdf(invoice, op, current_user, db)
         await db.flush()
         await db.refresh(invoice)
         return invoice
@@ -168,6 +222,15 @@ class InvoiceService:
         invoice.sent_at = datetime.utcnow()
         if data.pdf_url:
             invoice.pdf_url = data.pdf_url
+        elif not invoice.pdf_url:
+            op_result = await db.execute(
+                select(Operation)
+                .options(selectinload(Operation.client))
+                .where(Operation.id == invoice.operation_id)
+            )
+            op = op_result.scalar_one_or_none()
+            if op:
+                invoice.pdf_url = await InvoiceService._generate_and_upload_pdf(invoice, op, current_user, db)
         if data.notes:
             invoice.notes = data.notes
 
@@ -178,6 +241,43 @@ class InvoiceService:
             entity_type="invoice",
             entity_id=invoice.id,
             changes={"invoice_number": invoice.invoice_number, "pdf_url": data.pdf_url},
+        ))
+
+        await db.flush()
+        await db.refresh(invoice)
+        return invoice
+
+    @staticmethod
+    async def generate_pdf(
+        invoice_id: UUID,
+        current_user: User,
+        db: AsyncSession,
+    ) -> Invoice:
+        """Generate or replace the stored PDF for an existing invoice."""
+        invoice = await InvoiceService._get_invoice(invoice_id, db)
+        if invoice.status == InvoiceStatus.cancelled:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Cannot generate a PDF for a cancelled invoice",
+            )
+
+        op_result = await db.execute(
+            select(Operation)
+            .options(selectinload(Operation.client))
+            .where(Operation.id == invoice.operation_id)
+        )
+        op = op_result.scalar_one_or_none()
+        if not op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+
+        invoice.pdf_url = await InvoiceService._generate_and_upload_pdf(invoice, op, current_user, db)
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=invoice.operation_id,
+            action="GENERATE_INVOICE_PDF",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            changes={"invoice_number": invoice.invoice_number, "pdf_url": invoice.pdf_url},
         ))
 
         await db.flush()
@@ -257,6 +357,16 @@ class InvoiceService:
         await db.flush()
         await db.refresh(invoice)
         return invoice
+
+    @staticmethod
+    async def advance_paid_for_operation(operation_id: UUID, db: AsyncSession) -> Decimal:
+        """Sum of all advance payments recorded for this operation (via PFI)."""
+        result = await db.execute(
+            select(func.coalesce(func.sum(Payment.amount), 0)).where(
+                Payment.operation_id == operation_id
+            )
+        )
+        return Decimal(str(result.scalar_one()))
 
     @staticmethod
     async def list_invoices(operation_id: UUID, db: AsyncSession) -> list:

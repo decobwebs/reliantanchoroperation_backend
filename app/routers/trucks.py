@@ -17,6 +17,7 @@ from app.schemas.truck import (
     TruckOperationCreate, TruckOperationUpdate, TruckOperationOut,
     TruckFeedbackCreate, TruckFeedbackOut,
     TruckTransitRequest, TruckDischargeEndRequest,
+    DischargeApproveRequest, DischargeEditRequest,
     TruckDepartParkingRequest, TruckArrivedLoadingRequest,
     TruckDepartedLoadingRequest, TruckArrivedDischargeRequest,
     TruckEventRequest, TruckCompletionRequest,
@@ -346,11 +347,53 @@ async def end_discharge(
 ):
     """Complete discharge and record quantity. Logistics Officer only."""
     truck_op = await TruckService.end_discharge(
-        operation_id, truck_op_id, body.quantity_discharged_mt, current_user, db
+        operation_id, truck_op_id, body, current_user, db
     )
     return StandardResponse.ok(
         data=TruckOperationOut.model_validate(truck_op).model_dump(),
-        message="Discharge completed",
+        message="Discharge completed — awaiting BM approval" if truck_op.discharge_approved is False else "Discharge completed",
+    )
+
+
+@router.post(
+    "/operations/{operation_id}/trucks/{truck_op_id}/approve-discharge",
+    response_model=StandardResponse,
+)
+async def approve_discharge(
+    operation_id: UUID,
+    truck_op_id: UUID,
+    body: DischargeApproveRequest = DischargeApproveRequest(),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approve a truck discharge record. Writes ROB entry on system vessel. Bunker Manager only."""
+    truck_op = await TruckService.approve_discharge(
+        operation_id, truck_op_id, body.notes, current_user, db
+    )
+    return StandardResponse.ok(
+        data=TruckOperationOut.model_validate(truck_op).model_dump(),
+        message="Discharge approved — vessel ROB updated",
+    )
+
+
+@router.patch(
+    "/operations/{operation_id}/trucks/{truck_op_id}/discharge-record",
+    response_model=StandardResponse,
+)
+async def edit_discharge_record(
+    operation_id: UUID,
+    truck_op_id: UUID,
+    body: DischargeEditRequest,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit a completed discharge record. Bunker Manager only. Logged in audit trail as BM edit."""
+    truck_op = await TruckService.edit_discharge_record(
+        operation_id, truck_op_id, body, current_user, db
+    )
+    return StandardResponse.ok(
+        data=TruckOperationOut.model_validate(truck_op).model_dump(),
+        message="Discharge record updated — change logged in audit trail",
     )
 
 

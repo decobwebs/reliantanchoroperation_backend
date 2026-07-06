@@ -14,12 +14,20 @@ from app.schemas.pfi import (
     PaymentCreate, PaymentOut, PaymentConfirmRequest,
     StandalonePfiCreate, PfiConfirmPaymentRequest,
 )
+from app.services.document_service import create_signed_supabase_url
 from app.services.pfi_service import PfiService, PaymentService
 
 router = APIRouter(tags=["Finance"])
 
 
 # ── PFI endpoints ──────────────────────────────────────────────────────────────
+
+async def _serialize_pfi(pfi) -> dict:
+    item = PfiOut.model_validate(pfi).model_dump()
+    item["document_url"] = await create_signed_supabase_url(item.get("document_url"))
+    item["receipt_url"] = await create_signed_supabase_url(item.get("receipt_url"))
+    return item
+
 
 @router.post(
     "/operations/{operation_id}/pfis/generate",
@@ -29,13 +37,13 @@ router = APIRouter(tags=["Finance"])
 async def generate_pfi(
     operation_id: UUID,
     body: PfiGenerateRequest,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Generate a PFI PDF from operation data and link it. Bunker Manager only."""
+    """Generate a PFI PDF from operation data and link it. BM or Finance Manager."""
     pfi = await PfiService.generate_pfi(operation_id, body, current_user, db)
     return StandardResponse.ok(
-        data=PfiOut.model_validate(pfi).model_dump(),
+        data=await _serialize_pfi(pfi),
         message=f"PFI {pfi.pfi_number} generated and linked to operation",
     )
 
@@ -48,13 +56,13 @@ async def generate_pfi(
 async def create_pfi(
     operation_id: UUID,
     body: PfiCreate,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Link a PFI to an operation and advance its status. Bunker Manager only."""
+    """Link a PFI to an operation and advance its status. BM or Finance Manager."""
     pfi = await PfiService.create_pfi(operation_id, body, current_user, db)
     return StandardResponse.ok(
-        data=PfiOut.model_validate(pfi).model_dump(),
+        data=await _serialize_pfi(pfi),
         message=f"PFI {pfi.pfi_number} linked to operation",
     )
 
@@ -69,7 +77,7 @@ async def list_pfis(
 ):
     """List all PFIs for an operation. BM and Finance Manager only."""
     pfis = await PfiService.list_pfis(operation_id, db)
-    items = [PfiOut.model_validate(p).model_dump() for p in pfis]
+    items = [await _serialize_pfi(p) for p in pfis]
     return StandardResponse.ok(data=items, message="PFIs retrieved")
 
 
@@ -84,7 +92,7 @@ async def get_pfi(
     """Get a single PFI by ID. BM and Finance Manager only."""
     pfi = await PfiService.get_pfi(pfi_id, db)
     return StandardResponse.ok(
-        data=PfiOut.model_validate(pfi).model_dump(),
+        data=await _serialize_pfi(pfi),
         message="PFI retrieved",
     )
 
@@ -158,7 +166,7 @@ async def create_standalone_pfi(
     """Create a PFI before an operation exists. BM or FM."""
     pfi = await PfiService.create_standalone_pfi(body, current_user, db)
     return StandardResponse.ok(
-        data=PfiOut.model_validate(pfi).model_dump(),
+        data=await _serialize_pfi(pfi),
         message=f"PFI {pfi.pfi_number} created",
     )
 
@@ -172,7 +180,7 @@ async def list_all_pfis(
 ):
     """List all PFIs (global). BM and FM."""
     pfis = await PfiService.list_all_pfis(db, status_filter=status, unlinked_only=unlinked_only)
-    items = [PfiOut.model_validate(p).model_dump() for p in pfis]
+    items = [await _serialize_pfi(p) for p in pfis]
     return StandardResponse.ok(data=items, message="PFIs retrieved")
 
 
@@ -186,6 +194,6 @@ async def confirm_pfi_payment(
     """FM confirms PFI payment — advances PFI to 'paid', notifies BM. Finance Manager only."""
     pfi = await PfiService.confirm_pfi_payment(pfi_id, body, current_user, db)
     return StandardResponse.ok(
-        data=PfiOut.model_validate(pfi).model_dump(),
+        data=await _serialize_pfi(pfi),
         message=f"PFI {pfi.pfi_number} payment confirmed",
     )

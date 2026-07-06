@@ -18,7 +18,7 @@ router = APIRouter(tags=["BDNs"])
 async def list_bdns(
     operation_id: UUID,
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.marine_manager)
+        require_roles(UserRole.bunker_manager, UserRole.marine_manager, UserRole.finance_manager)
     ),
     db: AsyncSession = Depends(get_db),
 ):

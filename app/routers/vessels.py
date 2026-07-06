@@ -24,6 +24,7 @@ async def list_vessels(
             UserRole.bunker_manager,
             UserRole.ops_supervisor,
             UserRole.marine_manager,
+            UserRole.logistics_officer,
         )
     ),
     db: AsyncSession = Depends(get_db),

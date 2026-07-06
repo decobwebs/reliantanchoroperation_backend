@@ -19,3 +19,12 @@ class DocumentOut(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class DocumentHubOut(DocumentOut):
+    """Extended output for the global document hub — includes operation and uploader context."""
+    operation_number: Optional[str] = None
+    operation_id_str: Optional[str] = None
+    uploader_name: Optional[str] = None
+    uploader_role: Optional[str] = None
+    client_id: Optional[str] = None

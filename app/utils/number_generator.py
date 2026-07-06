@@ -144,6 +144,31 @@ async def generate_invoice_number(db: AsyncSession) -> str:
     return f"INV-{year}-{current:04d}"
 
 
+async def generate_vessel_activity_number(db: AsyncSession) -> str:
+    """Generate a yearly sequential vessel activity number like VA-2026-0001."""
+    year = datetime.utcnow().year
+    key = f"seq_vessel_activity_{year}"
+
+    stmt = select(SystemSetting).where(SystemSetting.key == key).with_for_update()
+    result = await db.execute(stmt)
+    setting = result.scalar_one_or_none()
+
+    if setting is None:
+        setting = SystemSetting(
+            key=key,
+            value={"current": 1},
+            description=f"Vessel activity sequence counter for {year}",
+        )
+        db.add(setting)
+        current = 1
+    else:
+        current = setting.value.get("current", 0) + 1
+        setting.value = {"current": current}
+
+    await db.flush()
+    return f"VA-{year}-{current:04d}"
+
+
 async def generate_expense_voucher_number(db: AsyncSession) -> str:
     """Generate a yearly sequential expense voucher number like EXP-2026-0001."""
     year = datetime.utcnow().year

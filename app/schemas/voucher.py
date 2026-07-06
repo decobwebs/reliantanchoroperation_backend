@@ -1,8 +1,8 @@
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 from uuid import UUID
 from decimal import Decimal
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 from app.models.enums import VoucherCategory, VoucherStatus
 
 
@@ -33,6 +33,10 @@ class VoucherCreate(BaseModel):
         if v <= 0:
             raise ValueError("Amount must be greater than zero")
         return v
+
+
+class VoucherBulkCreate(BaseModel):
+    vouchers: List[VoucherCreate] = Field(..., min_length=1, max_length=50)
 
 
 class VoucherApproveRequest(BaseModel):

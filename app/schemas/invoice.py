@@ -50,5 +50,8 @@ class InvoiceOut(BaseModel):
     paid_at: Optional[datetime] = None
     notes: Optional[str] = None
     created_at: datetime
+    # Reconciliation — populated by the router, not stored on the model
+    advance_paid: Optional[Decimal] = None   # sum of advance payments received via PFI
+    balance_due: Optional[Decimal] = None    # total_amount - advance_paid
 
     model_config = {"from_attributes": True}

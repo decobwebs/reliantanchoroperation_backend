@@ -59,6 +59,7 @@ class Operation(Base):
     truck_operations = relationship("TruckOperation", back_populates="operation")
     rob_entries = relationship("RobEntry", back_populates="operation")
     vessel_discharge_events = relationship("VesselDischargeEvent", back_populates="operation")
+    vessel_activities = relationship("VesselActivity", back_populates="operation")
     bdns = relationship("BDN", back_populates="operation")
     pfis = relationship("PFI", foreign_keys="[PFI.operation_id]", back_populates="operation")
     source_pfi = relationship("PFI", foreign_keys="[Operation.pfi_id]", uselist=False)

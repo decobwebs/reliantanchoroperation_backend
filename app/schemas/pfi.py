@@ -111,6 +111,7 @@ class PfiOut(BaseModel):
     pfi_number: str
     operation_id: Optional[UUID] = None   # null until linked to operation
     linked_by: UUID
+    pfi_type: str = "client_proforma"     # client_proforma | supplier_invoice
     amount: Decimal
     currency: str
     exchange_rate: Optional[Decimal] = None

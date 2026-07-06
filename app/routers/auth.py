@@ -8,6 +8,7 @@ from app.database import get_db
 from app.dependencies import get_current_user, get_request_meta
 from app.models.user import User
 from app.models.enums import UserRole
+from app.models.audit import AuditLog
 from app.schemas.auth import (
     RegisterRequest, LoginRequest, RefreshRequest, LogoutRequest,
     ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest,
@@ -93,13 +94,22 @@ async def login(
     """Authenticate user and return Supabase JWT tokens."""
     token_data = await AuthService.login(body.email, body.password)
 
-    # Update last_login_at
+    # Update last_login_at and log the login event
     result = await db.execute(
         select(User).where(User.email == body.email)
     )
     user = result.scalar_one_or_none()
     if user:
         user.last_login_at = datetime.utcnow()
+        meta = get_request_meta(request)
+        db.add(AuditLog(
+            user_id=user.id,
+            action="LOGIN",
+            entity_type="auth",
+            changes={"email": user.email, "role": user.role.value},
+            ip_address=meta["ip"],
+            user_agent=meta["user_agent"],
+        ))
         await db.flush()
 
     response = {

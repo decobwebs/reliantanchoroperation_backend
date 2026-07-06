@@ -7,7 +7,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import Base
-from app.models.enums import PfiStatus, InvoiceStatus, VoucherStatus, VoucherCategory
+from app.models.enums import PfiType, PfiStatus, InvoiceStatus, VoucherStatus, VoucherCategory
 
 
 class PFI(Base):
@@ -28,6 +28,7 @@ class PFI(Base):
     client_ref = Column(String(200), nullable=True)  # client's own PFI reference number
     confirmed_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     confirmed_at = Column(DateTime(timezone=True), nullable=True)
+    pfi_type = Column(SAEnum(PfiType, name="pfi_type"), default=PfiType.client_proforma, nullable=False)
     status = Column(SAEnum(PfiStatus, name="pfi_status"), default=PfiStatus.pending, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
@@ -52,6 +53,7 @@ class Payment(Base):
     payment_method = Column(String(50), nullable=True)
     payment_reference = Column(String(200), nullable=True)
     payment_date = Column(DateTime(timezone=True), nullable=False)
+    invoice_id = Column(UUID(as_uuid=True), ForeignKey("invoices.id"), nullable=True)
     voucher_number = Column(String(50), unique=True, nullable=False)
     voucher_url = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
@@ -103,7 +105,7 @@ class Voucher(Base):
     recorded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
 
-    category = Column(SAEnum(VoucherCategory, name="voucher_category"), nullable=False)
+    category = Column(SAEnum(VoucherCategory, name="vouchercategory"), nullable=False)
     amount = Column(Numeric(15, 2), nullable=False)
     currency = Column(String(3), nullable=False)
     exchange_rate = Column(Numeric(12, 6), nullable=True)

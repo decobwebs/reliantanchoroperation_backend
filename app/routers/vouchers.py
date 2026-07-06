@@ -15,6 +15,7 @@ from app.models.enums import UserRole
 from app.schemas.common import StandardResponse
 from app.schemas.voucher import (
     VoucherCreate,
+    VoucherBulkCreate,
     VoucherApproveRequest,
     VoucherRejectRequest,
     VoucherAttachReceiptRequest,
@@ -47,6 +48,26 @@ async def create_voucher(
     return StandardResponse.ok(
         data=VoucherOut.model_validate(voucher).model_dump(),
         message=f"Voucher {voucher.voucher_number} recorded",
+    )
+
+
+@router.post(
+    "/operations/{operation_id}/vouchers/bulk",
+    response_model=StandardResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_vouchers_bulk(
+    operation_id: UUID,
+    body: VoucherBulkCreate,
+    current_user: User = _fm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Record multiple expense vouchers against an operation. Finance Manager only."""
+    vouchers = await VoucherService.create_vouchers(operation_id, body.vouchers, current_user, db)
+    items = [VoucherOut.model_validate(v).model_dump() for v in vouchers]
+    return StandardResponse.ok(
+        data=items,
+        message=f"{len(items)} voucher{'s' if len(items) != 1 else ''} recorded",
     )
 
 

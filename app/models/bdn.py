@@ -7,7 +7,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import Base
-from app.models.enums import RobEntryType, BdnStatus
+from app.models.enums import RobEntryType, BdnStatus, VesselActivityStatus
 
 
 class RobEntry(Base):
@@ -103,3 +103,52 @@ class VesselDischargeEvent(Base):
     destination_vessel = relationship("Vessel", foreign_keys=[destination_vessel_id], back_populates="discharge_events_as_dest")
     supervisor = relationship("User", foreign_keys=[supervisor_id])
     rob_entry = relationship("RobEntry", foreign_keys=[rob_entry_id])
+
+
+class VesselActivity(Base):
+    """Marine Supervisor oversight session — tracks vessel bunkering/discharge quantities and ROB reconciliation."""
+    __tablename__ = "vessel_activities"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    activity_number = Column(String(20), unique=True, nullable=False)
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=False)
+    vessel_id = Column(UUID(as_uuid=True), ForeignKey("vessels.id"), nullable=False)
+    assigned_to = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    assigned_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+
+    # Quantity tracking — Full Operation flow
+    truck_delivered_mt = Column(Numeric(12, 3), nullable=True)      # total from truck operations
+    vessel_received_mt = Column(Numeric(12, 3), nullable=True)      # measured at vessel
+    variance_mt = Column(Numeric(12, 3), nullable=True)             # truck_delivered - vessel_received
+
+    # ROB reconciliation
+    initial_rob_mt = Column(Numeric(12, 3), nullable=True)           # BM-set vessel ROB at activity creation
+    previous_rob_mt = Column(Numeric(12, 3), nullable=True)         # ROB before bunkering starts
+    new_rob_mt = Column(Numeric(12, 3), nullable=True)              # previous_rob + vessel_received
+    quantity_discharged_mt = Column(Numeric(12, 3), nullable=True)  # discharge to another vessel (optional)
+    final_rob_mt = Column(Numeric(12, 3), nullable=True)            # new_rob - quantity_discharged
+
+    # Physical measurements
+    product_type = Column(String(50), nullable=True)
+    temperature_celsius = Column(Numeric(6, 2), nullable=True)
+    density = Column(Numeric(8, 4), nullable=True)
+    spillage_mt = Column(Numeric(12, 3), nullable=True)
+
+    # Bunkering / discharge timing
+    bunkering_start_at = Column(DateTime(timezone=True), nullable=True)
+    bunkering_end_at = Column(DateTime(timezone=True), nullable=True)
+    discharge_start_at = Column(DateTime(timezone=True), nullable=True)
+    discharge_end_at = Column(DateTime(timezone=True), nullable=True)
+
+    status = Column(SAEnum(VesselActivityStatus, name="vessel_activity_status"), default=VesselActivityStatus.pending, nullable=False)
+    notes = Column(Text, nullable=True)
+    completion_notes = Column(Text, nullable=True)
+    started_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    operation = relationship("Operation", back_populates="vessel_activities")
+    vessel = relationship("Vessel", back_populates="vessel_activities")
+    assignee = relationship("User", foreign_keys=[assigned_to])
+    assigner = relationship("User", foreign_keys=[assigned_by])

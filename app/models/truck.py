@@ -56,6 +56,12 @@ class TruckOperation(Base):
     loading_location = Column(Text, nullable=True)
     discharge_location = Column(Text, nullable=True)
     destination_vessel_id = Column(UUID(as_uuid=True), ForeignKey("vessels.id"), nullable=True)
+    destination_vessel_name = Column(Text, nullable=True)  # free-text for vessels not in system
+
+    # Discharge approval gate (null = no vessel, False = pending BM approval, True = approved)
+    discharge_approved = Column(Boolean, nullable=True)
+    discharge_approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    discharge_approved_at = Column(DateTime(timezone=True), nullable=True)
 
     # Full movement timeline
     departed_parking_at = Column(DateTime(timezone=True), nullable=True)   # left depot/yard
@@ -89,6 +95,7 @@ class TruckOperation(Base):
     logger = relationship("User", foreign_keys=[logged_by])
     supervisor = relationship("User", foreign_keys=[supervisor_id])
     destination_vessel = relationship("Vessel", foreign_keys=[destination_vessel_id], back_populates="truck_operations")
+    discharge_approver = relationship("User", foreign_keys=[discharge_approved_by])
     rob_entries = relationship("RobEntry", back_populates="truck_operation")
     safety_audit = relationship("TruckSafetyAudit", back_populates="truck_operation", uselist=False)
 

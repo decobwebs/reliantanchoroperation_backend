@@ -121,6 +121,11 @@ class BdnStatus(str, enum.Enum):
     rejected = "rejected"
 
 
+class PfiType(str, enum.Enum):
+    client_proforma = "client_proforma"   # Reliant Anchor → Client (revenue document)
+    supplier_invoice = "supplier_invoice" # Supplier → Reliant Anchor (expense document)
+
+
 class PfiStatus(str, enum.Enum):
     pending = "pending"                     # PFI received, awaiting FM review
     confirmed = "confirmed"                 # FM confirmed PFI is valid (pre-payment)
@@ -149,6 +154,13 @@ class VoucherCategory(str, enum.Enum):
     customs = "customs"
     inspection = "inspection"
     other = "other"
+
+
+class VesselActivityStatus(str, enum.Enum):
+    pending = "pending"       # assigned, awaiting marine supervisor
+    active = "active"         # supervisor started recording
+    completed = "completed"   # all done, final report submitted
+    cancelled = "cancelled"
 
 
 class InvoiceStatus(str, enum.Enum):
@@ -188,3 +200,5 @@ class NotificationType(str, enum.Enum):
     system = "system"
     operation_active = "operation_active"      # operation went live
     completion_pending = "completion_pending"  # supervisor submitted completion report
+    vessel_activity_assigned = "vessel_activity_assigned"   # marine manager assigned to vessel activity
+    vessel_activity_completed = "vessel_activity_completed" # marine manager completed vessel activity
