@@ -1061,29 +1061,41 @@ class TruckService:
         if not feedback:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Feedback not found")
 
-        if feedback.status not in (FeedbackStatus.pending, FeedbackStatus.resubmitted):
+        # Idempotent: already-approved feedback is a no-op (handles double-clicks
+        # and stale UI that still shows a "pending" card after activation).
+        if feedback.status == FeedbackStatus.approved:
+            return feedback
+
+        if feedback.status == FeedbackStatus.rejected:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Cannot approve feedback with status '{feedback.status.value}'",
+                detail="This feedback was rejected and cannot be approved. Ask the officer to resubmit.",
             )
 
         feedback.status = FeedbackStatus.approved
         feedback.reviewed_by = current_user.id
         feedback.reviewed_at = datetime.utcnow()
 
-        # Transition operation to active (feedback approval activates the operation)
-        await _transition_operation(
-            operation, OperationStatus.active, current_user, db,
-            reason="Feedback approved — operation is now active"
-        )
+        # Activate the operation ONLY if it is still awaiting this approval.
+        # If it has already advanced (e.g. it was moved via the status modal),
+        # just record the approval instead of forcing an illegal transition.
+        activated = operation.status == OperationStatus.feedback_submitted
+        if activated:
+            await _transition_operation(
+                operation, OperationStatus.active, current_user, db,
+                reason="Feedback approved — operation is now active"
+            )
 
         # Notify the submitter
         await notify(
             db=db,
             user_id=feedback.submitted_by,
             type_="approved",
-            title="Feedback Approved — Operation Active",
-            message=f"Your truck feedback for operation {operation.operation_number} has been approved. Operation is now active.",
+            title="Feedback Approved" + (" — Operation Active" if activated else ""),
+            message=(
+                f"Your truck feedback for operation {operation.operation_number} has been approved."
+                + (" Operation is now active." if activated else "")
+            ),
             priority="high",
             operation_id=operation_id,
             action_url=f"/operations/{operation_id}",
@@ -1092,17 +1104,19 @@ class TruckService:
             wa_kwargs={"operation_number": operation.operation_number},
         )
 
-        # Notify all finance managers
-        from app.models.enums import UserRole as _UserRole
-        fm_result = await db.execute(select(User).where(User.role == _UserRole.finance_manager))
-        for fm in fm_result.scalars().all():
-            await notify(
-                db=db, user_id=fm.id, type_="operation_active",
-                title=f"Operation Active — {operation.operation_number}",
-                message=f"Operation {operation.operation_number} is now active. Finance processing may be required.",
-                priority="normal",
-                operation_id=operation_id,
-            )
+        # Notify all finance managers — only when this approval actually activated
+        # the operation (avoids duplicate "now active" alerts if it already advanced).
+        if activated:
+            from app.models.enums import UserRole as _UserRole
+            fm_result = await db.execute(select(User).where(User.role == _UserRole.finance_manager))
+            for fm in fm_result.scalars().all():
+                await notify(
+                    db=db, user_id=fm.id, type_="operation_active",
+                    title=f"Operation Active — {operation.operation_number}",
+                    message=f"Operation {operation.operation_number} is now active. Finance processing may be required.",
+                    priority="normal",
+                    operation_id=operation_id,
+                )
 
         audit = AuditLog(
             user_id=current_user.id,
