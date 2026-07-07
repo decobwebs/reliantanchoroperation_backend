@@ -27,9 +27,16 @@ RATE_LIMITS: dict = {
 
 
 def _client_ip(request: Request) -> str:
+    # Use the RIGHTMOST X-Forwarded-For entry — the address appended by the trusted
+    # edge proxy (e.g. Render). The leftmost entry is client-supplied and spoofable,
+    # which let an attacker rotate it to evade the login limit.
+    # NOTE: still per-process/in-memory — multi-instance limiting needs a shared store
+    # (Redis) and is intentionally out of scope here.
     forwarded = request.headers.get("X-Forwarded-For")
     if forwarded:
-        return forwarded.split(",")[0].strip()
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            return parts[-1]
     return request.client.host if request.client else "unknown"
 
 

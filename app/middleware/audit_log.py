@@ -17,8 +17,11 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
+from sqlalchemy import select
+
 from app.database import AsyncSessionLocal
 from app.models.audit import AuditLog
+from app.models.user import User
 
 logger = logging.getLogger("raoms.audit")
 
@@ -26,7 +29,8 @@ _WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 _SKIP_EXACT = {"/api/v1/auth/refresh", "/api/v1/health"}
 
 
-def _user_id_from_request(request: Request) -> Optional[UUID]:
+def _auth_id_from_request(request: Request) -> Optional[UUID]:
+    """The Supabase auth_id (`sub`) from the bearer token — NOT the local users.id."""
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return None
@@ -60,8 +64,8 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
         if path in _SKIP_EXACT:
             return response
 
-        user_id = _user_id_from_request(request)
-        if not user_id:
+        auth_id = _auth_id_from_request(request)
+        if not auth_id:
             return response
 
         duration_ms = int((time.perf_counter() - t0) * 1000)
@@ -69,8 +73,15 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
 
         try:
             async with AsyncSessionLocal() as db:
+                # AuditLog.user_id FKs users.id, but the JWT `sub` is the Supabase
+                # auth_id — resolve the local user before inserting, or the FK fails.
+                local_user_id = (
+                    await db.execute(select(User.id).where(User.auth_id == auth_id))
+                ).scalar_one_or_none()
+                if not local_user_id:
+                    return response
                 entry = AuditLog(
-                    user_id=user_id,
+                    user_id=local_user_id,
                     action=f"{method} {path}",
                     entity_type="api",
                     changes={
@@ -84,6 +95,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                 db.add(entry)
                 await db.commit()
         except Exception as exc:
-            logger.warning("audit-log middleware write failed: %s", exc)
+            # Non-blocking: auditing must never break the request, but surface the error.
+            logger.error("audit-log middleware write failed: %s", exc, exc_info=True)
 
         return response

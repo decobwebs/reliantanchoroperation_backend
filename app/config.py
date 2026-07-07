@@ -37,8 +37,9 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_WHATSAPP_FROM: str = "whatsapp:+14155238886"  # Twilio sandbox default
 
-    # App settings
-    FLASK_ENV: str = "development"
+    # App settings — default to production so a missing FLASK_ENV never fails open
+    # (public /docs, verbose error strings). Local dev sets FLASK_ENV=development.
+    FLASK_ENV: str = "production"
     AUTO_ESCALATION_TIMEOUT_HOURS: int = 4
     MAX_UPLOAD_SIZE_MB: int = 10
 

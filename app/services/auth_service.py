@@ -47,10 +47,10 @@ def _error_detail(response: httpx.Response, fallback: str) -> str:
     return fallback
 
 
-async def _get_jwks() -> List[Dict]:
-    """Fetch and cache Supabase JWKS keys."""
+async def _get_jwks(force_refresh: bool = False) -> List[Dict]:
+    """Fetch and cache Supabase JWKS keys. force_refresh re-fetches (e.g. on key rotation)."""
     global _jwks_cache
-    if _jwks_cache is not None:
+    if _jwks_cache is not None and not force_refresh:
         return _jwks_cache
     try:
         async with httpx.AsyncClient() as client:
@@ -60,6 +60,17 @@ async def _get_jwks() -> List[Dict]:
     except httpx.RequestError as exc:
         raise _service_unavailable(exc, "Supabase JWKS") from exc
     return _jwks_cache
+
+
+def _find_jwk(keys: List[Dict], kid: Optional[str]) -> Optional[Dict]:
+    """Match a signing key strictly by kid. Only fall back to a lone key when the
+    token carries no kid. Never guess keys[0] on a kid mismatch."""
+    if kid:
+        for key_data in keys:
+            if key_data.get("kid") == kid:
+                return key_data
+        return None
+    return keys[0] if len(keys) == 1 else None
 
 
 class AuthService:
@@ -74,24 +85,22 @@ class AuthService:
             # Get unverified header to find matching key
             header = jwt.get_unverified_header(token)
             token_kid = header.get("kid")
-            token_alg = header.get("alg", "ES256")
+            # Pin the algorithm server-side — never trust the token's own `alg`.
+            token_alg = settings.JWT_ALGORITHM
 
             keys = await _get_jwks()
+            matching_key = _find_jwk(keys, token_kid)
 
-            # Find matching key by kid
-            matching_key = None
-            for key_data in keys:
-                if token_kid and key_data.get("kid") == token_kid:
-                    matching_key = key_data
-                    break
+            if matching_key is None and token_kid:
+                # kid not in cache — signing keys may have rotated. Refresh once.
+                keys = await _get_jwks(force_refresh=True)
+                matching_key = _find_jwk(keys, token_kid)
 
-            if not matching_key and keys:
-                matching_key = keys[0]  # fallback to first key
-
-            if not matching_key:
+            if matching_key is None:
                 raise HTTPException(
-                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                    detail="No JWKS keys available for JWT verification",
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Signing key not found for token",
+                    headers={"WWW-Authenticate": "Bearer"},
                 )
 
             public_key = jwk.construct(matching_key, algorithm=token_alg)
@@ -156,6 +165,23 @@ class AuthService:
         return user
 
     @staticmethod
+    async def _delete_supabase_auth_user(auth_id: uuid.UUID) -> None:
+        """Best-effort deletion of a Supabase auth user — used to undo a failed local sync
+        so an orphaned auth account can't wedge re-registration."""
+        try:
+            async with httpx.AsyncClient() as client:
+                await client.delete(
+                    f"{AuthService.SUPABASE_AUTH_URL}/admin/users/{auth_id}",
+                    headers={
+                        "apikey": settings.SUPABASE_SERVICE_KEY,
+                        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}",
+                    },
+                    timeout=30.0,
+                )
+        except Exception:
+            pass  # best-effort; must not mask the original error
+
+    @staticmethod
     async def register(email: str, password: str, full_name: str, phone: Optional[str], role: UserRole, db: AsyncSession) -> Dict[str, Any]:
         """Register a new user via Supabase Auth and sync to local DB."""
         try:
@@ -188,25 +214,40 @@ class AuthService:
         supabase_user = response.json()
         auth_id = uuid.UUID(supabase_user["id"])
 
-        # Check if already synced (edge case)
-        existing = await db.execute(select(User).where(User.auth_id == auth_id))
-        if existing.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="User already registered",
-            )
+        try:
+            # Check if already synced (edge case)
+            existing = await db.execute(select(User).where(User.auth_id == auth_id))
+            if existing.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="User already registered",
+                )
 
-        user = User(
-            auth_id=auth_id,
-            email=email,
-            full_name=full_name,
-            phone=phone,
-            role=role,
-        )
-        db.add(user)
-        await db.flush()
-        await db.refresh(user)
-        return user
+            # Guard against a local email collision under a different auth_id
+            email_existing = await db.execute(select(User).where(User.email == email))
+            if email_existing.scalar_one_or_none():
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="A user with this email already exists",
+                )
+
+            user = User(
+                auth_id=auth_id,
+                email=email,
+                full_name=full_name,
+                phone=phone,
+                role=role,
+            )
+            db.add(user)
+            await db.flush()
+            await db.refresh(user)
+            return user
+        except Exception:
+            # Local sync failed — undo the Supabase auth account we just created so it
+            # isn't orphaned (which would block re-registration with the same email).
+            await db.rollback()
+            await AuthService._delete_supabase_auth_user(auth_id)
+            raise
 
     @staticmethod
     async def login(email: str, password: str) -> Dict[str, Any]:

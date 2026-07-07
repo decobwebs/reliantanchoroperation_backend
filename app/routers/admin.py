@@ -95,6 +95,23 @@ async def update_user(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
 
     update_data = body.model_dump(exclude_unset=True)
+
+    # Guard against locking the whole org out of BM-gated administration: don't allow
+    # demoting or deactivating the last active Bunker Manager.
+    demoting = "role" in update_data and update_data["role"] != UserRole.bunker_manager
+    deactivating = update_data.get("is_active") is False
+    if user.role == UserRole.bunker_manager and (demoting or deactivating):
+        active_bm_count = await db.execute(
+            select(func.count()).select_from(User).where(
+                and_(User.role == UserRole.bunker_manager, User.is_active == True)
+            )
+        )
+        if (active_bm_count.scalar_one() or 0) <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Cannot demote or deactivate the last active Bunker Manager.",
+            )
+
     for field, value in update_data.items():
         setattr(user, field, value)
     user.updated_at = datetime.utcnow()
@@ -222,6 +239,14 @@ async def update_setting(
 
     if not setting:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Setting '{key}' not found")
+
+    # Never let an admin overwrite the sequence counters (seq_operation_*, seq_bdn_*,
+    # seq_pfi_*, …) — editing them would corrupt document/operation numbering.
+    if key.startswith("seq_"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Sequence counters are managed by the system and cannot be edited.",
+        )
 
     new_value = body.get("value")
     if new_value is None:

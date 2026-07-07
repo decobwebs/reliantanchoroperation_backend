@@ -227,6 +227,11 @@ async def send_whatsapp_async(to_phone: str, template_key: str, **kwargs) -> Non
     )
 
 
+# Retain references to in-flight background sends so the event loop doesn't
+# garbage-collect them before completion (create_task holds only a weak ref).
+_pending_tasks: set = set()
+
+
 def dispatch(to_phone: Optional[str], template_key: str, **kwargs) -> None:
     """
     Fire-and-forget dispatcher.  Call this from anywhere — it schedules the
@@ -240,11 +245,17 @@ def dispatch(to_phone: Optional[str], template_key: str, **kwargs) -> None:
         return  # User has no phone number — silently skip
 
     try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(send_whatsapp_async(to_phone, template_key, **kwargs))
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    try:
+        if loop is not None:
+            task = loop.create_task(send_whatsapp_async(to_phone, template_key, **kwargs))
+            _pending_tasks.add(task)
+            task.add_done_callback(_pending_tasks.discard)
         else:
-            # Fallback for sync contexts (e.g. tests)
-            loop.run_until_complete(send_whatsapp_async(to_phone, template_key, **kwargs))
+            # Sync context (e.g. tests) — run to completion in a fresh loop.
+            asyncio.run(send_whatsapp_async(to_phone, template_key, **kwargs))
     except Exception as exc:
         logger.error("WhatsApp dispatch error: %s", str(exc))

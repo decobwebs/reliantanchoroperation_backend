@@ -60,7 +60,9 @@ async def bootstrap_admin(
     Returns 403 if any bunker_manager already exists in the system.
     This is a bootstrap-only route — use /admin/users for all subsequent user creation.
     """
-    from sqlalchemy import func as sql_func
+    from sqlalchemy import func as sql_func, text as sql_text
+    # Serialize concurrent bootstrap attempts so only the first can create a BM.
+    await db.execute(sql_text("SELECT pg_advisory_xact_lock(hashtext('bootstrap_first_bm'))"))
     existing = await db.execute(
         select(sql_func.count()).select_from(User).where(User.role == UserRole.bunker_manager)
     )

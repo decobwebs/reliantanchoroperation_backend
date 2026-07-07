@@ -2,6 +2,7 @@
 Email service via Resend API.
 Gracefully degrades (logs warning) when RESEND_API_KEY is not configured.
 """
+import html
 import logging
 from typing import List, Optional
 
@@ -10,6 +11,11 @@ import httpx
 from app.config import settings
 
 logger = logging.getLogger("raoms.email")
+
+
+def _esc(value) -> str:
+    """HTML-escape a value before interpolating it into an email body."""
+    return html.escape(str(value)) if value is not None else ""
 
 RESEND_API_URL = "https://api.resend.com/emails"
 
@@ -73,7 +79,7 @@ async def email_task_assigned(
 ) -> bool:
     subject = f"Task Assigned — Operation {operation_number}"
     html = f"""
-    <p>Hello {recipient_name},</p>
+    <p>Hello {_esc(recipient_name)},</p>
     <p>You have been assigned a <strong>{task_type.replace('_', ' ').title()}</strong>
     task on operation <strong>{operation_number}</strong>.</p>
     <p>Please log in to the RAOMS portal to review and accept your assignment.</p>
@@ -92,7 +98,7 @@ async def email_pfi_linked(
 ) -> bool:
     subject = f"PFI Ready for Payment — {pfi_number}"
     html = f"""
-    <p>Hello {recipient_name},</p>
+    <p>Hello {_esc(recipient_name)},</p>
     <p>A Pro-Forma Invoice has been linked to operation <strong>{operation_number}</strong>:</p>
     <ul>
       <li><strong>PFI Number:</strong> {pfi_number}</li>
@@ -112,7 +118,7 @@ async def email_payment_confirmed(
 ) -> bool:
     subject = f"Payment Confirmed — Operation {operation_number}"
     html = f"""
-    <p>Hello {recipient_name},</p>
+    <p>Hello {_esc(recipient_name)},</p>
     <p>Payment voucher <strong>{voucher_number}</strong> for operation
     <strong>{operation_number}</strong> has been confirmed.</p>
     <p>The operation is now cleared to proceed to vessel operations.</p>
@@ -130,7 +136,7 @@ async def email_bdn_approved(
 ) -> bool:
     subject = f"BDN Approved — {bdn_number}"
     html = f"""
-    <p>Hello {recipient_name},</p>
+    <p>Hello {_esc(recipient_name)},</p>
     <p>Bunker Delivery Note <strong>{bdn_number}</strong> for operation
     <strong>{operation_number}</strong> has been approved.</p>
     <ul>
@@ -149,10 +155,10 @@ async def email_feedback_rejected(
 ) -> bool:
     subject = f"Truck Feedback Rejected — Operation {operation_number}"
     html = f"""
-    <p>Hello {recipient_name},</p>
+    <p>Hello {_esc(recipient_name)},</p>
     <p>Your truck readiness feedback for operation <strong>{operation_number}</strong>
     has been rejected.</p>
-    <p><strong>Reason:</strong> {reason}</p>
+    <p><strong>Reason:</strong> {_esc(reason)}</p>
     <p>Please address the issue and resubmit.</p>
     <p>— Reliant Anchor Operations Team</p>
     """

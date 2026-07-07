@@ -16,8 +16,19 @@ from app.models.enums import UserRole, DocType
 from app.schemas.common import StandardResponse, PaginatedResponse
 from app.schemas.document import DocumentOut, DocumentHubOut
 from app.services.document_service import DocumentService, UnifiedDocItem, create_signed_supabase_url
+from app.services.operation_service import OperationService
+from app.config import settings
 
 router = APIRouter(tags=["Documents"])
+
+
+async def _assert_can_access_operation(operation_id: UUID, current_user: User, db: AsyncSession) -> None:
+    """Object-level authz: raises 403/404 unless the caller may see this operation.
+
+    Reuses the operation visibility rules (BM/FM = all, client = own, task-assigned
+    staff = their operations) so document access can never leak across clients.
+    """
+    await OperationService.get_operation(operation_id, current_user, db)
 
 
 @router.post(
@@ -35,6 +46,7 @@ async def upload_document(
 ):
     """Upload a file to Supabase Storage and register it on the operation.
     Accepts multipart/form-data. Max 10MB. Allowed: PDF, images, Office docs, CSV, TXT."""
+    await _assert_can_access_operation(operation_id, current_user, db)
     doc = await DocumentService.upload_document(
         operation_id, file, document_type, description, current_user, db
     )
@@ -60,6 +72,17 @@ async def register_document_url(
     db: AsyncSession = Depends(get_db),
 ):
     """Register a document by URL (for when the client handles the upload to storage directly)."""
+    await _assert_can_access_operation(operation_id, current_user, db)
+    # Only accept Supabase storage URLs / bare storage paths — never arbitrary
+    # external links (which would be stored verbatim and later clickable in the hub).
+    _u = (file_url or "").strip()
+    _allowed = (not _u.startswith(("http://", "https://"))) or _u.startswith(settings.SUPABASE_URL)
+    if not _u or not _allowed:
+        from fastapi import HTTPException
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="file_url must be a Supabase storage URL or path.",
+        )
     doc = await DocumentService.register_document_url(
         operation_id, document_type, file_name, file_url, description, mime_type, current_user, db
     )
@@ -76,7 +99,8 @@ async def list_documents(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List documents for an operation. All authenticated staff can view."""
+    """List documents for an operation. Restricted to users who can see the operation."""
+    await _assert_can_access_operation(operation_id, current_user, db)
     # Only BM can view deleted docs
     if include_deleted and current_user.role != UserRole.bunker_manager:
         include_deleted = False
@@ -213,6 +237,9 @@ async def get_document_download_url(
     if not doc:
         from fastapi import HTTPException
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+
+    # Object-level authz: caller must be allowed to see this document's operation.
+    await _assert_can_access_operation(doc.operation_id, current_user, db)
 
     meta = get_request_meta(request)
     audit = AuditLog(

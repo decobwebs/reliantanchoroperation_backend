@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_
 
 from app.models.finance import Voucher
+from app.models.enums import VoucherStatus
 from app.models.operation import Operation
 from app.models.audit import AuditLog
 from app.models.user import User
@@ -185,6 +186,12 @@ class VoucherService:
         voucher_id: UUID, receipt_url: str, current_user: User, db: AsyncSession
     ) -> Voucher:
         voucher = await VoucherService._get_or_404(voucher_id, db)
+        # Don't let a receipt be swapped after the voucher is finalized.
+        if voucher.status in (VoucherStatus.approved, VoucherStatus.rejected):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot change the receipt of a {voucher.status.value} voucher.",
+            )
         voucher.receipt_url = receipt_url
         await db.flush()
         await db.commit()
@@ -208,7 +215,14 @@ class VoucherService:
     ) -> List[Voucher]:
         stmt = select(Voucher).order_by(Voucher.created_at.desc())
         if status_filter:
-            stmt = stmt.where(Voucher.status == status_filter)
+            try:
+                status_enum = VoucherStatus(status_filter)
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid voucher status '{status_filter}'.",
+                )
+            stmt = stmt.where(Voucher.status == status_enum)
         if operation_id:
             stmt = stmt.where(Voucher.operation_id == operation_id)
         result = await db.execute(stmt)
