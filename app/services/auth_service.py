@@ -73,6 +73,22 @@ def _find_jwk(keys: List[Dict], kid: Optional[str]) -> Optional[Dict]:
     return keys[0] if len(keys) == 1 else None
 
 
+def _alg_for_jwk(key_data: Dict) -> str:
+    """Determine the signing algorithm from the TRUSTED JWKS key (fetched from
+    Supabase over TLS) — never from the attacker-controlled token header, and never
+    from a possibly-misconfigured JWT_ALGORITHM setting. Supabase signs with EC/ES256."""
+    if key_data.get("alg"):
+        return key_data["alg"]
+    kty = key_data.get("kty")
+    if kty == "EC":
+        return "ES256"
+    if kty == "RSA":
+        return "RS256"
+    if kty == "oct":
+        return "HS256"
+    return settings.JWT_ALGORITHM
+
+
 class AuthService:
     """Handles Supabase Auth integration and JWT validation."""
 
@@ -85,8 +101,6 @@ class AuthService:
             # Get unverified header to find matching key
             header = jwt.get_unverified_header(token)
             token_kid = header.get("kid")
-            # Pin the algorithm server-side — never trust the token's own `alg`.
-            token_alg = settings.JWT_ALGORITHM
 
             keys = await _get_jwks()
             matching_key = _find_jwk(keys, token_kid)
@@ -103,12 +117,15 @@ class AuthService:
                     headers={"WWW-Authenticate": "Bearer"},
                 )
 
-            public_key = jwk.construct(matching_key, algorithm=token_alg)
+            # Algorithm comes from the trusted JWK, not the token header/settings.
+            key_alg = _alg_for_jwk(matching_key)
+
+            public_key = jwk.construct(matching_key, algorithm=key_alg)
 
             payload = jwt.decode(
                 token,
                 public_key,
-                algorithms=[token_alg],
+                algorithms=[key_alg],
                 options={"verify_aud": False},
             )
             return payload
