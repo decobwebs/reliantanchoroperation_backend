@@ -55,8 +55,21 @@ async def get_db() -> AsyncSession:
                     raise HTTPException(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                         detail=(
-                            "Database host could not be resolved. Check DATABASE_URL, "
+                            "Database host could not be resolved (DNS). Check DATABASE_URL, "
                             "DNS/internet connectivity, and the Supabase pooler hostname."
+                        ),
+                    )
+                # The pooler resolves and accepts TCP but rejects the tenant. This is
+                # NOT a DNS problem — reporting it as one sends debugging the wrong way.
+                msg = str(exc)
+                if "ENOTFOUND" in msg or "Tenant or user not found" in msg.lower().replace("tenant/user", "tenant or user"):
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            "Database pooler rejected the connection: tenant/user not found. "
+                            "DNS and the network are fine — the pooler connection string is stale. "
+                            "Copy the current URI from Supabase → Project Settings → Database → "
+                            "Connection pooling, and update DATABASE_URL / SYNC_DATABASE_URL."
                         ),
                     )
                 exc = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
