@@ -67,9 +67,10 @@ async def get_db() -> AsyncSession:
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                         detail=(
                             "Database pooler rejected the connection: tenant/user not found. "
-                            "DNS and the network are fine — the pooler connection string is stale. "
-                            "Copy the current URI from Supabase → Project Settings → Database → "
-                            "Connection pooling, and update DATABASE_URL / SYNC_DATABASE_URL."
+                            "DNS and the network are fine. This is USUALLY a transient Supabase "
+                            "pooler fault that clears on its own — retry in a few minutes before "
+                            "changing anything. Only if it persists, verify the pooler host/user "
+                            "against Supabase → Connect → Session pooler."
                         ),
                     )
                 exc = getattr(exc, "__cause__", None) or getattr(exc, "__context__", None)
