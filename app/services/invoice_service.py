@@ -49,9 +49,19 @@ class InvoiceService:
         if invoice.bdn_id:
             bdn = await db.get(BDN, invoice.bdn_id)
 
-        # Operation-bound: client is eager-loaded on the operation.
-        # Standalone: no operation, so load the billed client directly.
-        client = operation.client if operation else await db.get(User, invoice.client_id)
+        # Resolve who to bill, in order:
+        #   operation-bound -> the operation's client (eager-loaded)
+        #   standalone + registered client -> load that user
+        #   standalone + manual client -> the free-text name/email on the invoice
+        client = None
+        if operation:
+            client = operation.client
+        elif invoice.client_id:
+            client = await db.get(User, invoice.client_id)
+
+        client_name = client.full_name if client else (invoice.client_name or "-")
+        client_email = client.email if client else (invoice.client_email or "-")
+        client_phone = client.phone if client else None
 
         pdf_bytes = generate_invoice_pdf(
             invoice_number=invoice.invoice_number,
@@ -71,9 +81,9 @@ class InvoiceService:
                 bdn.quantity_delivered_mt if bdn
                 else ((operation.actual_volume_mt or operation.expected_volume_mt) if operation else None)
             ),
-            client_name=client.full_name if client else "-",
-            client_email=client.email if client else "-",
-            client_phone=client.phone if client else None,
+            client_name=client_name,
+            client_email=client_email,
+            client_phone=client_phone,
             generated_by_name=generated_by.full_name,
             amount=invoice.amount,
             tax_amount=invoice.tax_amount,
@@ -238,17 +248,20 @@ class InvoiceService:
         requirement, operation status gates, and the operation -> 'invoiced'
         status side-effect — because none of them apply without an operation.
         """
-        client = await db.get(User, data.client_id)
-        if not client:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Client not found",
-            )
-        if client.role != UserRole.client:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Invoices can only be billed to a client user",
-            )
+        # A registered client must exist and actually be a client. A manual client
+        # (free-text name) is accepted as-is — that's the point of the escape hatch.
+        if data.client_id:
+            client = await db.get(User, data.client_id)
+            if not client:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Client not found",
+                )
+            if client.role != UserRole.client:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Invoices can only be billed to a client user",
+                )
 
         total = data.amount + data.tax_amount
         invoice_number = await generate_invoice_number(db)
@@ -258,6 +271,8 @@ class InvoiceService:
             operation_id=None,
             bdn_id=None,
             client_id=data.client_id,
+            client_name=data.client_name,
+            client_email=data.client_email,
             generated_by=current_user.id,
             amount=data.amount,
             currency=data.currency,
@@ -282,7 +297,8 @@ class InvoiceService:
                 "invoice_number": invoice_number,
                 "amount": str(data.amount),
                 "currency": data.currency,
-                "client_id": str(data.client_id),
+                "client_id": str(data.client_id) if data.client_id else None,
+                "client_name": data.client_name,
                 "description": data.description,
             },
         ))

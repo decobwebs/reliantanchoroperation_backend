@@ -3,7 +3,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 
 class InvoiceCreate(BaseModel):
@@ -27,8 +27,13 @@ class StandaloneInvoiceCreate(BaseModel):
     Unlike InvoiceCreate, client_id cannot be derived from an operation and the
     PDF line item cannot be built from operation type/product/route — so both are
     supplied explicitly here.
+
+    The client is EITHER a registered user (client_id) OR a manually-entered
+    name/email for a one-off client who was never onboarded. Exactly one is required.
     """
-    client_id: UUID
+    client_id: Optional[UUID] = None
+    client_name: Optional[str] = None     # manual client (when client_id is absent)
+    client_email: Optional[str] = None
     description: str                     # line item text on the PDF
     amount: Decimal
     currency: str = "USD"
@@ -42,7 +47,7 @@ class StandaloneInvoiceCreate(BaseModel):
     def upper_currency(cls, v: str) -> str:
         return v.upper().strip()
 
-    @field_validator("description", "notes", mode="before")
+    @field_validator("description", "notes", "client_name", "client_email", mode="before")
     @classmethod
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
@@ -53,6 +58,15 @@ class StandaloneInvoiceCreate(BaseModel):
         if not v or not v.strip():
             raise ValueError("Description is required for a standalone invoice")
         return v
+
+    @model_validator(mode="after")
+    def require_a_client(self):
+        """Bill either a registered client or a manually-entered one — not neither."""
+        if not self.client_id and not self.client_name:
+            raise ValueError(
+                "Provide either client_id (registered client) or client_name (manual client)"
+            )
+        return self
 
     @field_validator("amount")
     @classmethod
@@ -84,7 +98,9 @@ class InvoiceOut(BaseModel):
     invoice_number: str
     operation_id: Optional[UUID] = None   # null for standalone (ad-hoc) invoices
     bdn_id: Optional[UUID] = None
-    client_id: UUID
+    client_id: Optional[UUID] = None      # null when billed to a manual client
+    client_name: Optional[str] = None
+    client_email: Optional[str] = None
     generated_by: UUID
     amount: Decimal
     currency: str

@@ -73,7 +73,11 @@ class Invoice(Base):
     # Nullable: Finance can raise ad-hoc invoices outside any operation.
     operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=True)
     bdn_id = Column(UUID(as_uuid=True), ForeignKey("bdns.id"), nullable=True)
-    client_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    # Nullable: a standalone invoice may be billed to a manually-entered client
+    # who isn't a registered user (client_name/client_email carry it instead).
+    client_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    client_name = Column(String(255), nullable=True)
+    client_email = Column(String(255), nullable=True)
     generated_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     amount = Column(Numeric(15, 2), nullable=False)
     currency = Column(String(3), nullable=False)
