@@ -1,9 +1,10 @@
 """
 Invoice endpoints — Finance Manager generates and manages invoices.
 """
+from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -11,7 +12,13 @@ from app.dependencies import require_roles
 from app.models.user import User
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse
-from app.schemas.invoice import InvoiceCreate, InvoiceSendRequest, InvoiceMarkPaidRequest, InvoiceOut
+from app.schemas.invoice import (
+    InvoiceCreate,
+    StandaloneInvoiceCreate,
+    InvoiceSendRequest,
+    InvoiceMarkPaidRequest,
+    InvoiceOut,
+)
 from app.services.document_service import create_signed_supabase_url
 from app.services.invoice_service import InvoiceService
 
@@ -54,6 +61,40 @@ async def list_invoices(
 ):
     """List all invoices for an operation. FM and BM."""
     invoices = await InvoiceService.list_invoices(operation_id, db)
+    items = [await _serialize_invoice(inv, db) for inv in invoices]
+    return StandardResponse.ok(data=items, message="Invoices retrieved")
+
+
+@router.post("/invoices", response_model=StandardResponse, status_code=201)
+async def create_standalone_invoice(
+    body: StandaloneInvoiceCreate,
+    current_user: User = _fm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Create an ad-hoc invoice not tied to any operation. Finance Manager only.
+
+    Unlike the operation-scoped route this has no BDN requirement and does not
+    touch any operation's status.
+    """
+    invoice = await InvoiceService.create_standalone_invoice(body, current_user, db)
+    return StandardResponse.ok(
+        data=await _serialize_invoice(invoice, db),
+        message=f"Invoice {invoice.invoice_number} created",
+    )
+
+
+# NOTE: must stay ABOVE /invoices/{invoice_id} or the param route shadows it.
+@router.get("/invoices", response_model=StandardResponse)
+async def list_all_invoices(
+    status_filter: Optional[str] = Query(None, alias="status"),
+    standalone_only: bool = Query(False),
+    current_user: User = _fm_bm,
+    db: AsyncSession = Depends(get_db),
+):
+    """List invoices across all operations, incl. standalone ones. FM and BM."""
+    invoices = await InvoiceService.list_all_invoices(
+        db, status_filter=status_filter, standalone_only=standalone_only
+    )
     items = [await _serialize_invoice(inv, db) for inv in invoices]
     return StandardResponse.ok(data=items, message="Invoices retrieved")
 

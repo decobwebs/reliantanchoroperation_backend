@@ -4,6 +4,7 @@ Lifecycle: draft → sent → paid
 """
 from datetime import datetime
 from decimal import Decimal
+from typing import Optional
 from uuid import UUID
 
 from fastapi import HTTPException, status
@@ -16,8 +17,13 @@ from app.models.bdn import BDN
 from app.models.operation import Operation
 from app.models.user import User
 from app.models.audit import AuditLog
-from app.models.enums import BdnStatus, InvoiceStatus, OperationStatus
-from app.schemas.invoice import InvoiceCreate, InvoiceSendRequest, InvoiceMarkPaidRequest
+from app.models.enums import BdnStatus, InvoiceStatus, OperationStatus, UserRole
+from app.schemas.invoice import (
+    InvoiceCreate,
+    StandaloneInvoiceCreate,
+    InvoiceSendRequest,
+    InvoiceMarkPaidRequest,
+)
 from app.utils.number_generator import generate_invoice_number
 from app.utils.invoice_pdf import generate_invoice_pdf
 from app.services.email_service import email_pfi_linked
@@ -29,27 +35,42 @@ class InvoiceService:
     @staticmethod
     async def _generate_and_upload_pdf(
         invoice: Invoice,
-        operation: Operation,
+        operation: Optional[Operation],
         generated_by: User,
         db: AsyncSession,
     ) -> str:
+        """Render + upload the invoice PDF.
+
+        `operation` is None for standalone (ad-hoc) invoices: the client is then
+        resolved from invoice.client_id, the operation panel is suppressed, and
+        the line item comes from invoice.description.
+        """
         bdn = None
         if invoice.bdn_id:
             bdn = await db.get(BDN, invoice.bdn_id)
 
-        client = operation.client
+        # Operation-bound: client is eager-loaded on the operation.
+        # Standalone: no operation, so load the billed client directly.
+        client = operation.client if operation else await db.get(User, invoice.client_id)
+
         pdf_bytes = generate_invoice_pdf(
             invoice_number=invoice.invoice_number,
             issue_date=invoice.created_at or datetime.utcnow(),
             due_date=invoice.due_date,
-            operation_number=operation.operation_number,
-            operation_type=operation.type.value if hasattr(operation.type, "value") else str(operation.type),
-            operation_version=operation.version,
-            product_type=operation.product_type,
-            loading_location=operation.loading_location,
-            discharge_location=operation.discharge_location,
+            operation_number=operation.operation_number if operation else None,
+            operation_type=(
+                (operation.type.value if hasattr(operation.type, "value") else str(operation.type))
+                if operation else None
+            ),
+            operation_version=operation.version if operation else None,
+            product_type=operation.product_type if operation else None,
+            loading_location=operation.loading_location if operation else None,
+            discharge_location=operation.discharge_location if operation else None,
             bdn_number=bdn.bdn_number if bdn else None,
-            quantity_delivered_mt=bdn.quantity_delivered_mt if bdn else operation.actual_volume_mt or operation.expected_volume_mt,
+            quantity_delivered_mt=(
+                bdn.quantity_delivered_mt if bdn
+                else ((operation.actual_volume_mt or operation.expected_volume_mt) if operation else None)
+            ),
             client_name=client.full_name if client else "-",
             client_email=client.email if client else "-",
             client_phone=client.phone if client else None,
@@ -60,8 +81,11 @@ class InvoiceService:
             currency=invoice.currency,
             exchange_rate=invoice.exchange_rate,
             notes=invoice.notes,
+            description=invoice.description,
         )
-        storage_path = f"invoices/{operation.id}/{invoice.invoice_number}.pdf"
+        # Standalone invoices have no operation id to key the path on.
+        folder = str(operation.id) if operation else "standalone"
+        storage_path = f"invoices/{folder}/{invoice.invoice_number}.pdf"
         return await _upload_to_supabase(pdf_bytes, storage_path, "application/pdf")
 
     @staticmethod
@@ -203,6 +227,73 @@ class InvoiceService:
         return invoice
 
     @staticmethod
+    async def create_standalone_invoice(
+        data: StandaloneInvoiceCreate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> Invoice:
+        """Create an ad-hoc invoice with no operation (Finance-initiated billing).
+
+        Deliberately skips everything the operation-bound path enforces — BDN
+        requirement, operation status gates, and the operation -> 'invoiced'
+        status side-effect — because none of them apply without an operation.
+        """
+        client = await db.get(User, data.client_id)
+        if not client:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Client not found",
+            )
+        if client.role != UserRole.client:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invoices can only be billed to a client user",
+            )
+
+        total = data.amount + data.tax_amount
+        invoice_number = await generate_invoice_number(db)
+
+        invoice = Invoice(
+            invoice_number=invoice_number,
+            operation_id=None,
+            bdn_id=None,
+            client_id=data.client_id,
+            generated_by=current_user.id,
+            amount=data.amount,
+            currency=data.currency,
+            exchange_rate=data.exchange_rate,
+            tax_amount=data.tax_amount,
+            total_amount=total,
+            due_date=data.due_date,
+            status=InvoiceStatus.draft,
+            description=data.description,
+            notes=data.notes,
+        )
+        db.add(invoice)
+
+        # audit_logs.operation_id is nullable, so a null operation is fine here.
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=None,
+            action="CREATE_STANDALONE_INVOICE",
+            entity_type="invoice",
+            entity_id=invoice.id,
+            changes={
+                "invoice_number": invoice_number,
+                "amount": str(data.amount),
+                "currency": data.currency,
+                "client_id": str(data.client_id),
+                "description": data.description,
+            },
+        ))
+
+        await db.flush()
+        invoice.pdf_url = await InvoiceService._generate_and_upload_pdf(invoice, None, current_user, db)
+        await db.flush()
+        await db.refresh(invoice)
+        return invoice
+
+    @staticmethod
     async def send_invoice(
         invoice_id: UUID,
         data: InvoiceSendRequest,
@@ -223,13 +314,16 @@ class InvoiceService:
         if data.pdf_url:
             invoice.pdf_url = data.pdf_url
         elif not invoice.pdf_url:
-            op_result = await db.execute(
-                select(Operation)
-                .options(selectinload(Operation.client))
-                .where(Operation.id == invoice.operation_id)
-            )
-            op = op_result.scalar_one_or_none()
-            if op:
+            op = None
+            if invoice.operation_id:
+                op_result = await db.execute(
+                    select(Operation)
+                    .options(selectinload(Operation.client))
+                    .where(Operation.id == invoice.operation_id)
+                )
+                op = op_result.scalar_one_or_none()
+            # Standalone invoices (op is None) still render a PDF.
+            if op or invoice.operation_id is None:
                 invoice.pdf_url = await InvoiceService._generate_and_upload_pdf(invoice, op, current_user, db)
         if data.notes:
             invoice.notes = data.notes
@@ -261,14 +355,17 @@ class InvoiceService:
                 detail="Cannot generate a PDF for a cancelled invoice",
             )
 
-        op_result = await db.execute(
-            select(Operation)
-            .options(selectinload(Operation.client))
-            .where(Operation.id == invoice.operation_id)
-        )
-        op = op_result.scalar_one_or_none()
-        if not op:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+        # Standalone invoices have no operation — that's valid, not a 404.
+        op = None
+        if invoice.operation_id:
+            op_result = await db.execute(
+                select(Operation)
+                .options(selectinload(Operation.client))
+                .where(Operation.id == invoice.operation_id)
+            )
+            op = op_result.scalar_one_or_none()
+            if not op:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
 
         invoice.pdf_url = await InvoiceService._generate_and_upload_pdf(invoice, op, current_user, db)
         db.add(AuditLog(
@@ -305,15 +402,17 @@ class InvoiceService:
         if data.notes:
             invoice.notes = data.notes
 
-        # Transition operation to completed if still in invoiced state
-        op_result = await db.execute(
-            select(Operation).where(Operation.id == invoice.operation_id)
-        )
-        op = op_result.scalar_one_or_none()
-        if op and op.status == OperationStatus.invoiced:
-            op.status = OperationStatus.completed
-            op.completed_at = datetime.utcnow()
-            op.updated_at = datetime.utcnow()
+        # Transition operation to completed if still in invoiced state.
+        # Standalone invoices have no operation to advance — skip entirely.
+        if invoice.operation_id:
+            op_result = await db.execute(
+                select(Operation).where(Operation.id == invoice.operation_id)
+            )
+            op = op_result.scalar_one_or_none()
+            if op and op.status == OperationStatus.invoiced:
+                op.status = OperationStatus.completed
+                op.completed_at = datetime.utcnow()
+                op.updated_at = datetime.utcnow()
 
         db.add(AuditLog(
             user_id=current_user.id,
@@ -359,8 +458,14 @@ class InvoiceService:
         return invoice
 
     @staticmethod
-    async def advance_paid_for_operation(operation_id: UUID, db: AsyncSession) -> Decimal:
-        """Sum of all advance payments recorded for this operation (via PFI)."""
+    async def advance_paid_for_operation(operation_id: Optional[UUID], db: AsyncSession) -> Decimal:
+        """Sum of all advance payments recorded for this operation (via PFI).
+
+        Standalone invoices have no operation, so there are no advance payments
+        to reconcile against — return zero rather than querying on NULL.
+        """
+        if operation_id is None:
+            return Decimal("0")
         result = await db.execute(
             select(func.coalesce(func.sum(Payment.amount), 0)).where(
                 Payment.operation_id == operation_id
@@ -375,6 +480,27 @@ class InvoiceService:
             .where(Invoice.operation_id == operation_id)
             .order_by(Invoice.created_at.desc())
         )
+        return result.scalars().all()
+
+    @staticmethod
+    async def list_all_invoices(
+        db: AsyncSession,
+        status_filter: Optional[str] = None,
+        standalone_only: bool = False,
+    ) -> list:
+        """List invoices across the whole system (Finance overview)."""
+        stmt = select(Invoice)
+        if standalone_only:
+            stmt = stmt.where(Invoice.operation_id.is_(None))
+        if status_filter:
+            try:
+                stmt = stmt.where(Invoice.status == InvoiceStatus(status_filter))
+            except ValueError:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Invalid invoice status '{status_filter}'",
+                )
+        result = await db.execute(stmt.order_by(Invoice.created_at.desc()))
         return result.scalars().all()
 
     @staticmethod

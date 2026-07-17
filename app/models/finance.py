@@ -70,7 +70,8 @@ class Invoice(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     invoice_number = Column(String(50), unique=True, nullable=False)
-    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=False)
+    # Nullable: Finance can raise ad-hoc invoices outside any operation.
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=True)
     bdn_id = Column(UUID(as_uuid=True), ForeignKey("bdns.id"), nullable=True)
     client_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     generated_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
@@ -84,6 +85,8 @@ class Invoice(Base):
     pdf_url = Column(Text, nullable=True)
     sent_at = Column(DateTime(timezone=True), nullable=True)
     paid_at = Column(DateTime(timezone=True), nullable=True)
+    # Line-item text for standalone invoices (operation-bound ones derive it).
+    description = Column(Text, nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 

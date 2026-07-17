@@ -569,7 +569,9 @@ class DocumentService:
         # ── 4. Invoice PDFs ───────────────────────────────────────────────────
         inv_result = await db.execute(
             select(Invoice, Operation, User)
-            .join(Operation, Invoice.operation_id == Operation.id)
+            # OUTER join: standalone invoices have no operation and must still
+            # appear in the document hub (an inner join silently hid them).
+            .outerjoin(Operation, Invoice.operation_id == Operation.id)
             .join(User, Invoice.generated_by == User.id)
             .where(Invoice.pdf_url.isnot(None))
             .limit(500)

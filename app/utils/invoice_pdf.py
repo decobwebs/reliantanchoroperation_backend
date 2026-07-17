@@ -87,9 +87,9 @@ def generate_invoice_pdf(
     invoice_number: str,
     issue_date: datetime,
     due_date: Optional[date],
-    operation_number: str,
-    operation_type: str,
-    operation_version: int,
+    operation_number: Optional[str],
+    operation_type: Optional[str],
+    operation_version: Optional[int],
     product_type: Optional[str],
     loading_location: Optional[str],
     discharge_location: Optional[str],
@@ -105,6 +105,7 @@ def generate_invoice_pdf(
     currency: str,
     exchange_rate: Optional[Decimal],
     notes: Optional[str],
+    description: Optional[str] = None,   # explicit line item — standalone invoices
 ) -> bytes:
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -155,25 +156,40 @@ def generate_invoice_pdf(
     ]))
     story.extend([meta, Spacer(1, 4 * mm)])
 
-    op_type_label = OP_TYPE_LABELS.get(operation_type, operation_type.replace("_", " ").title())
+    # A standalone (ad-hoc) invoice has no operation: no type label, no operation
+    # panel, and the line item comes from the caller-supplied description.
+    is_standalone = operation_number is None
+    op_type_label = (
+        OP_TYPE_LABELS.get(operation_type, operation_type.replace("_", " ").title())
+        if operation_type
+        else "-"
+    )
     product_label = PRODUCT_LABELS.get(product_type or "", product_type or "-")
-    parties = Table([[
-        [
-            Paragraph("BILL TO", H2),
-            Spacer(1, 2 * mm),
-            Paragraph(_safe(client_name), BODY),
-            Paragraph(_safe(client_email), SMALL),
-            Paragraph(_safe(client_phone), SMALL),
-        ],
-        [
-            Paragraph("OPERATION DETAILS", H2),
-            Spacer(1, 2 * mm),
-            Paragraph(f"Operation: {_safe(operation_number)} (v{operation_version})", BODY),
-            Paragraph(f"Service: {_safe(op_type_label)}", BODY),
-            Paragraph(f"Product: {_safe(product_label)}", BODY),
-            Paragraph(f"BDN: {_safe(bdn_number)}", BODY),
-        ],
-    ]], colWidths=[CONTENT_W / 2 - 3 * mm, CONTENT_W / 2 - 3 * mm])
+
+    bill_to_cell = [
+        Paragraph("BILL TO", H2),
+        Spacer(1, 2 * mm),
+        Paragraph(_safe(client_name), BODY),
+        Paragraph(_safe(client_email), SMALL),
+        Paragraph(_safe(client_phone), SMALL),
+    ]
+
+    if is_standalone:
+        # Full-width BILL TO — there is no operation to describe.
+        parties = Table([[bill_to_cell]], colWidths=[CONTENT_W])
+    else:
+        parties = Table([[
+            bill_to_cell,
+            [
+                Paragraph("OPERATION DETAILS", H2),
+                Spacer(1, 2 * mm),
+                Paragraph(f"Operation: {_safe(operation_number)} (v{operation_version})", BODY),
+                Paragraph(f"Service: {_safe(op_type_label)}", BODY),
+                Paragraph(f"Product: {_safe(product_label)}", BODY),
+                Paragraph(f"BDN: {_safe(bdn_number)}", BODY),
+            ],
+        ]], colWidths=[CONTENT_W / 2 - 3 * mm, CONTENT_W / 2 - 3 * mm])
+
     parties.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("BOX", (0, 0), (-1, -1), 0.5, BORDER),
@@ -182,15 +198,18 @@ def generate_invoice_pdf(
     ]))
     story.extend([parties, Spacer(1, 4 * mm)])
 
-    description = f"{op_type_label} - {product_label}"
-    if loading_location or discharge_location:
-        description += f"<br/>Route: {_safe(loading_location)} to {_safe(discharge_location)}"
-    if quantity_delivered_mt:
-        description += f"<br/>Delivered quantity: {_fmt_money(quantity_delivered_mt)} MT"
+    if is_standalone:
+        line_desc = _safe(description)
+    else:
+        line_desc = f"{op_type_label} - {product_label}"
+        if loading_location or discharge_location:
+            line_desc += f"<br/>Route: {_safe(loading_location)} to {_safe(discharge_location)}"
+        if quantity_delivered_mt:
+            line_desc += f"<br/>Delivered quantity: {_fmt_money(quantity_delivered_mt)} MT"
 
     line_items = Table([
         [Paragraph("DESCRIPTION", H2), Paragraph("AMOUNT", H2)],
-        [Paragraph(description, BODY), Paragraph(f"{currency} {_fmt_money(amount)}", RIGHT)],
+        [Paragraph(line_desc, BODY), Paragraph(f"{currency} {_fmt_money(amount)}", RIGHT)],
         [Paragraph("Tax", BODY), Paragraph(f"{currency} {_fmt_money(tax_amount)}", RIGHT)],
         [Paragraph("TOTAL DUE", _style("total_label", fontName="Helvetica-Bold", fontSize=11, textColor=NAVY, leading=14)), Paragraph(f"{currency} {_fmt_money(total_amount)}", RIGHT_BOLD)],
     ], colWidths=[CONTENT_W - 42 * mm, 42 * mm])

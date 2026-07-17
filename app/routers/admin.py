@@ -56,6 +56,29 @@ async def list_users(
     return PaginatedResponse.ok(items=items, total=total, page=page, per_page=per_page)
 
 
+@router.get("/clients", response_model=StandardResponse)
+async def list_clients(
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """List active client users — for billing pickers (e.g. standalone invoices).
+
+    Deliberately narrower than /admin/users (which is BM-only): Finance needs to
+    choose who to bill, but has no business listing staff/admin accounts.
+    """
+    result = await db.execute(
+        select(User)
+        .where(and_(User.role == UserRole.client, User.is_active == True))  # noqa: E712
+        .order_by(User.full_name)
+    )
+    clients = result.scalars().all()
+    items = [
+        {"id": str(c.id), "full_name": c.full_name, "email": c.email}
+        for c in clients
+    ]
+    return StandardResponse.ok(data=items, message="Clients retrieved")
+
+
 @router.post("/users", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
 async def create_user(
     body: AdminCreateUserRequest,
