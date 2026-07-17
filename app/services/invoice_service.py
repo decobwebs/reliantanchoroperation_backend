@@ -487,8 +487,13 @@ class InvoiceService:
         db: AsyncSession,
         status_filter: Optional[str] = None,
         standalone_only: bool = False,
+        limit: int = 200,
     ) -> list:
-        """List invoices across the whole system (Finance overview)."""
+        """List invoices across the whole system (Finance overview).
+
+        Bounded: this grows forever otherwise, and each row is signed + reconciled
+        by the router. Newest first, so the cap drops the oldest.
+        """
         stmt = select(Invoice)
         if standalone_only:
             stmt = stmt.where(Invoice.operation_id.is_(None))
@@ -500,7 +505,9 @@ class InvoiceService:
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail=f"Invalid invoice status '{status_filter}'",
                 )
-        result = await db.execute(stmt.order_by(Invoice.created_at.desc()))
+        result = await db.execute(
+            stmt.order_by(Invoice.created_at.desc()).limit(limit)
+        )
         return result.scalars().all()
 
     @staticmethod
