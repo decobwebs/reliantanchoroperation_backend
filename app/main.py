@@ -67,7 +67,10 @@ _validate_config()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await ensure_storage_bucket()
+    # Ensure BOTH storage buckets exist up front, not lazily on first upload —
+    # otherwise a fresh project has no 'truck-photos' bucket until someone uploads.
+    await ensure_storage_bucket()                    # operation-documents (default)
+    await ensure_storage_bucket("truck-photos")      # truck photos
     yield
 
 
