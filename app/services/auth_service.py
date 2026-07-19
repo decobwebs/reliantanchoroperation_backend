@@ -1,5 +1,7 @@
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+import logging
+import secrets
 import uuid
 import httpx
 from jose import jwt, jwk, JWTError
@@ -11,6 +13,9 @@ from fastapi import HTTPException, status
 from app.config import settings
 from app.models.user import User
 from app.models.enums import UserRole
+from app.services.email_service import email_account_created
+
+logger = logging.getLogger("raoms.auth")
 
 # ── JWKS cache ────────────────────────────────────────────────────────────────
 _jwks_cache: Optional[List[Dict]] = None
@@ -267,6 +272,46 @@ class AuthService:
             raise
 
     @staticmethod
+    async def admin_create_user(
+        email: str,
+        full_name: str,
+        phone: Optional[str],
+        role: UserRole,
+        db: AsyncSession,
+    ) -> tuple[User, bool]:
+        """Bunker-Manager-initiated account creation.
+
+        The admin never sets or sees a password: a cryptographically random,
+        unusable one is generated here, and the recipient is emailed a link to
+        choose their own. Returns (user, email_sent) — the user row is created
+        even if the email fails to send, so the BM can retry delivery manually
+        without losing the created account.
+        """
+        random_password = secrets.token_urlsafe(32)
+        user = await AuthService.register(
+            email=email, password=random_password,
+            full_name=full_name, phone=phone, role=role, db=db,
+        )
+
+        email_sent = False
+        try:
+            redirect_to = f"{settings.FRONTEND_URL.rstrip('/')}/set-password"
+            link = await AuthService.generate_action_link(email, "recovery", redirect_to)
+            email_sent = await email_account_created(
+                to_email=email,
+                recipient_name=full_name,
+                role_label=role.value.replace("_", " ").title(),
+                set_password_url=link,
+                is_new_account=True,
+            )
+        except Exception as exc:
+            # The account exists regardless — surface the delivery failure via the
+            # return value rather than rolling back a perfectly valid user.
+            logger.warning("admin_create_user: invite email failed for %s: %s", email, exc)
+
+        return user, email_sent
+
+    @staticmethod
     async def login(email: str, password: str) -> Dict[str, Any]:
         """Authenticate user via Supabase Auth and return tokens."""
         try:
@@ -357,22 +402,71 @@ class AuthService:
             )
 
     @staticmethod
-    async def forgot_password(email: str) -> None:
-        """Send password reset email via Supabase Auth."""
+    async def generate_action_link(email: str, link_type: str, redirect_to: str) -> str:
+        """Generate a Supabase auth action link (recovery/invite/etc.) WITHOUT
+        sending Supabase's own default email — the caller emails it via our own
+        branded template instead. Requires the service_role key.
+
+        `redirect_to` must be present in Supabase Auth's Redirect URLs allow-list,
+        or the generated link will fail (or redirect to an unlisted page) when
+        the recipient clicks it.
+        """
         try:
             async with httpx.AsyncClient() as client:
-                await client.post(
-                    f"{AuthService.SUPABASE_AUTH_URL}/recover",
+                response = await client.post(
+                    f"{AuthService.SUPABASE_AUTH_URL}/admin/generate_link",
                     headers={
-                        "apikey": settings.SUPABASE_ANON_KEY,
+                        "apikey": settings.SUPABASE_SERVICE_KEY,
+                        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}",
                         "Content-Type": "application/json",
                     },
-                    json={"email": email},
-                    timeout=60.0,
+                    json={
+                        "type": link_type,
+                        "email": email,
+                        "options": {"redirect_to": redirect_to},
+                    },
+                    timeout=30.0,
                 )
-        except httpx.RequestError:
-            pass
-        # Always succeed to prevent email enumeration
+        except httpx.RequestError as exc:
+            raise _service_unavailable(exc, "Supabase Auth") from exc
+
+        if response.status_code not in (200, 201):
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=_error_detail(response, "Failed to generate account link"),
+            )
+
+        data = response.json()
+        action_link = data.get("action_link") or data.get("properties", {}).get("action_link")
+        if not action_link:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Supabase did not return an action link",
+            )
+        return action_link
+
+    @staticmethod
+    async def forgot_password(email: str, db: AsyncSession) -> None:
+        """Send a branded password-reset email via Resend (not Supabase's own
+        default-styled email), reusing the same account-created template."""
+        result = await db.execute(select(User).where(User.email == email))
+        user = result.scalar_one_or_none()
+        if not user:
+            return  # Always succeed silently — prevents email enumeration.
+
+        try:
+            redirect_to = f"{settings.FRONTEND_URL.rstrip('/')}/set-password"
+            link = await AuthService.generate_action_link(email, "recovery", redirect_to)
+            await email_account_created(
+                to_email=email,
+                recipient_name=user.full_name,
+                role_label=user.role.value.replace("_", " ").title(),
+                set_password_url=link,
+                is_new_account=False,
+            )
+        except Exception as exc:
+            # Never let a delivery failure leak account-existence info to the caller.
+            logger.warning("forgot_password: failed to send reset email for %s: %s", email, exc)
 
     @staticmethod
     async def reset_password(token: str, new_password: str) -> None:

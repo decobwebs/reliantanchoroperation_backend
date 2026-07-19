@@ -32,18 +32,13 @@ class UserBrief(BaseModel):
 
 
 class AdminCreateUserRequest(BaseModel):
+    """No password field: the admin never sets or sees a user's password. The
+    account is created with a random, unusable password and the recipient is
+    emailed a link to set their own (see AuthService.generate_action_link)."""
     email: EmailStr
-    password: str
     full_name: str
     phone: Optional[str] = None
     role: UserRole
-
-    @field_validator("password")
-    @classmethod
-    def password_strength(cls, v: str) -> str:
-        if len(v) < 8:
-            raise ValueError("Password must be at least 8 characters")
-        return v
 
     @field_validator("full_name")
     @classmethod

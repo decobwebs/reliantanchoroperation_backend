@@ -86,20 +86,28 @@ async def create_user(
     current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a user with any role (admin function)."""
-    user = await AuthService.register(
+    """Create a user with any role (admin function).
+
+    No password is set here — the admin never sees or chooses one. The new
+    user is emailed a link to set their own password.
+    """
+    user, email_sent = await AuthService.admin_create_user(
         email=body.email,
-        password=body.password,
         full_name=body.full_name,
         phone=body.phone,
         role=body.role,
         db=db,
     )
 
-    return StandardResponse.ok(
-        data=UserOut.model_validate(user).model_dump(),
-        message=f"User {user.email} created with role {user.role.value}",
+    message = (
+        f"User {user.email} created — a password-setup email has been sent"
+        if email_sent
+        else f"User {user.email} created, but the invite email could not be sent "
+             f"(check email configuration and resend manually)"
     )
+    data = UserOut.model_validate(user).model_dump()
+    data["email_sent"] = email_sent
+    return StandardResponse.ok(data=data, message=message)
 
 
 @router.put("/users/{user_id}", response_model=StandardResponse)

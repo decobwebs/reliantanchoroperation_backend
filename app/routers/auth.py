@@ -206,9 +206,9 @@ async def change_password(
 
 
 @router.post("/forgot-password", response_model=StandardResponse)
-async def forgot_password(body: ForgotPasswordRequest):
+async def forgot_password(body: ForgotPasswordRequest, db: AsyncSession = Depends(get_db)):
     """Send a password reset email."""
-    await AuthService.forgot_password(body.email)
+    await AuthService.forgot_password(body.email, db)
     return StandardResponse.ok(
         message="If an account with that email exists, a reset link has been sent"
     )

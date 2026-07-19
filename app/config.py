@@ -27,6 +27,10 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173"
     CORS_ORIGIN_REGEX: str = r"http://(localhost|127\.0\.0\.1):\d+"
 
+    # Frontend base URL — used to build links inside emails (set-password, etc.)
+    # and must be present in Supabase Auth's Redirect URLs allow-list.
+    FRONTEND_URL: str = "http://localhost:3000"
+
     # Email (Resend) — optional; graceful degradation if missing
     RESEND_API_KEY: str = ""
     EMAIL_FROM: str = "noreply@reliantanchor.dev"
