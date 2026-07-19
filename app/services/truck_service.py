@@ -911,7 +911,7 @@ class TruckService:
                     source_description=f"Truck delivery (BM approved): {truck_label}",
                     notes=(
                         f"Approved by BM {current_user.full_name}. "
-                        f"Discharged {float(qty):.3f} MT from truck {truck_label} into vessel {dest_vessel.vessel_name}."
+                        f"Discharged {float(qty):.3f} L from truck {truck_label} into vessel {dest_vessel.vessel_name}."
                         + (f" Notes: {notes}" if notes else "")
                     ),
                 ))
@@ -1032,7 +1032,7 @@ class TruckService:
                         recorded_by=current_user.id,
                         truck_operation_id=truck_op.id,
                         source_description=f"BM correction — reversed truck delivery: {truck_label}",
-                        notes=f"BM {current_user.full_name} edited discharge record. Reversed previous delivery of {float(old_qty):.3f} MT.",
+                        notes=f"BM {current_user.full_name} edited discharge record. Reversed previous delivery of {float(old_qty):.3f} L.",
                     ))
 
                 # Write new entry if new vessel is in system
@@ -1056,7 +1056,7 @@ class TruckService:
                             recorded_by=current_user.id,
                             truck_operation_id=truck_op.id,
                             source_description=f"BM correction — updated truck delivery: {truck_label}",
-                            notes=f"BM {current_user.full_name} edited discharge record. New delivery: {float(new_qty):.3f} MT.",
+                            notes=f"BM {current_user.full_name} edited discharge record. New delivery: {float(new_qty):.3f} L.",
                         ))
             elif qty_changed and not vessel_changed and old_vessel_id:
                 # Same vessel, qty changed only — write a correction for the difference
@@ -1080,7 +1080,7 @@ class TruckService:
                         recorded_by=current_user.id,
                         truck_operation_id=truck_op.id,
                         source_description=f"BM quantity correction: {truck_label}",
-                        notes=f"BM {current_user.full_name} corrected discharge qty from {float(old_qty):.3f} to {float(new_qty):.3f} MT.",
+                        notes=f"BM {current_user.full_name} corrected discharge qty from {float(old_qty):.3f} to {float(new_qty):.3f} L.",
                     ))
 
         db.add(AuditLog(
@@ -1539,7 +1539,7 @@ class TruckService:
             top.product_type = body.product_type
         if top.status in (TruckOpStatus.pending, TruckOpStatus.in_transit):
             top.status = TruckOpStatus.loading
-        TruckService._append_event(top, "departed_loading", f"Departed loading point with {body.quantity_loaded_mt} MT loaded", current_user.id, top.departed_loading_at)
+        TruckService._append_event(top, "departed_loading", f"Departed loading point with {body.quantity_loaded_mt} L loaded", current_user.id, top.departed_loading_at)
         await db.flush()
         return top
 

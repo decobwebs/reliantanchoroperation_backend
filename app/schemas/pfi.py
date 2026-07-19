@@ -85,6 +85,54 @@ class PfiCreate(BaseModel):
         return v
 
 
+class PfiUpdate(BaseModel):
+    amount: Optional[Decimal] = None
+    currency: Optional[str] = None
+    exchange_rate: Optional[Decimal] = None
+    quantity_litres: Optional[Decimal] = None
+    supplier_name: Optional[str] = None
+    description: Optional[str] = None
+    client_ref: Optional[str] = None
+    document_url: Optional[str] = None
+    reason: str  # required — this is an edit, not a first-time creation
+
+    @field_validator("currency", mode="before")
+    @classmethod
+    def upper_currency(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip().upper() if v else v
+
+    @field_validator("supplier_name", "description", "client_ref", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to edit a PFI")
+        return v
+
+    @field_validator("amount")
+    @classmethod
+    def positive_amount(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is not None and v <= 0:
+            raise ValueError("Amount must be greater than zero")
+        return v
+
+    @field_validator("quantity_litres")
+    @classmethod
+    def positive_quantity(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is not None and v <= 0:
+            raise ValueError("Quantity must be greater than zero")
+        return v
+
+
 class PfiGenerateRequest(BaseModel):
     """Inputs for system-generated PFI PDF. Operation data is pulled server-side."""
     rate_per_mt: Decimal
@@ -100,7 +148,7 @@ class PfiGenerateRequest(BaseModel):
     @classmethod
     def positive_rate(cls, v: Decimal) -> Decimal:
         if v <= 0:
-            raise ValueError("Rate per MT must be greater than zero")
+            raise ValueError("Rate per L must be greater than zero")
         return v
 
     @field_validator("tax_rate")

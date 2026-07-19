@@ -10,7 +10,7 @@ from app.models.user import User
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse
 from app.schemas.pfi import (
-    PfiCreate, PfiGenerateRequest, PfiOut,
+    PfiCreate, PfiUpdate, PfiGenerateRequest, PfiOut,
     PaymentCreate, PaymentOut, PaymentConfirmRequest,
     StandalonePfiCreate, PfiConfirmPaymentRequest,
     PfiAllocationCreate, PfiAllocationUpdate, PfiAllocationOut,
@@ -112,6 +112,23 @@ async def get_pfi(
     return StandardResponse.ok(
         data=await _serialize_pfi(pfi),
         message="PFI retrieved",
+    )
+
+
+@router.put("/pfis/{pfi_id}", response_model=StandardResponse)
+async def update_pfi(
+    pfi_id: UUID,
+    body: PfiUpdate,
+    current_user: User = Depends(
+        require_roles(UserRole.bunker_manager, UserRole.finance_manager)
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit a PFI's own fields. Requires a reason. BM and Finance Manager only."""
+    pfi = await PfiService.update_pfi(pfi_id, body, current_user, db)
+    return StandardResponse.ok(
+        data=await _serialize_pfi(pfi),
+        message=f"PFI {pfi.pfi_number} updated",
     )
 
 

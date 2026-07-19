@@ -129,7 +129,7 @@ class VesselDischargeService:
                 await notify(
                     db=db, user_id=bm.id, type_="rob_alert",
                     title=f"Low ROB Alert — {source_vessel.vessel_name}",
-                    message=f"{source_vessel.vessel_name} ROB is now {float(rob_after):.1f} MT — below threshold of {float(source_vessel.rob_threshold_mt):.1f} MT.",
+                    message=f"{source_vessel.vessel_name} ROB is now {float(rob_after):.1f} L — below threshold of {float(source_vessel.rob_threshold_mt):.1f} L.",
                     priority="urgent",
                     operation_id=operation_id,
                     channels=["in_app", "whatsapp"],

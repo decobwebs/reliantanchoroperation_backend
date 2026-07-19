@@ -321,9 +321,9 @@ def generate_pfi_pdf(
     svc_header = [
         Paragraph("DESCRIPTION", _style("th", fontName="Helvetica-Bold", fontSize=8.5,
                                          textColor=WHITE, leading=11)),
-        Paragraph("QTY (MT)", _style("th_c", fontName="Helvetica-Bold", fontSize=8.5,
+        Paragraph("QTY (L)", _style("th_c", fontName="Helvetica-Bold", fontSize=8.5,
                                      textColor=WHITE, alignment=TA_CENTER, leading=11)),
-        Paragraph(f"RATE ({currency}/MT)", _style("th_c", fontName="Helvetica-Bold", fontSize=8.5,
+        Paragraph(f"RATE ({currency}/L)", _style("th_c", fontName="Helvetica-Bold", fontSize=8.5,
                                                    textColor=WHITE, alignment=TA_RIGHT, leading=11)),
         Paragraph(f"AMOUNT ({currency})", _style("th_c", fontName="Helvetica-Bold", fontSize=8.5,
                                                   textColor=WHITE, alignment=TA_RIGHT, leading=11)),

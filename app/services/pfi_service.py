@@ -43,7 +43,7 @@ async def _notify_role(
             wa_kwargs=wa_kwargs,
         )
 from app.schemas.pfi import (
-    PfiCreate, PfiGenerateRequest, PaymentCreate, StandalonePfiCreate, PfiConfirmPaymentRequest,
+    PfiCreate, PfiUpdate, PfiGenerateRequest, PaymentCreate, StandalonePfiCreate, PfiConfirmPaymentRequest,
     PfiAllocationCreate, PfiAllocationUpdate,
 )
 from app.services.notification_service import notify
@@ -496,6 +496,58 @@ class PfiService:
         pfi = result.scalar_one_or_none()
         if not pfi:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PFI not found")
+        await PfiService._attach_balance(pfi, db)
+        return pfi
+
+    @staticmethod
+    async def update_pfi(
+        pfi_id: UUID,
+        data: PfiUpdate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> PFI:
+        """BM or FM edits a PFI's own fields. Mistakes are corrected, not
+        recreated — no status gate on when this can happen."""
+        result = await db.execute(select(PFI).where(PFI.id == pfi_id))
+        pfi = result.scalar_one_or_none()
+        if not pfi:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PFI not found")
+
+        # Can't shrink quantity_litres below what's already allocated to operations.
+        if data.quantity_litres is not None:
+            allocated_result = await db.execute(
+                select(func.coalesce(func.sum(PfiAllocation.quantity_litres), 0))
+                .where(PfiAllocation.pfi_id == pfi_id)
+            )
+            allocated = Decimal(allocated_result.scalar_one())
+            if data.quantity_litres < allocated:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Cannot reduce quantity below {allocated} litres already allocated to operations",
+                )
+
+        update_data = data.model_dump(exclude_unset=True, exclude={"reason"})
+        changes = capture_diff(pfi, update_data)
+
+        # Recompute amount_ngn if anything affecting it changed.
+        if {"amount", "currency", "exchange_rate"} & set(update_data.keys()):
+            if pfi.currency == "NGN":
+                pfi.amount_ngn = pfi.amount
+            elif pfi.exchange_rate and pfi.exchange_rate > 0:
+                pfi.amount_ngn = pfi.amount * pfi.exchange_rate
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=pfi.operation_id,
+            action="UPDATE_PFI",
+            entity_type="pfi",
+            entity_id=pfi.id,
+            changes=changes,
+            reason=data.reason,
+        ))
+
+        await db.commit()
+        await db.refresh(pfi)
         await PfiService._attach_balance(pfi, db)
         return pfi
 

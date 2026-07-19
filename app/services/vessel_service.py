@@ -173,7 +173,7 @@ class VesselService:
             if rob_after < Decimal("0"):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"ROB cannot go negative. Maximum discharge: {float(rob_before):.3f} MT",
+                    detail=f"ROB cannot go negative. Maximum discharge: {float(rob_before):.3f} L",
                 )
         elif data.entry_type == RobEntryType.replenishment or data.entry_type == RobEntryType.initial:
             # Must be positive
@@ -188,7 +188,7 @@ class VesselService:
             if rob_after < Decimal("0"):
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"ROB cannot go negative. Maximum adjustment: {float(rob_before):.3f} MT",
+                    detail=f"ROB cannot go negative. Maximum adjustment: {float(rob_before):.3f} L",
                 )
 
         # Create the immutable ROB entry
@@ -226,8 +226,8 @@ class VesselService:
                         type_="rob_alert",
                         title="ROB Below Threshold",
                         message=(
-                            f"Vessel {vessel.vessel_name} ROB is now {float(rob_after):.3f} MT, "
-                            f"below threshold of {float(vessel.rob_threshold_mt):.3f} MT"
+                            f"Vessel {vessel.vessel_name} ROB is now {float(rob_after):.3f} L, "
+                            f"below threshold of {float(vessel.rob_threshold_mt):.3f} L"
                         ),
                         priority="urgent",
                         operation_id=data.operation_id,

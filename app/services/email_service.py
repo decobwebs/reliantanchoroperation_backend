@@ -326,7 +326,7 @@ async def email_bdn_approved(
       <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 14px;">
         <tr>
           <td style="color:{_MUTED};font-size:13px;padding-right:10px;">Quantity Delivered</td>
-          <td style="color:{_INK};font-size:13px;font-weight:600;">{_esc(quantity)} MT</td>
+          <td style="color:{_INK};font-size:13px;font-weight:600;">{_esc(quantity)} L</td>
         </tr>
       </table>
     """

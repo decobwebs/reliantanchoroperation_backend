@@ -205,7 +205,7 @@ def generate_invoice_pdf(
         if loading_location or discharge_location:
             line_desc += f"<br/>Route: {_safe(loading_location)} to {_safe(discharge_location)}"
         if quantity_delivered_mt:
-            line_desc += f"<br/>Delivered quantity: {_fmt_money(quantity_delivered_mt)} MT"
+            line_desc += f"<br/>Delivered quantity: {_fmt_money(quantity_delivered_mt)} L"
 
     line_items = Table([
         [Paragraph("DESCRIPTION", H2), Paragraph("AMOUNT", H2)],

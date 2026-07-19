@@ -613,7 +613,7 @@ class DocumentService:
                 file_name=f"{bdn.bdn_number}.pdf",
                 file_url=bdn.pdf_url,
                 file_size_bytes=None,
-                description=f"BDN {bdn.bdn_number} — {bdn.quantity_delivered_mt} MT",
+                description=f"BDN {bdn.bdn_number} — {bdn.quantity_delivered_mt} L",
                 created_at=bdn.created_at,
                 uploader_name=user.full_name if user else None,
                 uploader_role=user.role.value if user else None,

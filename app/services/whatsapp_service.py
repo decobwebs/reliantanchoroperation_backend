@@ -79,7 +79,7 @@ TEMPLATES = {
         "⚠️ *RAOMS — Low ROB Alert*\n\n"
         "Hello {name},\n\n"
         "Vessel *{vessel_name}* has reached a low Remaining On Board (ROB) level.\n\n"
-        "Current ROB: *{current_rob} MT*\nThreshold: {threshold} MT\n\n"
+        "Current ROB: *{current_rob} L*\nThreshold: {threshold} L\n\n"
         "Immediate replenishment may be required.\n\n"
         "_Reliant Anchor Operations_"
     ),
@@ -87,7 +87,7 @@ TEMPLATES = {
         "📄 *RAOMS — BDN Submitted*\n\n"
         "Hello {name},\n\n"
         "A Bunker Delivery Note has been submitted for operation *{operation_number}*.\n\n"
-        "BDN: *{bdn_number}*\nQuantity: {quantity} MT\n\n"
+        "BDN: *{bdn_number}*\nQuantity: {quantity} L\n\n"
         "Please review and approve.\n\n"
         "_Reliant Anchor Operations_"
     ),

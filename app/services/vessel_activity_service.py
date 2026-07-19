@@ -342,7 +342,7 @@ class VesselActivityService:
                 message=(
                     f"Marine Manager has completed vessel activity {activity.activity_number} "
                     f"for operation {op_number} aboard {vessel_name}. "
-                    f"Final ROB: {float(final_rob):.3f} MT. Ready for BDN and reconciliation."
+                    f"Final ROB: {float(final_rob):.3f} L. Ready for BDN and reconciliation."
                     if final_rob is not None else
                     f"Marine Manager has completed vessel activity {activity.activity_number} "
                     f"for operation {op_number} aboard {vessel_name}. Review and proceed."
@@ -370,8 +370,8 @@ class VesselActivityService:
                 title=f"Vessel Activity Complete — Finance Reconciliation Required",
                 message=(
                     f"Vessel activity {activity.activity_number} for operation {op_number} "
-                    f"is complete. Actual received: {float(activity.vessel_received_mt):.3f} MT, "
-                    f"Final ROB: {float(final_rob):.3f} MT. Align with invoicing and expense tracking."
+                    f"is complete. Actual received: {float(activity.vessel_received_mt):.3f} L, "
+                    f"Final ROB: {float(final_rob):.3f} L. Align with invoicing and expense tracking."
                     if final_rob is not None and activity.vessel_received_mt is not None else
                     f"Vessel activity {activity.activity_number} for operation {op_number} "
                     f"is complete. Please align with invoicing and expense tracking."
