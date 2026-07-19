@@ -55,6 +55,7 @@ class UpdateOperationRequest(BaseModel):
     notes: Optional[str] = None
     currency: Optional[str] = None
     vessel_id: Optional[UUID] = None
+    reason: Optional[str] = None  # why this edit was made — surfaced in the Activity tab
 
 
 class TransitionRequest(BaseModel):
@@ -103,6 +104,7 @@ class OperationOut(BaseModel):
     completion_notes: Optional[str] = None
     currency: str
     vessel_id: Optional[UUID] = None
+    trucks_required: Optional[int] = None
     version: int = 1
     parent_operation_id: Optional[UUID] = None
     version_notes: Optional[str] = None

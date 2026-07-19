@@ -22,10 +22,14 @@ from app.schemas.truck import (
     TruckOperationCreate, TruckOperationUpdate,
     TruckFeedbackCreate,
     TruckSafetyAuditCreate,
+    TruckWaybillLinkRequest,
 )
 from app.services.notification_service import notify
 from app.services.state_machine import StateMachine, StateMachineError
+from app.services.audit_diff import capture_diff
 from app.models.operation import OperationStatusHistory
+from app.models.truck import TruckWaiver
+from app.models.enums import TruckWaiverStatus, AuditPhase
 
 
 async def _get_operation_or_404(operation_id: UUID, db: AsyncSession) -> Operation:
@@ -129,8 +133,7 @@ class TruckService:
         truck = Truck(
             truck_number=data.truck_number,
             capacity_mt=data.capacity_mt,
-            driver_name=data.driver_name,
-            driver_phone=data.driver_phone,
+            chassis_number=data.chassis_number,
             current_location=data.current_location,
             notes=data.notes,
             status=TruckStatus.available,
@@ -164,12 +167,8 @@ class TruckService:
         if not truck:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found")
 
-        update_data = data.model_dump(exclude_unset=True)
-        changes = {}
-        for field, value in update_data.items():
-            old_val = getattr(truck, field, None)
-            changes[field] = {"from": str(old_val), "to": str(value)}
-            setattr(truck, field, value)
+        update_data = data.model_dump(exclude_unset=True, exclude={"reason"})
+        changes = capture_diff(truck, update_data)
 
         truck.updated_at = datetime.utcnow()
 
@@ -179,12 +178,126 @@ class TruckService:
             entity_type="truck",
             entity_id=truck.id,
             changes=changes,
+            reason=data.reason,
         )
         db.add(audit)
 
         await db.flush()
         await db.refresh(truck)
         return truck
+
+    # ── Waivers (regulatory / BFL truck numbers) ──────────────────────────────
+
+    @staticmethod
+    async def bulk_add_waivers(
+        numbers: List[str],
+        current_user: User,
+        db: AsyncSession,
+    ) -> Dict[str, List[str]]:
+        """Ops Supervisor bulk-adds waiver numbers up front, before sourcing starts."""
+        existing_result = await db.execute(
+            select(TruckWaiver.waybill_truck_number).where(TruckWaiver.waybill_truck_number.in_(numbers))
+        )
+        existing = {n for (n,) in existing_result.all()}
+
+        created: List[str] = []
+        skipped: List[str] = []
+        for number in numbers:
+            if number in existing:
+                skipped.append(number)
+                continue
+            db.add(TruckWaiver(waybill_truck_number=number, added_by=current_user.id))
+            created.append(number)
+            existing.add(number)  # guard against duplicates within the same batch
+
+        await db.flush()
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            action="BULK_ADD_TRUCK_WAIVERS",
+            entity_type="truck_waiver",
+            changes={"created_count": len(created), "skipped_count": len(skipped)},
+        ))
+
+        await db.commit()
+        return {"created": created, "skipped_duplicates": skipped}
+
+    @staticmethod
+    async def list_waivers(
+        db: AsyncSession,
+        status_filter: Optional[TruckWaiverStatus] = None,
+    ) -> List[TruckWaiver]:
+        stmt = select(TruckWaiver).order_by(TruckWaiver.created_at.desc())
+        if status_filter:
+            stmt = stmt.where(TruckWaiver.status == status_filter)
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def link_waybill(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        data: TruckWaybillLinkRequest,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        """The doc's key moment: waiver number + original plate + driver come
+        together, only once the waybill is generated — not during sourcing."""
+        await _get_operation_or_404(operation_id, db)
+        await _assert_lo_assigned(operation_id, current_user, db)
+
+        result = await db.execute(
+            select(TruckOperation)
+            .options(selectinload(TruckOperation.truck), selectinload(TruckOperation.safety_audits))
+            .where(and_(TruckOperation.id == truck_op_id, TruckOperation.operation_id == operation_id))
+        )
+        truck_op = result.scalar_one_or_none()
+        if not truck_op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+
+        waiver_result = await db.execute(select(TruckWaiver).where(TruckWaiver.id == data.waiver_id))
+        waiver = waiver_result.scalar_one_or_none()
+        if not waiver:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Waiver number not found")
+        # A waiver already linked to THIS truck_op is fine — editing driver/vendor/
+        # doc-number details after the initial link must not be blocked. Only a
+        # waiver linked elsewhere (or linked to a different truck_op) is a conflict.
+        if waiver.status != TruckWaiverStatus.available and truck_op.waiver_id != waiver.id:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Waiver number '{waiver.waybill_truck_number}' is already linked to another truck",
+            )
+
+        truck_op.waiver_id = waiver.id
+        truck_op.driver_name = data.driver_name
+        truck_op.driver_phone = data.driver_phone
+        truck_op.vendor_name = data.vendor_name
+        truck_op.waybill_document_number = data.waybill_document_number
+        if data.waybill_number:
+            truck_op.waybill_number = data.waybill_number
+        truck_op.updated_at = datetime.utcnow()
+        waiver.status = TruckWaiverStatus.linked
+
+        # Mirror onto the Truck row — see the same note in add_truck_to_operation.
+        if truck_op.truck:
+            truck_op.truck.driver_name = data.driver_name
+            truck_op.truck.driver_phone = data.driver_phone
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="LINK_WAYBILL",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            changes={
+                "waiver_number": waiver.waybill_truck_number,
+                "driver_name": data.driver_name,
+            },
+        ))
+
+        await db.commit()
+        await db.refresh(truck_op)
+        return truck_op
 
     # ── Truck operations on a specific operation ──────────────────────────────
 
@@ -201,7 +314,7 @@ class TruckService:
             .options(
                 selectinload(TruckOperation.truck),
                 selectinload(TruckOperation.supervisor),
-                selectinload(TruckOperation.safety_audit),
+                selectinload(TruckOperation.safety_audits),
             )
             .where(TruckOperation.operation_id == operation_id)
             .order_by(TruckOperation.created_at.asc())
@@ -223,7 +336,8 @@ class TruckService:
         truck_result = await db.execute(
             select(Truck).where(and_(Truck.id == data.truck_id, Truck.is_active == True))
         )
-        if not truck_result.scalar_one_or_none():
+        truck = truck_result.scalar_one_or_none()
+        if not truck:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found or inactive")
 
         # Prevent duplicate: same truck can only have one non-cancelled record per operation
@@ -250,10 +364,25 @@ class TruckService:
             loading_location=data.loading_location,
             discharge_location=data.discharge_location,
             destination_vessel_id=data.destination_vessel_id,
+            driver_name=data.driver_name,
+            driver_phone=data.driver_phone,
+            vendor_name=data.vendor_name,
             notes=data.notes,
             status=TruckOpStatus.pending,
         )
         db.add(truck_op)
+
+        # Mirror onto the Truck row as a "last known driver" cache — several
+        # existing UI surfaces (fleet list, fleet/truck detail, task list) still
+        # display Truck.driver_name directly. The per-assignment value on
+        # TruckOperation is authoritative for a given operation; this is just a
+        # convenience snapshot so those surfaces don't go silently blank now that
+        # driver capture moved off the Truck master.
+        if data.driver_name:
+            truck.driver_name = data.driver_name
+        if data.driver_phone:
+            truck.driver_phone = data.driver_phone
+
         await db.flush()
 
         audit = AuditLog(
@@ -273,7 +402,7 @@ class TruckService:
             .options(
                 selectinload(TruckOperation.truck),
                 selectinload(TruckOperation.supervisor),
-                selectinload(TruckOperation.safety_audit),
+                selectinload(TruckOperation.safety_audits),
             )
             .where(TruckOperation.id == truck_op.id)
         )
@@ -295,7 +424,7 @@ class TruckService:
             .options(
                 selectinload(TruckOperation.truck),
                 selectinload(TruckOperation.supervisor),
-                selectinload(TruckOperation.safety_audit),
+                selectinload(TruckOperation.safety_audits),
             )
             .where(
                 and_(
@@ -309,11 +438,7 @@ class TruckService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
 
         update_data = data.model_dump(exclude_unset=True)
-        changes = {}
-        for field, value in update_data.items():
-            old_val = getattr(truck_op, field, None)
-            changes[field] = {"from": str(old_val), "to": str(value)}
-            setattr(truck_op, field, value)
+        changes = capture_diff(truck_op, update_data)
 
         truck_op.updated_at = datetime.utcnow()
 
@@ -345,7 +470,7 @@ class TruckService:
 
         result = await db.execute(
             select(TruckOperation)
-            .options(selectinload(TruckOperation.safety_audit))
+            .options(selectinload(TruckOperation.safety_audits))
             .where(
                 and_(
                     TruckOperation.id == truck_op_id,
@@ -359,18 +484,23 @@ class TruckService:
 
         conducted_at = data.conducted_at or datetime.utcnow()
 
-        if truck_op.safety_audit:
-            audit_record = truck_op.safety_audit
+        existing_for_phase = next(
+            (a for a in (truck_op.safety_audits or []) if a.phase == data.phase), None
+        )
+        if existing_for_phase:
+            audit_record = existing_for_phase
             audit_record.conducted_by = current_user.id
             audit_record.conductor_name = current_user.full_name
             audit_record.conducted_at = conducted_at
             audit_record.result = data.result
             audit_record.checklist = data.checklist or []
+            audit_record.header = data.header or {}
             audit_record.notes = data.notes
             audit_record.updated_at = datetime.utcnow()
         else:
             audit_record = TruckSafetyAudit(
                 truck_op_id=truck_op_id,
+                phase=data.phase,
                 operation_id=operation_id,
                 truck_id=truck_op.truck_id,
                 conducted_by=current_user.id,
@@ -378,6 +508,7 @@ class TruckService:
                 conducted_at=conducted_at,
                 result=data.result,
                 checklist=data.checklist or [],
+                header=data.header or {},
                 notes=data.notes,
             )
             db.add(audit_record)
@@ -388,7 +519,7 @@ class TruckService:
             action="SUBMIT_SAFETY_AUDIT",
             entity_type="truck_safety_audit",
             entity_id=truck_op_id,
-            changes={"result": str(data.result)},
+            changes={"phase": data.phase.value, "result": str(data.result)},
         )
         db.add(audit_log)
 
@@ -400,6 +531,7 @@ class TruckService:
     async def waive_audit_item(
         operation_id: UUID,
         truck_op_id: UUID,
+        phase: AuditPhase,
         item: str,
         waiver_notes: Optional[str],
         current_user: User,
@@ -409,7 +541,7 @@ class TruckService:
 
         result = await db.execute(
             select(TruckSafetyAudit).where(
-                TruckSafetyAudit.truck_op_id == truck_op_id
+                and_(TruckSafetyAudit.truck_op_id == truck_op_id, TruckSafetyAudit.phase == phase)
             )
         )
         audit_record = result.scalar_one_or_none()
@@ -469,7 +601,7 @@ class TruckService:
             .options(
                 selectinload(TruckOperation.truck),
                 selectinload(TruckOperation.supervisor),
-                selectinload(TruckOperation.safety_audit),
+                selectinload(TruckOperation.safety_audits),
             )
             .where(
                 and_(
@@ -526,7 +658,7 @@ class TruckService:
             .options(
                 selectinload(TruckOperation.truck),
                 selectinload(TruckOperation.supervisor),
-                selectinload(TruckOperation.safety_audit),
+                selectinload(TruckOperation.safety_audits),
             )
             .where(
                 and_(
@@ -581,7 +713,7 @@ class TruckService:
             .options(
                 selectinload(TruckOperation.truck),
                 selectinload(TruckOperation.supervisor),
-                selectinload(TruckOperation.safety_audit),
+                selectinload(TruckOperation.safety_audits),
             )
             .where(
                 and_(
@@ -633,7 +765,7 @@ class TruckService:
             .options(
                 selectinload(TruckOperation.truck),
                 selectinload(TruckOperation.supervisor),
-                selectinload(TruckOperation.safety_audit),
+                selectinload(TruckOperation.safety_audits),
             )
             .where(
                 and_(
@@ -724,7 +856,7 @@ class TruckService:
             .options(
                 selectinload(TruckOperation.truck),
                 selectinload(TruckOperation.supervisor),
-                selectinload(TruckOperation.safety_audit),
+                selectinload(TruckOperation.safety_audits),
             )
             .where(
                 and_(
@@ -818,7 +950,7 @@ class TruckService:
             .options(
                 selectinload(TruckOperation.truck),
                 selectinload(TruckOperation.supervisor),
-                selectinload(TruckOperation.safety_audit),
+                selectinload(TruckOperation.safety_audits),
             )
             .where(
                 and_(
@@ -963,6 +1095,31 @@ class TruckService:
         await db.flush()
         return truck_op
 
+    @staticmethod
+    async def set_trucks_required(
+        operation_id: UUID,
+        trucks_required: int,
+        current_user: User,
+        db: AsyncSession,
+    ) -> Operation:
+        operation = await _get_operation_or_404(operation_id, db)
+        old_val = operation.trucks_required
+        operation.trucks_required = trucks_required
+        operation.updated_at = datetime.utcnow()
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="SET_TRUCKS_REQUIRED",
+            entity_type="operation",
+            entity_id=operation_id,
+            changes={"trucks_required": {"from": str(old_val), "to": str(trucks_required)}},
+        ))
+
+        await db.commit()
+        await db.refresh(operation)
+        return operation
+
     # ── Feedback workflow ─────────────────────────────────────────────────────
 
     @staticmethod
@@ -987,11 +1144,21 @@ class TruckService:
         db.add(feedback)
         await db.flush()
 
-        # Transition operation to feedback_submitted
-        await _transition_operation(
-            operation, OperationStatus.feedback_submitted, current_user, db,
-            reason="Feedback submitted by logistics officer"
-        )
+        # Only a submission from one of the states that can actually reach
+        # feedback_submitted gates operation activation (per state_machine.py,
+        # that's exclusively awaiting_feedback and feedback_rejected — NOT
+        # merely "not active": an operation past active (pfi_linked,
+        # payment_processing, vessel_operations, ...) also satisfies "!= active"
+        # but feedback_submitted is not a valid transition from any of those,
+        # so a naive "!= active" guard would 422 on the 3rd/4th incremental
+        # batch instead of just recording it). Once the operation has moved
+        # on, this is purely an incremental readiness batch — record it, no
+        # status transition.
+        if operation.status in (OperationStatus.awaiting_feedback, OperationStatus.feedback_rejected):
+            await _transition_operation(
+                operation, OperationStatus.feedback_submitted, current_user, db,
+                reason="Feedback submitted by logistics officer"
+            )
 
         # Notify BM — find all bunker managers
         bm_result = await db.execute(
@@ -1075,6 +1242,9 @@ class TruckService:
         feedback.status = FeedbackStatus.approved
         feedback.reviewed_by = current_user.id
         feedback.reviewed_at = datetime.utcnow()
+
+        if operation.trucks_required is not None:
+            operation.trucks_required = max(0, operation.trucks_required - len(feedback.truck_ids))
 
         # Activate the operation ONLY if it is still awaiting this approval.
         # If it has already advanced (e.g. it was moved via the status modal),
@@ -1305,7 +1475,7 @@ class TruckService:
             .options(
                 selectinload(TruckOperation.truck),
                 selectinload(TruckOperation.supervisor),
-                selectinload(TruckOperation.safety_audit),
+                selectinload(TruckOperation.safety_audits),
             )
             .where(
                 and_(TruckOperation.id == truck_op_id, TruckOperation.operation_id == operation_id)

@@ -21,6 +21,7 @@ class PFI(Base):
     currency = Column(String(3), default="NGN", nullable=False)
     exchange_rate = Column(Numeric(12, 6), nullable=True)
     amount_ngn = Column(Numeric(15, 2), nullable=True)
+    quantity_litres = Column(Numeric(14, 2), nullable=True)  # total volume this PFI covers; drawn down via PfiAllocation
     supplier_name = Column(String(200), nullable=True)
     description = Column(Text, nullable=True)
     document_url = Column(Text, nullable=True)
@@ -39,6 +40,25 @@ class PFI(Base):
     confirmer = relationship("User", foreign_keys=[confirmed_by])
     payments = relationship("Payment", back_populates="pfi")
     vouchers = relationship("Voucher", back_populates="pfi")
+    allocations = relationship("PfiAllocation", back_populates="pfi", cascade="all, delete-orphan")
+
+
+class PfiAllocation(Base):
+    """A fixed quantity drawdown of a PFI against one operation. A PFI can be
+    allocated across several operations; an operation can draw from several PFIs."""
+    __tablename__ = "pfi_allocations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    pfi_id = Column(UUID(as_uuid=True), ForeignKey("pfis.id", ondelete="CASCADE"), nullable=False)
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id", ondelete="CASCADE"), nullable=False)
+    quantity_litres = Column(Numeric(14, 2), nullable=False)
+    linked_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    pfi = relationship("PFI", back_populates="allocations")
+    operation = relationship("Operation", back_populates="pfi_allocations")
+    linker = relationship("User", foreign_keys=[linked_by])
 
 
 class Payment(Base):

@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user, require_roles
 from app.models.user import User
-from app.models.enums import UserRole
+from app.models.enums import UserRole, TruckWaiverStatus
 from app.schemas.common import StandardResponse
+from pydantic import BaseModel
 from app.schemas.truck import (
     TruckCreate, TruckUpdate, TruckOut,
     TruckOperationCreate, TruckOperationUpdate, TruckOperationOut,
@@ -25,6 +26,7 @@ from app.schemas.truck import (
     TruckProfileOut,
     TruckSafetyAuditCreate, TruckSafetyAuditOut,
     WaiveAuditItemRequest,
+    TruckWaiverBulkCreate, TruckWaiverOut, TruckWaybillLinkRequest,
 )
 from app.services.truck_service import TruckService
 from app.services.document_service import _upload_to_supabase, MAX_FILE_SIZE_BYTES
@@ -68,6 +70,41 @@ async def create_truck(
         data=TruckOut.model_validate(truck).model_dump(),
         message=f"Truck {truck.truck_number} created",
     )
+
+
+# ── Waivers (regulatory / BFL truck numbers) ────────────────────────────────────
+# NOTE: these two static paths (/trucks/waivers, /trucks/waivers/bulk) MUST be
+# registered before the dynamic /trucks/{truck_id} route below — FastAPI/Starlette
+# matches routes in registration order, so a later static path here would be
+# shadowed by {truck_id} matching "waivers" as a (invalid) UUID path param.
+
+@router.post("/trucks/waivers/bulk", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
+async def bulk_add_waivers(
+    body: TruckWaiverBulkCreate,
+    current_user: User = Depends(require_roles(UserRole.ops_supervisor)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bulk-add waiver/regulatory truck numbers up front, before sourcing starts. Ops Supervisor only."""
+    result = await TruckService.bulk_add_waivers(body.waybill_truck_numbers, current_user, db)
+    return StandardResponse.ok(
+        data=result,
+        message=f"{len(result['created'])} waiver number(s) added"
+        + (f", {len(result['skipped_duplicates'])} duplicate(s) skipped" if result["skipped_duplicates"] else ""),
+    )
+
+
+@router.get("/trucks/waivers", response_model=StandardResponse)
+async def list_waivers(
+    status_filter: Optional[TruckWaiverStatus] = Query(None, alias="status"),
+    current_user: User = Depends(
+        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor)
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """List waiver numbers, optionally filtered by status (e.g. ?status=available)."""
+    waivers = await TruckService.list_waivers(db, status_filter=status_filter)
+    items = [TruckWaiverOut.model_validate(w).model_dump() for w in waivers]
+    return StandardResponse.ok(data=items, message="Waiver numbers retrieved")
 
 
 @router.get(
@@ -176,6 +213,75 @@ async def upload_truck_photo(
     )
 
 
+DOC_TYPE_FIELDS = {"licence": "truck_licence_url", "calibration_cert": "calibration_cert_url"}
+TRUCK_DOCS_BUCKET = "truck-documents"
+ALLOWED_DOC_TYPES = {"application/pdf"}
+
+
+@router.post(
+    "/trucks/{truck_id}/documents/{doc_type}",
+    response_model=StandardResponse,
+)
+async def upload_truck_document(
+    truck_id: UUID,
+    doc_type: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.logistics_officer)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Upload a truck licence or calibration certificate PDF."""
+    if doc_type not in DOC_TYPE_FIELDS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown document type")
+
+    content = await file.read()
+    if len(content) > MAX_FILE_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"File exceeds {settings.MAX_UPLOAD_SIZE_MB}MB limit",
+        )
+
+    mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0] or ""
+    if mime_type not in ALLOWED_DOC_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Only PDF files are allowed for truck documents",
+        )
+
+    safe_name = (file.filename or doc_type).replace("..", "").replace("/", "_").replace("\\", "_")
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    unique_id = str(uuid4())[:8]
+    storage_path = f"{truck_id}/{doc_type}/{timestamp}_{unique_id}_{safe_name}"
+
+    doc_url = await _upload_to_supabase(content, storage_path, mime_type, bucket=TRUCK_DOCS_BUCKET)
+
+    truck = await TruckService.update_truck(
+        truck_id, TruckUpdate(**{DOC_TYPE_FIELDS[doc_type]: doc_url}), current_user, db
+    )
+    return StandardResponse.ok(
+        data=TruckOut.model_validate(truck).model_dump(),
+        message=f"Truck {doc_type.replace('_', ' ')} uploaded",
+    )
+
+
+class TrucksRequiredRequest(BaseModel):
+    trucks_required: int
+
+
+@router.put("/operations/{operation_id}/trucks-required", response_model=StandardResponse)
+async def set_trucks_required(
+    operation_id: UUID,
+    body: TrucksRequiredRequest,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Set how many trucks are required for this operation. Bunker Manager only."""
+    operation = await TruckService.set_trucks_required(operation_id, body.trucks_required, current_user, db)
+    return StandardResponse.ok(
+        data={"trucks_required": operation.trucks_required},
+        message="Trucks required updated",
+    )
+
+
 # ── Truck Operations on an Operation ──────────────────────────────────────────
 
 @router.get("/operations/{operation_id}/trucks", response_model=StandardResponse)
@@ -231,6 +337,25 @@ async def update_truck_operation(
 
 
 @router.post(
+    "/operations/{operation_id}/trucks/{truck_op_id}/waybill",
+    response_model=StandardResponse,
+)
+async def link_waybill(
+    operation_id: UUID,
+    truck_op_id: UUID,
+    body: TruckWaybillLinkRequest,
+    current_user: User = Depends(require_roles(UserRole.logistics_officer)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Link a waiver number + driver to this truck at waybill-generation time. Logistics Officer only."""
+    truck_op = await TruckService.link_waybill(operation_id, truck_op_id, body, current_user, db)
+    return StandardResponse.ok(
+        data=TruckOperationOut.model_validate(truck_op).model_dump(),
+        message="Waybill linked",
+    )
+
+
+@router.post(
     "/operations/{operation_id}/trucks/{truck_op_id}/audit",
     response_model=StandardResponse,
 )
@@ -264,7 +389,7 @@ async def waive_audit_item(
 ):
     """BM can waive a specific failed checklist item with a reason."""
     audit = await TruckService.waive_audit_item(
-        operation_id, truck_op_id, body.item, body.waiver_notes, current_user, db
+        operation_id, truck_op_id, body.phase, body.item, body.waiver_notes, current_user, db
     )
     return StandardResponse.ok(
         data=TruckSafetyAuditOut.model_validate(audit).model_dump(),

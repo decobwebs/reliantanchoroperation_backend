@@ -20,6 +20,7 @@ from app.schemas.operation import (
 )
 from app.services.state_machine import StateMachine, StateMachineError
 from app.services.milestone_service import create_milestone_if_applicable
+from app.services.audit_diff import capture_diff
 from app.utils.number_generator import generate_operation_number
 
 
@@ -289,21 +290,15 @@ class OperationService:
         if not operation:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
 
-        update_data = data.model_dump(exclude_unset=True)
-        changes = {}
-        for field, value in update_data.items():
-            if hasattr(value, "value"):
-                value = value.value
-            old_val = getattr(operation, field, None)
-            if str(old_val) != str(value):
-                changes[field] = {"from": str(old_val), "to": str(value)}
-            setattr(operation, field, value)
+        update_data = data.model_dump(exclude_unset=True, exclude={"reason"})
+        changes = capture_diff(operation, update_data)
 
         operation.updated_at = datetime.utcnow()
         db.add(AuditLog(
             user_id=current_user.id, operation_id=operation.id,
             action="UPDATE_OPERATION", entity_type="operation", entity_id=operation.id,
             changes=changes,
+            reason=data.reason,
             ip_address=request_meta.get("ip") if request_meta else None,
             user_agent=request_meta.get("user_agent") if request_meta else None,
         ))

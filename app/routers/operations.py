@@ -317,6 +317,7 @@ async def get_operation_audit_log(
             "entity_type": log.entity_type,
             "entity_id": str(log.entity_id) if log.entity_id else None,
             "changes": log.changes,
+            "reason": log.reason,
             "created_at": log.created_at.isoformat(),
         }
         for log in logs

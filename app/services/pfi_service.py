@@ -1,16 +1,18 @@
 from typing import List, Optional
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 from fastapi import HTTPException, status
 
-from app.models.finance import PFI, Payment
+from app.models.finance import PFI, Payment, PfiAllocation
 from app.models.operation import Operation, OperationStatusHistory
 from app.models.audit import AuditLog
 from app.models.user import User
 from app.models.enums import UserRole, OperationType, OperationStatus, PfiStatus, PfiType, VoucherStatus, VoucherCategory
+from app.services.audit_diff import capture_diff
 
 
 async def _notify_role(
@@ -40,7 +42,10 @@ async def _notify_role(
             wa_template=wa_template,
             wa_kwargs=wa_kwargs,
         )
-from app.schemas.pfi import PfiCreate, PfiGenerateRequest, PaymentCreate, StandalonePfiCreate, PfiConfirmPaymentRequest
+from app.schemas.pfi import (
+    PfiCreate, PfiGenerateRequest, PaymentCreate, StandalonePfiCreate, PfiConfirmPaymentRequest,
+    PfiAllocationCreate, PfiAllocationUpdate,
+)
 from app.services.notification_service import notify
 from app.services.state_machine import StateMachine, StateMachineError
 from app.utils.number_generator import generate_pfi_number, generate_voucher_number
@@ -117,6 +122,7 @@ class PfiService:
             currency=data.currency,
             exchange_rate=data.exchange_rate,
             amount_ngn=amount_ngn,
+            quantity_litres=data.quantity_litres,
             supplier_name=data.supplier_name,
             description=data.description,
             document_url=data.document_url,
@@ -138,6 +144,7 @@ class PfiService:
 
         await db.commit()
         await db.refresh(pfi)
+        await PfiService._attach_balance(pfi, db)
         return pfi
 
     @staticmethod
@@ -195,6 +202,7 @@ class PfiService:
 
         await db.commit()
         await db.refresh(pfi)
+        await PfiService._attach_balance(pfi, db)
         return pfi
 
     @staticmethod
@@ -210,7 +218,10 @@ class PfiService:
         if unlinked_only:
             stmt = stmt.where(PFI.operation_id.is_(None))
         result = await db.execute(stmt)
-        return list(result.scalars().all())
+        pfis = list(result.scalars().all())
+        for pfi in pfis:
+            await PfiService._attach_balance(pfi, db)
+        return pfis
 
     @staticmethod
     async def link_pfi_to_operation(
@@ -263,6 +274,7 @@ class PfiService:
             currency=data.currency,
             exchange_rate=data.exchange_rate,
             amount_ngn=amount_ngn,
+            quantity_litres=data.quantity_litres,
             supplier_name=data.supplier_name,
             description=data.description,
             document_url=data.document_url,
@@ -309,6 +321,7 @@ class PfiService:
 
         await db.commit()
         await db.refresh(pfi)
+        await PfiService._attach_balance(pfi, db)
         return pfi
 
     @staticmethod
@@ -395,6 +408,7 @@ class PfiService:
             currency=operation.currency,
             exchange_rate=data.exchange_rate,
             amount_ngn=amount_ngn,
+            quantity_litres=data.quantity_litres,
             supplier_name=data.supplier_name or "Reliant Anchor Logistics Limited",
             description=data.description,
             document_url=document_url,
@@ -460,6 +474,7 @@ class PfiService:
 
         await db.commit()
         await db.refresh(pfi)
+        await PfiService._attach_balance(pfi, db)
         return pfi
 
     @staticmethod
@@ -470,7 +485,10 @@ class PfiService:
             .where(PFI.operation_id == operation_id)
             .order_by(PFI.created_at.asc())
         )
-        return list(result.scalars().all())
+        pfis = list(result.scalars().all())
+        for pfi in pfis:
+            await PfiService._attach_balance(pfi, db)
+        return pfis
 
     @staticmethod
     async def get_pfi(pfi_id: UUID, db: AsyncSession) -> PFI:
@@ -478,7 +496,179 @@ class PfiService:
         pfi = result.scalar_one_or_none()
         if not pfi:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PFI not found")
+        await PfiService._attach_balance(pfi, db)
         return pfi
+
+    # ── Volume drawdown / allocation ────────────────────────────────────────
+
+    @staticmethod
+    async def _attach_balance(pfi: PFI, db: AsyncSession) -> PFI:
+        """Annotate transient allocated_litres/remaining_litres onto a PFI instance."""
+        if pfi.quantity_litres is None:
+            pfi.allocated_litres = Decimal("0")
+            pfi.remaining_litres = None
+            return pfi
+        result = await db.execute(
+            select(func.coalesce(func.sum(PfiAllocation.quantity_litres), 0))
+            .where(PfiAllocation.pfi_id == pfi.id)
+        )
+        allocated = Decimal(result.scalar_one())
+        pfi.allocated_litres = allocated
+        pfi.remaining_litres = pfi.quantity_litres - allocated
+        return pfi
+
+    @staticmethod
+    async def list_active_pfis(db: AsyncSession) -> List[PFI]:
+        """PFIs with remaining allocatable volume — the BM's link-to-operation dropdown."""
+        result = await db.execute(
+            select(PFI)
+            .where(
+                PFI.status.notin_([PfiStatus.cancelled, PfiStatus.completed]),
+                PFI.quantity_litres.isnot(None),
+            )
+            .order_by(PFI.created_at.desc())
+        )
+        pfis = list(result.scalars().all())
+        active = []
+        for pfi in pfis:
+            await PfiService._attach_balance(pfi, db)
+            if pfi.remaining_litres is not None and pfi.remaining_litres > 0:
+                active.append(pfi)
+        return active
+
+    @staticmethod
+    async def allocate_pfi_to_operation(
+        pfi_id: UUID,
+        operation_id: UUID,
+        data: PfiAllocationCreate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> PfiAllocation:
+        result = await db.execute(select(PFI).where(PFI.id == pfi_id))
+        pfi = result.scalar_one_or_none()
+        if not pfi:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PFI not found")
+        if pfi.quantity_litres is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="PFI has no quantity set — cannot allocate",
+            )
+
+        operation = await _get_operation_or_404(operation_id, db)
+
+        await PfiService._attach_balance(pfi, db)
+        if data.quantity_litres > pfi.remaining_litres:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Only {pfi.remaining_litres} litres remain on PFI {pfi.pfi_number}",
+            )
+
+        allocation = PfiAllocation(
+            pfi_id=pfi_id,
+            operation_id=operation_id,
+            quantity_litres=data.quantity_litres,
+            linked_by=current_user.id,
+            notes=data.notes,
+        )
+        db.add(allocation)
+        await db.flush()
+
+        if pfi.status in (PfiStatus.pending, PfiStatus.confirmed, PfiStatus.paid):
+            pfi.status = PfiStatus.linked
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="ALLOCATE_PFI",
+            entity_type="pfi_allocation",
+            entity_id=allocation.id,
+            changes={"pfi_number": pfi.pfi_number, "quantity_litres": str(data.quantity_litres)},
+        ))
+
+        await db.commit()
+        await db.refresh(allocation)
+        return allocation
+
+    @staticmethod
+    async def list_allocations_for_operation(operation_id: UUID, db: AsyncSession) -> List[PfiAllocation]:
+        await _get_operation_or_404(operation_id, db)
+        result = await db.execute(
+            select(PfiAllocation)
+            .where(PfiAllocation.operation_id == operation_id)
+            .order_by(PfiAllocation.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def _get_allocation_or_404(allocation_id: UUID, db: AsyncSession) -> PfiAllocation:
+        result = await db.execute(select(PfiAllocation).where(PfiAllocation.id == allocation_id))
+        allocation = result.scalar_one_or_none()
+        if not allocation:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Allocation not found")
+        return allocation
+
+    @staticmethod
+    async def update_allocation(
+        allocation_id: UUID,
+        data: PfiAllocationUpdate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> PfiAllocation:
+        allocation = await PfiService._get_allocation_or_404(allocation_id, db)
+
+        pfi_result = await db.execute(select(PFI).where(PFI.id == allocation.pfi_id))
+        pfi = pfi_result.scalar_one()
+
+        others_result = await db.execute(
+            select(func.coalesce(func.sum(PfiAllocation.quantity_litres), 0))
+            .where(and_(PfiAllocation.pfi_id == pfi.id, PfiAllocation.id != allocation_id))
+        )
+        allocated_by_others = Decimal(others_result.scalar_one())
+        remaining = pfi.quantity_litres - allocated_by_others
+        if data.quantity_litres > remaining:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Only {remaining} litres remain on PFI {pfi.pfi_number}",
+            )
+
+        update_data = data.model_dump(exclude_unset=True, exclude={"reason"})
+        changes = capture_diff(allocation, update_data)
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=allocation.operation_id,
+            action="UPDATE_PFI_ALLOCATION",
+            entity_type="pfi_allocation",
+            entity_id=allocation.id,
+            changes=changes,
+            reason=data.reason,
+        ))
+
+        await db.commit()
+        await db.refresh(allocation)
+        return allocation
+
+    @staticmethod
+    async def delete_allocation(
+        allocation_id: UUID,
+        reason: str,
+        current_user: User,
+        db: AsyncSession,
+    ) -> None:
+        allocation = await PfiService._get_allocation_or_404(allocation_id, db)
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=allocation.operation_id,
+            action="DELETE_PFI_ALLOCATION",
+            entity_type="pfi_allocation",
+            entity_id=allocation.id,
+            changes={"quantity_litres": str(allocation.quantity_litres)},
+            reason=reason,
+        ))
+
+        await db.delete(allocation)
+        await db.commit()
 
 
 class PaymentService:

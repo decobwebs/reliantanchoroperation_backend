@@ -12,6 +12,7 @@ class StandalonePfiCreate(BaseModel):
     amount: Decimal
     currency: str = "NGN"
     exchange_rate: Optional[Decimal] = None
+    quantity_litres: Optional[Decimal] = None
     supplier_name: Optional[str] = None
     description: Optional[str] = None
     client_ref: Optional[str] = None     # client's own reference number
@@ -34,6 +35,13 @@ class StandalonePfiCreate(BaseModel):
             raise ValueError("Amount must be greater than zero")
         return v
 
+    @field_validator("quantity_litres")
+    @classmethod
+    def non_negative_quantity(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is not None and v <= 0:
+            raise ValueError("Quantity must be greater than zero")
+        return v
+
 
 class PfiConfirmPaymentRequest(BaseModel):
     """FM confirms that payment for this PFI has been received/made."""
@@ -47,6 +55,7 @@ class PfiCreate(BaseModel):
     amount: Decimal
     currency: str = "NGN"
     exchange_rate: Optional[Decimal] = None
+    quantity_litres: Optional[Decimal] = None
     supplier_name: Optional[str] = None
     description: Optional[str] = None
     document_url: Optional[str] = None
@@ -68,6 +77,13 @@ class PfiCreate(BaseModel):
             raise ValueError("Amount must be greater than zero")
         return v
 
+    @field_validator("quantity_litres")
+    @classmethod
+    def non_negative_quantity(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is not None and v <= 0:
+            raise ValueError("Quantity must be greater than zero")
+        return v
+
 
 class PfiGenerateRequest(BaseModel):
     """Inputs for system-generated PFI PDF. Operation data is pulled server-side."""
@@ -77,6 +93,7 @@ class PfiGenerateRequest(BaseModel):
     description: Optional[str] = None
     tax_rate: Decimal = Decimal("0")
     exchange_rate: Optional[Decimal] = None
+    quantity_litres: Optional[Decimal] = None
     notes: Optional[str] = None
 
     @field_validator("rate_per_mt")
@@ -116,6 +133,9 @@ class PfiOut(BaseModel):
     currency: str
     exchange_rate: Optional[Decimal] = None
     amount_ngn: Optional[Decimal] = None
+    quantity_litres: Optional[Decimal] = None
+    allocated_litres: Decimal = Decimal("0")
+    remaining_litres: Optional[Decimal] = None
     supplier_name: Optional[str] = None
     description: Optional[str] = None
     document_url: Optional[str] = None
@@ -124,6 +144,67 @@ class PfiOut(BaseModel):
     confirmed_by: Optional[UUID] = None
     confirmed_at: Optional[datetime] = None
     status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── PFI Allocation (drawdown against an operation) ──────────────────────────────
+
+class PfiAllocationCreate(BaseModel):
+    quantity_litres: Decimal
+    notes: Optional[str] = None
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def strip_notes(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("quantity_litres")
+    @classmethod
+    def positive_quantity(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError("Quantity must be greater than zero")
+        return v
+
+
+class PfiAllocationUpdate(BaseModel):
+    quantity_litres: Decimal
+    notes: Optional[str] = None
+    reason: str  # required — this is an edit, not a first-time allocation
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def strip_notes(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to edit an allocation")
+        return v
+
+    @field_validator("quantity_litres")
+    @classmethod
+    def positive_quantity(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError("Quantity must be greater than zero")
+        return v
+
+
+class PfiAllocationOut(BaseModel):
+    id: UUID
+    pfi_id: UUID
+    operation_id: UUID
+    quantity_litres: Decimal
+    linked_by: UUID
+    notes: Optional[str] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

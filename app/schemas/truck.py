@@ -3,7 +3,7 @@ from datetime import datetime
 from uuid import UUID
 from decimal import Decimal
 from pydantic import BaseModel, field_validator, model_validator
-from app.models.enums import TruckStatus, TruckOpStatus, FeedbackStatus, AuditResult
+from app.models.enums import TruckStatus, TruckOpStatus, FeedbackStatus, AuditResult, AuditPhase, TruckWaiverStatus
 
 
 # ── Truck Registry ─────────────────────────────────────────────────────────────
@@ -11,8 +11,7 @@ from app.models.enums import TruckStatus, TruckOpStatus, FeedbackStatus, AuditRe
 class TruckCreate(BaseModel):
     truck_number: str
     capacity_mt: Decimal
-    driver_name: Optional[str] = None
-    driver_phone: Optional[str] = None
+    chassis_number: Optional[str] = None
     current_location: Optional[str] = None
     photo_url: Optional[str] = None
     notes: Optional[str] = None
@@ -22,7 +21,7 @@ class TruckCreate(BaseModel):
     def strip_truck_number(cls, v: str) -> str:
         return v.strip()
 
-    @field_validator("driver_name", "driver_phone", "current_location", "notes", "photo_url", mode="before")
+    @field_validator("chassis_number", "current_location", "notes", "photo_url", mode="before")
     @classmethod
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
@@ -31,15 +30,15 @@ class TruckCreate(BaseModel):
 class TruckUpdate(BaseModel):
     truck_number: Optional[str] = None
     capacity_mt: Optional[Decimal] = None
-    driver_name: Optional[str] = None
-    driver_phone: Optional[str] = None
+    chassis_number: Optional[str] = None
     current_location: Optional[str] = None
     status: Optional[TruckStatus] = None
     photo_url: Optional[str] = None
     notes: Optional[str] = None
     is_active: Optional[bool] = None
+    reason: Optional[str] = None  # required by the router for edit-audit-trail
 
-    @field_validator("truck_number", "driver_name", "driver_phone", "current_location", "notes", "photo_url", mode="before")
+    @field_validator("truck_number", "chassis_number", "current_location", "notes", "photo_url", mode="before")
     @classmethod
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
@@ -51,6 +50,9 @@ class TruckOut(BaseModel):
     capacity_mt: Decimal
     driver_name: Optional[str] = None
     driver_phone: Optional[str] = None
+    chassis_number: Optional[str] = None
+    truck_licence_url: Optional[str] = None
+    calibration_cert_url: Optional[str] = None
     status: TruckStatus
     current_location: Optional[str] = None
     gps_lat: Optional[Decimal] = None
@@ -116,10 +118,14 @@ class TruckProfileOut(BaseModel):
 # ── Safety Audit ──────────────────────────────────────────────────────────────
 
 class TruckSafetyAuditCreate(BaseModel):
+    phase: AuditPhase = AuditPhase.pre
     conducted_at: Optional[datetime] = None
     result: AuditResult
-    checklist: List[Dict[str, Any]] = []
+    checklist: List[Dict[str, Any]] = []  # each item may carry its own checked_at timestamp
     notes: Optional[str] = None
+    # Header fields (Safety Officer, Driver, PFI, dates, etc.) — captured once per
+    # phase alongside the checklist rather than as pseudo checklist items.
+    header: Dict[str, Any] = {}
 
     @field_validator("notes", mode="before")
     @classmethod
@@ -130,6 +136,7 @@ class TruckSafetyAuditCreate(BaseModel):
 class TruckSafetyAuditOut(BaseModel):
     id: UUID
     truck_op_id: UUID
+    phase: AuditPhase
     operation_id: UUID
     truck_id: UUID
     conducted_by: UUID
@@ -137,6 +144,7 @@ class TruckSafetyAuditOut(BaseModel):
     conducted_at: datetime
     result: AuditResult
     checklist: List[Any] = []
+    header: Dict[str, Any] = {}
     notes: Optional[str] = None
     waivers: List[Any] = []
     created_at: datetime
@@ -146,6 +154,7 @@ class TruckSafetyAuditOut(BaseModel):
 
 
 class WaiveAuditItemRequest(BaseModel):
+    phase: AuditPhase = AuditPhase.pre
     item: str
     waiver_notes: Optional[str] = None
 
@@ -159,12 +168,53 @@ class TruckOperationCreate(BaseModel):
     loading_location: Optional[str] = None
     discharge_location: Optional[str] = None
     destination_vessel_id: Optional[UUID] = None
+    # Sourcing — captured per assignment, not on the truck master (drivers are temporary).
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    vendor_name: Optional[str] = None
     notes: Optional[str] = None
 
-    @field_validator("loading_location", "discharge_location", "notes", mode="before")
+    @field_validator("loading_location", "discharge_location", "notes", "driver_name", "driver_phone", "vendor_name", mode="before")
     @classmethod
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
+
+
+class TruckWaybillLinkRequest(BaseModel):
+    """The moment waiver number, plate, and driver are linked together."""
+    waiver_id: UUID
+    driver_name: str
+    driver_phone: str
+    vendor_name: Optional[str] = None
+    waybill_document_number: Optional[str] = None
+    waybill_number: Optional[str] = None
+
+    @field_validator("driver_name", "driver_phone", "vendor_name", "waybill_document_number", "waybill_number", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+
+class TruckWaiverBulkCreate(BaseModel):
+    waybill_truck_numbers: List[str]
+
+    @field_validator("waybill_truck_numbers")
+    @classmethod
+    def clean_numbers(cls, v: List[str]) -> List[str]:
+        cleaned = [n.strip().upper() for n in v if n and n.strip()]
+        if not cleaned:
+            raise ValueError("At least one waiver number is required")
+        return cleaned
+
+
+class TruckWaiverOut(BaseModel):
+    id: UUID
+    waybill_truck_number: str
+    status: TruckWaiverStatus
+    added_by: UUID
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class TruckOperationUpdate(BaseModel):
@@ -228,6 +278,11 @@ class TruckOperationOut(BaseModel):
     gps_end_lng: Optional[Decimal] = None
     waybill_number: Optional[str] = None
     waybill_url: Optional[str] = None
+    driver_name: Optional[str] = None
+    driver_phone: Optional[str] = None
+    vendor_name: Optional[str] = None
+    waybill_document_number: Optional[str] = None
+    waiver_id: Optional[UUID] = None
     status: TruckOpStatus
     notes: Optional[str] = None
     events: List[Any] = []
@@ -235,7 +290,7 @@ class TruckOperationOut(BaseModel):
     updated_at: datetime
     truck: Optional[TruckOut] = None
     supervisor: Optional[Any] = None
-    safety_audit: Optional[TruckSafetyAuditOut] = None
+    safety_audits: List[TruckSafetyAuditOut] = []
 
     model_config = {"from_attributes": True}
 

@@ -81,6 +81,16 @@ class Priority(str, enum.Enum):
     urgent = "urgent"
 
 
+class TruckWaiverStatus(str, enum.Enum):
+    available = "available"
+    linked = "linked"
+
+
+class AuditPhase(str, enum.Enum):
+    pre = "pre"
+    post = "post"
+
+
 class TruckStatus(str, enum.Enum):
     available = "available"
     assigned = "assigned"

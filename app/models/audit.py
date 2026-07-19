@@ -19,6 +19,7 @@ class AuditLog(Base):
     entity_type = Column(String(50), nullable=False)
     entity_id = Column(UUID(as_uuid=True), nullable=True)
     changes = Column(JSONB, nullable=True)
+    reason = Column(Text, nullable=True)
     ip_address = Column(Text, nullable=True)
     user_agent = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
