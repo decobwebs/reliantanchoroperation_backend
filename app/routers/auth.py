@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
 from app.database import get_db
-from app.dependencies import get_current_user, get_request_meta
+from app.dependencies import get_current_user, get_request_meta, require_roles
 from app.models.user import User
 from app.models.enums import UserRole
 from app.models.audit import AuditLog
@@ -14,7 +14,12 @@ from app.schemas.auth import (
     ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest,
     UpdateMeRequest, TokenResponse,
 )
-from app.schemas.user import UserOut
+from app.schemas.user import UserOut, ActAsRequest
+
+ACT_AS_ELIGIBLE_ROLES = {
+    UserRole.ops_supervisor, UserRole.logistics_officer,
+    UserRole.marine_manager, UserRole.finance_manager,
+}
 from app.schemas.common import StandardResponse
 from app.services.auth_service import AuthService
 
@@ -103,7 +108,7 @@ async def login(
     user = result.scalar_one_or_none()
     if user:
         user.last_login_at = datetime.utcnow()
-        meta = get_request_meta(request)
+        meta = get_request_meta(request, user)
         db.add(AuditLog(
             user_id=user.id,
             action="LOGIN",
@@ -162,6 +167,79 @@ async def get_me(current_user: User = Depends(get_current_user)):
     return StandardResponse.ok(
         data=UserOut.model_validate(current_user).model_dump(),
         message="Profile retrieved",
+    )
+
+
+@router.post("/act-as", response_model=StandardResponse)
+async def act_as(
+    body: ActAsRequest,
+    request: Request,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, allow_acting_as=False)),
+    db: AsyncSession = Depends(get_db),
+):
+    """BM switches into another role's permissions. Real identity (id, role)
+    never changes — only the gate that require_roles() checks against."""
+    if body.role not in ACT_AS_ELIGIBLE_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Cannot act as '{body.role.value}'. Eligible roles: {[r.value for r in ACT_AS_ELIGIBLE_ROLES]}",
+        )
+
+    from_role = current_user.acting_as_role.value if current_user.acting_as_role else None
+    current_user.acting_as_role = body.role
+    meta = get_request_meta(request, current_user)
+    db.add(AuditLog(
+        user_id=current_user.id,
+        action="ACT_AS_ROLE_SWITCH",
+        entity_type="user",
+        entity_id=current_user.id,
+        changes={"acted_as_role": {"from": from_role, "to": body.role.value}},
+        acted_as_role=body.role,
+        ip_address=meta["ip"],
+        user_agent=meta["user_agent"],
+    ))
+    await db.flush()
+    await db.refresh(current_user)
+
+    return StandardResponse.ok(
+        data=UserOut.model_validate(current_user).model_dump(),
+        message=f"Now acting as {body.role.value.replace('_', ' ').title()}",
+    )
+
+
+@router.post("/act-as/clear", response_model=StandardResponse)
+async def clear_act_as(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Switch back to BM's real role. Any authenticated user with
+    acting_as_role set can clear their own — this must work even mid-acting-as,
+    when require_roles(bunker_manager) alone would gate on the acted role."""
+    if current_user.role != UserRole.bunker_manager or not current_user.acting_as_role:
+        return StandardResponse.ok(
+            data=UserOut.model_validate(current_user).model_dump(),
+            message="Not currently acting as another role",
+        )
+
+    from_role = current_user.acting_as_role.value
+    current_user.acting_as_role = None
+    meta = get_request_meta(request, current_user)
+    db.add(AuditLog(
+        user_id=current_user.id,
+        action="ACT_AS_ROLE_CLEAR",
+        entity_type="user",
+        entity_id=current_user.id,
+        changes={"acted_as_role": {"from": from_role, "to": None}},
+        ip_address=meta["ip"],
+        user_agent=meta["user_agent"],
+    ))
+    await db.flush()
+    await db.refresh(current_user)
+
+    return StandardResponse.ok(
+        data=UserOut.model_validate(current_user).model_dump(),
+        message="Switched back to Bunker Manager",
     )
 
 

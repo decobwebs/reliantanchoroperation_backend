@@ -12,6 +12,7 @@ class UserOut(BaseModel):
     full_name: str
     phone: Optional[str] = None
     role: UserRole
+    acting_as_role: Optional[UserRole] = None
     is_active: bool
     avatar_url: Optional[str] = None
     last_login_at: Optional[datetime] = None
@@ -19,6 +20,10 @@ class UserOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class ActAsRequest(BaseModel):
+    role: UserRole
 
 
 class UserBrief(BaseModel):

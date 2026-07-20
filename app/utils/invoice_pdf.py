@@ -5,7 +5,7 @@ import io
 import os
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
@@ -90,7 +90,7 @@ def generate_invoice_pdf(
     operation_number: Optional[str],
     operation_type: Optional[str],
     operation_version: Optional[int],
-    product_type: Optional[str],
+    products: Optional[List[dict]],
     loading_location: Optional[str],
     discharge_location: Optional[str],
     bdn_number: Optional[str],
@@ -164,7 +164,14 @@ def generate_invoice_pdf(
         if operation_type
         else "-"
     )
-    product_label = PRODUCT_LABELS.get(product_type or "", product_type or "-")
+    product_rows = [
+        {
+            "label": PRODUCT_LABELS.get(p["product_type"] or "", p["product_type"] or "-"),
+            "qty": p.get("quantity_mt"),
+        }
+        for p in (products or [])
+    ]
+    product_label = ", ".join(row["label"] for row in product_rows) or "-"
 
     bill_to_cell = [
         Paragraph("BILL TO", H2),
@@ -178,6 +185,12 @@ def generate_invoice_pdf(
         # Full-width BILL TO — there is no operation to describe.
         parties = Table([[bill_to_cell]], colWidths=[CONTENT_W])
     else:
+        product_lines = (
+            [Paragraph(f"Product: {_safe(row['label'])} ({_fmt_money(row['qty'])} MT)"
+                       if row["qty"] is not None else f"Product: {_safe(row['label'])}", BODY)
+             for row in product_rows]
+            or [Paragraph("Product: -", BODY)]
+        )
         parties = Table([[
             bill_to_cell,
             [
@@ -185,7 +198,7 @@ def generate_invoice_pdf(
                 Spacer(1, 2 * mm),
                 Paragraph(f"Operation: {_safe(operation_number)} (v{operation_version})", BODY),
                 Paragraph(f"Service: {_safe(op_type_label)}", BODY),
-                Paragraph(f"Product: {_safe(product_label)}", BODY),
+                *product_lines,
                 Paragraph(f"BDN: {_safe(bdn_number)}", BODY),
             ],
         ]], colWidths=[CONTENT_W / 2 - 3 * mm, CONTENT_W / 2 - 3 * mm])

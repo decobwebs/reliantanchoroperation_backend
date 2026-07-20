@@ -291,7 +291,7 @@ def _portal_op_summary(op: Operation) -> dict:
         "operation_number": op.operation_number,
         "type": op.type.value,
         "status": op.status.value,
-        "expected_volume_mt": str(op.expected_volume_mt) if op.expected_volume_mt else None,
+        "products": [{"product_type": p.product_type, "quantity_mt": str(p.quantity_mt)} for p in op.products],
         "actual_volume_mt": str(op.actual_volume_mt) if op.actual_volume_mt else None,
         "notes": op.notes,
         "created_at": op.created_at.isoformat(),

@@ -26,6 +26,9 @@ router = APIRouter(tags=["Invoices"])
 
 _fm_only = Depends(require_roles(UserRole.finance_manager))
 _fm_bm = Depends(require_roles(UserRole.finance_manager, UserRole.bunker_manager))
+# Financial controls carve-out — marking an invoice paid is the finalization
+# moment, so it stays gated to the real FM even when BM is acting-as-FM.
+_fm_only_strict = Depends(require_roles(UserRole.finance_manager, allow_acting_as=False))
 
 
 async def _serialize_invoice(invoice, db: AsyncSession = None) -> dict:
@@ -146,10 +149,11 @@ async def generate_invoice_pdf(
 async def mark_invoice_paid(
     invoice_id: UUID,
     body: InvoiceMarkPaidRequest,
-    current_user: User = _fm_only,
+    current_user: User = _fm_only_strict,
     db: AsyncSession = Depends(get_db),
 ):
-    """Mark invoice as paid. Transitions operation to completed. FM only."""
+    """Mark invoice as paid. Transitions operation to completed. Real Finance
+    Manager only (financial controls carve-out — no acting-as bypass)."""
     invoice = await InvoiceService.mark_paid(invoice_id, body, current_user, db)
     return StandardResponse.ok(
         data=await _serialize_invoice(invoice, db),

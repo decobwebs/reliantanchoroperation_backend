@@ -65,6 +65,12 @@ class Operation(Base):
     pfis = relationship("PFI", foreign_keys="[PFI.operation_id]", back_populates="operation")
     source_pfi = relationship("PFI", foreign_keys="[Operation.pfi_id]", uselist=False)
     pfi_allocations = relationship("PfiAllocation", back_populates="operation")
+    # selectin: every Operation serialized to OperationOut needs .products, and
+    # there are many call sites across services/routers that fetch a bare
+    # Operation without explicit eager-loading — always-on selectin avoids
+    # having to remember selectinload() at each one (async sessions can't
+    # lazy-load on demand).
+    products = relationship("OperationProduct", back_populates="operation", cascade="all, delete-orphan", lazy="selectin")
     payments = relationship("Payment", back_populates="operation")
     invoices = relationship("Invoice", back_populates="operation")
     vouchers = relationship("Voucher", back_populates="operation")
@@ -72,6 +78,21 @@ class Operation(Base):
     notifications = relationship("Notification", back_populates="operation")
     audit_logs = relationship("AuditLog", back_populates="operation")
     milestones = relationship("ClientMilestone", back_populates="operation")
+
+
+class OperationProduct(Base):
+    """One product+quantity line on an operation. An operation always has at
+    least one — this fully replaces the old single product_type/expected_volume_mt
+    fields (which stay on Operation, unused, for additive-migration safety)."""
+    __tablename__ = "operation_products"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id", ondelete="CASCADE"), nullable=False)
+    product_type = Column(String(50), nullable=False)
+    quantity_mt = Column(Numeric(12, 3), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    operation = relationship("Operation", back_populates="products")
 
 
 class OperationStatusHistory(Base):

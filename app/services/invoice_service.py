@@ -73,13 +73,19 @@ class InvoiceService:
                 if operation else None
             ),
             operation_version=operation.version if operation else None,
-            product_type=operation.product_type if operation else None,
+            products=(
+                [{"product_type": p.product_type, "quantity_mt": p.quantity_mt} for p in operation.products]
+                if operation else None
+            ),
             loading_location=operation.loading_location if operation else None,
             discharge_location=operation.discharge_location if operation else None,
             bdn_number=bdn.bdn_number if bdn else None,
             quantity_delivered_mt=(
                 bdn.quantity_delivered_mt if bdn
-                else ((operation.actual_volume_mt or operation.expected_volume_mt) if operation else None)
+                else (
+                    (operation.actual_volume_mt or sum((p.quantity_mt for p in operation.products), Decimal("0")))
+                    if operation else None
+                )
             ),
             client_name=client_name,
             client_email=client_email,

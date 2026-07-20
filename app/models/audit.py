@@ -2,11 +2,12 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Boolean, DateTime, Text, ForeignKey, ARRAY,
-    Integer
+    Integer, Enum as SAEnum
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
+from app.models.enums import UserRole
 
 
 class AuditLog(Base):
@@ -20,6 +21,9 @@ class AuditLog(Base):
     entity_id = Column(UUID(as_uuid=True), nullable=True)
     changes = Column(JSONB, nullable=True)
     reason = Column(Text, nullable=True)
+    # Set when `user_id` (the real actor) performed this action while
+    # acting-as another role — user_id always stays the real actor's id.
+    acted_as_role = Column(SAEnum(UserRole, name="user_role"), nullable=True)
     ip_address = Column(Text, nullable=True)
     user_agent = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)

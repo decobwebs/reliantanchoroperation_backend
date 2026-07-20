@@ -38,8 +38,18 @@ class VesselDischargeService:
         if not source_vessel:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Source vessel not found")
 
-        # Derive product type from operation if not provided
-        product = data.product_type or operation.product_type
+        # Derive product type from operation if not provided — only safe to
+        # default when the operation has exactly one product; otherwise the
+        # caller must say which product this discharge event is for.
+        if data.product_type:
+            product = data.product_type
+        elif len(operation.products) == 1:
+            product = operation.products[0].product_type
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This operation has multiple products — specify which product this discharge event is for",
+            )
 
         # Create ROB entry for the source vessel (discharge = negative)
         rob_before = source_vessel.current_rob_mt

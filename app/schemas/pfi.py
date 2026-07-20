@@ -49,42 +49,6 @@ class PfiConfirmPaymentRequest(BaseModel):
     notes: Optional[str] = None
 
 
-# ── Operation-scoped PFI creation (legacy — BM links PFI to existing operation) ─
-
-class PfiCreate(BaseModel):
-    amount: Decimal
-    currency: str = "NGN"
-    exchange_rate: Optional[Decimal] = None
-    quantity_litres: Optional[Decimal] = None
-    supplier_name: Optional[str] = None
-    description: Optional[str] = None
-    document_url: Optional[str] = None
-
-    @field_validator("currency", mode="before")
-    @classmethod
-    def upper_currency(cls, v: str) -> str:
-        return v.strip().upper()
-
-    @field_validator("supplier_name", "description", mode="before")
-    @classmethod
-    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
-        return v.strip() if v else v
-
-    @field_validator("amount")
-    @classmethod
-    def positive_amount(cls, v: Decimal) -> Decimal:
-        if v <= 0:
-            raise ValueError("Amount must be greater than zero")
-        return v
-
-    @field_validator("quantity_litres")
-    @classmethod
-    def non_negative_quantity(cls, v: Optional[Decimal]) -> Optional[Decimal]:
-        if v is not None and v <= 0:
-            raise ValueError("Quantity must be greater than zero")
-        return v
-
-
 class PfiUpdate(BaseModel):
     amount: Optional[Decimal] = None
     currency: Optional[str] = None
@@ -169,6 +133,79 @@ class PfiGenerateRequest(BaseModel):
     @classmethod
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
+
+
+class PfiAllocationCreate(BaseModel):
+    """A drawdown of a PFI's volume against one operation."""
+    quantity_litres: Decimal
+    notes: Optional[str] = None
+
+    @field_validator("notes", mode="before")
+    @classmethod
+    def strip_notes(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("quantity_litres")
+    @classmethod
+    def positive_quantity(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError("Quantity must be greater than zero")
+        return v
+
+
+class PfiAllocationUpdate(BaseModel):
+    quantity_litres: Optional[Decimal] = None
+    notes: Optional[str] = None
+    reason: str  # required — this is an edit, not a first-time creation
+
+    @field_validator("notes", "reason", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to edit an allocation")
+        return v
+
+    @field_validator("quantity_litres")
+    @classmethod
+    def positive_quantity(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is not None and v <= 0:
+            raise ValueError("Quantity must be greater than zero")
+        return v
+
+
+class PfiAllocationDeleteRequest(BaseModel):
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to remove an allocation")
+        return v
+
+
+class PfiAllocationOut(BaseModel):
+    id: UUID
+    pfi_id: UUID
+    operation_id: UUID
+    quantity_litres: Decimal
+    linked_by: UUID
+    notes: Optional[str] = None
+    created_at: datetime
+    pfi_number: Optional[str] = None
+    operation_number: Optional[str] = None
+
+    model_config = {"from_attributes": True}
 
 
 class PfiOut(BaseModel):

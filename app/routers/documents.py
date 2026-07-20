@@ -241,7 +241,7 @@ async def get_document_download_url(
     # Object-level authz: caller must be allowed to see this document's operation.
     await _assert_can_access_operation(doc.operation_id, current_user, db)
 
-    meta = get_request_meta(request)
+    meta = get_request_meta(request, current_user)
     audit = AuditLog(
         user_id=current_user.id,
         operation_id=doc.operation_id,

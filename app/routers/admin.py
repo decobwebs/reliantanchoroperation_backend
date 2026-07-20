@@ -218,6 +218,7 @@ async def list_audit_logs(
             "actor_name": log.user.full_name if log.user else None,
             "actor_email": log.user.email if log.user else None,
             "actor_role": log.user.role.value if log.user else None,
+            "actor_acted_as_role": log.acted_as_role.value if log.acted_as_role else None,
             "operation_id": str(log.operation_id) if log.operation_id else None,
             "action": log.action,
             "entity_type": log.entity_type,

@@ -75,11 +75,14 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
             async with AsyncSessionLocal() as db:
                 # AuditLog.user_id FKs users.id, but the JWT `sub` is the Supabase
                 # auth_id — resolve the local user before inserting, or the FK fails.
-                local_user_id = (
-                    await db.execute(select(User.id).where(User.auth_id == auth_id))
-                ).scalar_one_or_none()
-                if not local_user_id:
+                row = (
+                    await db.execute(
+                        select(User.id, User.acting_as_role).where(User.auth_id == auth_id)
+                    )
+                ).first()
+                if not row:
                     return response
+                local_user_id, acting_as_role = row
                 entry = AuditLog(
                     user_id=local_user_id,
                     action=f"{method} {path}",
@@ -89,6 +92,7 @@ class AuditLogMiddleware(BaseHTTPMiddleware):
                         "duration_ms": duration_ms,
                         **({"query": qs} if qs else {}),
                     },
+                    acted_as_role=acting_as_role,
                     ip_address=_client_ip(request),
                     user_agent=request.headers.get("User-Agent"),
                 )

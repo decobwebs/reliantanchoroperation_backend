@@ -440,12 +440,14 @@ class VesselService:
                 }
 
                 documents = [d for d in (op.documents or []) if not d.is_deleted]
+                products_total = sum((p.quantity_mt for p in op.products), Decimal("0")) if op.products else None
                 op_data = {
                     "id": str(op.id),
                     "operation_number": op.operation_number,
                     "type": op.type.value,
                     "status": op.status.value,
-                    "expected_volume_mt": str(op.expected_volume_mt) if op.expected_volume_mt is not None else None,
+                    "product_types": ", ".join(p.product_type for p in op.products) if op.products else None,
+                    "expected_volume_mt": str(op.actual_volume_mt or products_total) if (op.actual_volume_mt is not None or products_total is not None) else None,
                     "actual_volume_mt": str(op.actual_volume_mt) if op.actual_volume_mt is not None else None,
                     "notes": op.notes,
                     "trucks": trucks_data,

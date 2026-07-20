@@ -4,10 +4,10 @@ from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_, func
 from fastapi import HTTPException, status
 
-from app.models.finance import PFI, Payment
+from app.models.finance import PFI, Payment, PfiAllocation
 from app.models.operation import Operation, OperationStatusHistory
 from app.models.audit import AuditLog
 from app.models.user import User
@@ -43,7 +43,8 @@ async def _notify_role(
             wa_kwargs=wa_kwargs,
         )
 from app.schemas.pfi import (
-    PfiCreate, PfiUpdate, PfiGenerateRequest, PaymentCreate, StandalonePfiCreate, PfiConfirmPaymentRequest,
+    PfiUpdate, PfiGenerateRequest, PaymentCreate, StandalonePfiCreate, PfiConfirmPaymentRequest,
+    PfiAllocationCreate, PfiAllocationUpdate,
 )
 from app.services.notification_service import notify
 from app.services.state_machine import StateMachine, StateMachineError
@@ -210,138 +211,188 @@ class PfiService:
         status_filter: Optional[str] = None,
         unlinked_only: bool = False,
     ) -> List[PFI]:
-        """Global PFI list — for FM and BM dashboards."""
+        """Global PFI list — for FM and BM dashboards. `unlinked_only` means "has
+        remaining unallocated volume" — a PFI can now be allocated across several
+        operations, so it stays selectable until its volume is used up."""
         stmt = select(PFI).order_by(PFI.created_at.desc())
         if status_filter:
             stmt = stmt.where(PFI.status == status_filter)
-        if unlinked_only:
-            stmt = stmt.where(PFI.operation_id.is_(None))
         result = await db.execute(stmt)
         pfis = list(result.scalars().all())
         for pfi in pfis:
             await PfiService._attach_balance(pfi, db)
+        if unlinked_only:
+            pfis = [p for p in pfis if p.remaining_litres is not None and p.remaining_litres > 0]
         return pfis
 
     @staticmethod
-    async def link_pfi_to_operation(
+    async def _get_allocation_or_404(allocation_id: UUID, db: AsyncSession) -> PfiAllocation:
+        result = await db.execute(select(PfiAllocation).where(PfiAllocation.id == allocation_id))
+        allocation = result.scalar_one_or_none()
+        if not allocation:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Allocation not found")
+        return allocation
+
+    @staticmethod
+    async def allocate_pfi_to_operation(
         pfi_id: UUID,
         operation_id: UUID,
+        data: PfiAllocationCreate,
         current_user: User,
         db: AsyncSession,
-    ) -> PFI:
-        """Simple 1:1 pick: attach an existing standalone PFI to an operation.
-        No quantity/allocation involved — a PFI belongs to at most one operation."""
+    ) -> PfiAllocation:
+        """Draw down some of a PFI's volume against an operation. A PFI can be
+        allocated across several operations; an operation can draw from several PFIs."""
         result = await db.execute(select(PFI).where(PFI.id == pfi_id))
         pfi = result.scalar_one_or_none()
         if not pfi:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PFI not found")
-        if pfi.status not in (PfiStatus.paid, PfiStatus.pending, PfiStatus.confirmed):
+        if pfi.status not in (PfiStatus.paid, PfiStatus.pending, PfiStatus.confirmed, PfiStatus.linked):
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"PFI must be paid before linking to an operation. Current status: '{pfi.status.value}'",
+                detail=f"PFI must be paid before it can be allocated. Current status: '{pfi.status.value}'",
             )
-        if pfi.operation_id is not None and str(pfi.operation_id) != str(operation_id):
+        if pfi.quantity_litres is None:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="This PFI is already linked to a different operation",
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This PFI has no total quantity set, so it cannot be allocated",
             )
         await _get_operation_or_404(operation_id, db)
 
-        pfi.operation_id = operation_id
-        pfi.status = PfiStatus.linked
+        allocated_result = await db.execute(
+            select(func.coalesce(func.sum(PfiAllocation.quantity_litres), 0))
+            .where(PfiAllocation.pfi_id == pfi_id)
+        )
+        allocated = Decimal(allocated_result.scalar() or 0)
+        remaining = pfi.quantity_litres - allocated
+        if data.quantity_litres > remaining:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Only {remaining} L remaining on this PFI",
+            )
+
+        allocation = PfiAllocation(
+            pfi_id=pfi_id,
+            operation_id=operation_id,
+            quantity_litres=data.quantity_litres,
+            linked_by=current_user.id,
+            notes=data.notes,
+        )
+        db.add(allocation)
+        await db.flush()
+
+        if pfi.status != PfiStatus.linked:
+            pfi.status = PfiStatus.linked
 
         db.add(AuditLog(
             user_id=current_user.id,
             operation_id=operation_id,
-            action="LINK_PFI",
-            entity_type="pfi",
-            entity_id=pfi.id,
-            changes={"pfi_number": pfi.pfi_number},
+            action="ALLOCATE_PFI",
+            entity_type="pfi_allocation",
+            entity_id=allocation.id,
+            changes={"pfi_number": pfi.pfi_number, "quantity_litres": str(data.quantity_litres)},
         ))
 
-        # No self-commit — this is called both standalone (router commits via
-        # get_db) and inline from OperationService.create_operation (which must
-        # stay one atomic transaction with the rest of operation creation).
+        # No self-commit — get_db() commits post-request. This is called both
+        # standalone (via the router) and inline from OperationService.create_operation
+        # (which must stay one atomic transaction with the rest of operation creation).
         await db.flush()
-        await db.refresh(pfi)
-        await PfiService._attach_balance(pfi, db)
-        return pfi
+        await db.refresh(allocation)
+        return allocation
 
     @staticmethod
-    async def create_pfi(
-        operation_id: UUID,
-        data: PfiCreate,
+    async def list_allocations_for_operation(operation_id: UUID, db: AsyncSession) -> List[PfiAllocation]:
+        from sqlalchemy.orm import selectinload
+        await _get_operation_or_404(operation_id, db)
+        result = await db.execute(
+            select(PfiAllocation)
+            .options(selectinload(PfiAllocation.pfi))
+            .where(PfiAllocation.operation_id == operation_id)
+            .order_by(PfiAllocation.created_at.asc())
+        )
+        allocations = list(result.scalars().all())
+        for a in allocations:
+            a.pfi_number = a.pfi.pfi_number if a.pfi else None
+        return allocations
+
+    @staticmethod
+    async def list_allocations_for_pfi(pfi_id: UUID, db: AsyncSession) -> List[PfiAllocation]:
+        from sqlalchemy.orm import selectinload
+        result = await db.execute(
+            select(PfiAllocation)
+            .options(selectinload(PfiAllocation.operation))
+            .where(PfiAllocation.pfi_id == pfi_id)
+            .order_by(PfiAllocation.created_at.asc())
+        )
+        allocations = list(result.scalars().all())
+        for a in allocations:
+            a.operation_number = a.operation.operation_number if a.operation else None
+        return allocations
+
+    @staticmethod
+    async def update_allocation(
+        allocation_id: UUID,
+        data: PfiAllocationUpdate,
         current_user: User,
         db: AsyncSession,
-    ) -> PFI:
-        operation = await _get_operation_or_404(operation_id, db)
+    ) -> PfiAllocation:
+        allocation = await PfiService._get_allocation_or_404(allocation_id, db)
 
-        pfi_number = await generate_pfi_number(db)
+        update_data = data.model_dump(exclude_unset=True, exclude={"reason"})
 
-        # Compute NGN amount if exchange rate provided
-        amount_ngn = None
-        if data.currency == "NGN":
-            amount_ngn = data.amount
-        elif data.exchange_rate and data.exchange_rate > 0:
-            amount_ngn = data.amount * data.exchange_rate
+        if "quantity_litres" in update_data and update_data["quantity_litres"] is not None:
+            pfi_result = await db.execute(select(PFI).where(PFI.id == allocation.pfi_id))
+            pfi = pfi_result.scalar_one_or_none()
+            if pfi and pfi.quantity_litres is not None:
+                other_result = await db.execute(
+                    select(func.coalesce(func.sum(PfiAllocation.quantity_litres), 0))
+                    .where(PfiAllocation.pfi_id == allocation.pfi_id, PfiAllocation.id != allocation_id)
+                )
+                other_allocated = Decimal(other_result.scalar() or 0)
+                remaining = pfi.quantity_litres - other_allocated
+                if update_data["quantity_litres"] > remaining:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail=f"Only {remaining} L remaining on this PFI",
+                    )
 
-        pfi = PFI(
-            pfi_number=pfi_number,
-            operation_id=operation_id,
-            linked_by=current_user.id,
-            amount=data.amount,
-            currency=data.currency,
-            exchange_rate=data.exchange_rate,
-            amount_ngn=amount_ngn,
-            quantity_litres=data.quantity_litres,
-            supplier_name=data.supplier_name,
-            description=data.description,
-            document_url=data.document_url,
-            pfi_type=PfiType.client_proforma,
-            status=PfiStatus.pending,
-        )
-        db.add(pfi)
-        await db.flush()
+        changes = capture_diff(allocation, update_data)
 
-        # Transition operation to pfi_linked
-        await _transition_operation(
-            operation, OperationStatus.pfi_linked, current_user, db,
-            reason=f"PFI {pfi_number} linked"
-        )
-
-        # Audit log
-        audit = AuditLog(
+        db.add(AuditLog(
             user_id=current_user.id,
-            operation_id=operation_id,
-            action="CREATE_PFI",
-            entity_type="pfi",
-            entity_id=pfi.id,
-            changes={"pfi_number": pfi_number, "amount": str(data.amount), "currency": data.currency},
-        )
-        db.add(audit)
-
-        # Notify all Finance Managers (in-app + WhatsApp)
-        await _notify_role(
-            db=db,
-            role=UserRole.finance_manager,
-            operation_id=operation_id,
-            type_="payment_update",
-            title="PFI Ready for Payment",
-            message=f"PFI {pfi_number} has been linked to operation {operation.operation_number}. Payment required.",
-            priority="high",
-            wa_template="pfi_received",
-            wa_kwargs={
-                "operation_number": operation.operation_number,
-                "pfi_number": pfi_number,
-                "amount": str(data.amount),
-                "currency": data.currency,
-            },
-        )
+            operation_id=allocation.operation_id,
+            action="UPDATE_PFI_ALLOCATION",
+            entity_type="pfi_allocation",
+            entity_id=allocation.id,
+            changes=changes,
+            reason=data.reason,
+        ))
 
         await db.commit()
-        await db.refresh(pfi)
-        await PfiService._attach_balance(pfi, db)
-        return pfi
+        await db.refresh(allocation)
+        return allocation
+
+    @staticmethod
+    async def delete_allocation(
+        allocation_id: UUID,
+        reason: str,
+        current_user: User,
+        db: AsyncSession,
+    ) -> None:
+        allocation = await PfiService._get_allocation_or_404(allocation_id, db)
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=allocation.operation_id,
+            action="DELETE_PFI_ALLOCATION",
+            entity_type="pfi_allocation",
+            entity_id=allocation.id,
+            changes={"pfi_id": str(allocation.pfi_id), "quantity_litres": str(allocation.quantity_litres)},
+            reason=reason,
+        ))
+
+        await db.delete(allocation)
+        await db.commit()
 
     @staticmethod
     async def generate_pfi(
@@ -350,7 +401,10 @@ class PfiService:
         current_user: User,
         db: AsyncSession,
     ) -> PFI:
-        """Generate a PFI PDF from operation data, upload to storage, and record it."""
+        """Generate a PFI PDF from operation data, upload to storage, and record it
+        as a standalone PFI (operation_id=None) — same pattern as
+        create_standalone_pfi. PFIs are only ever linked to an operation via the
+        allocation flow, never automatically as a side effect of generation."""
         from sqlalchemy.orm import selectinload
         stmt = (
             select(Operation)
@@ -362,16 +416,22 @@ class PfiService:
         if not operation:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
 
+        if not operation.products:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Operation has no products recorded — cannot generate a PFI",
+            )
+
         pfi_number = await generate_pfi_number(db)
         issue_date = datetime.utcnow()
 
-        # Compute amount from volume × rate
-        vol = operation.expected_volume_mt
+        # Compute amount from total product volume × rate
+        vol = sum((p.quantity_mt for p in operation.products), Decimal("0"))
         rate = data.rate_per_mt
-        if vol is None or vol == 0:
+        if vol == 0:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Operation must have an expected volume to generate a PFI",
+                detail="Operation must have a nonzero product volume to generate a PFI",
             )
         subtotal = float(vol) * float(rate)
         tax_amt  = subtotal * float(data.tax_rate) / 100
@@ -391,10 +451,9 @@ class PfiService:
             operation_number=operation.operation_number,
             operation_type=operation.type.value if hasattr(operation.type, "value") else str(operation.type),
             operation_version=operation.version,
-            product_type=operation.product_type,
+            products=[{"product_type": p.product_type, "quantity_mt": p.quantity_mt} for p in operation.products],
             loading_location=operation.loading_location,
             discharge_location=operation.discharge_location,
-            expected_volume_mt=vol,
             currency=operation.currency,
             rate_per_mt=rate,
             tax_rate=data.tax_rate,
@@ -419,9 +478,11 @@ class PfiService:
         except Exception:
             pass
 
+        # Standalone — not linked to the operation. It's picked up later via the
+        # normal PFI allocation flow if someone wants to attach it.
         pfi = PFI(
             pfi_number=pfi_number,
-            operation_id=operation_id,
+            operation_id=None,
             linked_by=current_user.id,
             amount=total,
             currency=operation.currency,
@@ -437,50 +498,24 @@ class PfiService:
         db.add(pfi)
         await db.flush()
 
-        # PFI is issued from the `active` state for all operation types.
-        # For operations that pre-date this design (already past bdn_approved),
-        # allow attaching a PFI via the compat bdn_approved → pfi_linked path.
-        _PRE_PFI_STATES = {OperationStatus.active}
-        _COMPAT_PRE_PFI = {OperationStatus.bdn_approved}
-        _POST_PFI_STATES = {
-            OperationStatus.pfi_linked, OperationStatus.payment_processing,
-            OperationStatus.payment_confirmed, OperationStatus.vessel_operations,
-            OperationStatus.bdn_pending, OperationStatus.bdn_approved,
-            OperationStatus.invoiced, OperationStatus.completed, OperationStatus.archived,
-        }
-        if operation.status in _PRE_PFI_STATES or operation.status in _COMPAT_PRE_PFI:
-            await _transition_operation(
-                operation, OperationStatus.pfi_linked, current_user, db,
-                reason=f"PFI {pfi_number} generated by system",
-            )
-        elif operation.status in _POST_PFI_STATES:
-            pass  # already in finance phase — just attach the PFI document
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    f"Cannot generate PFI: operation is in '{operation.status.value}'. "
-                    f"It must be 'active' before a PFI can be generated."
-                ),
-            )
-
         db.add(AuditLog(
             user_id=current_user.id,
-            operation_id=operation_id,
+            operation_id=None,
             action="GENERATE_PFI",
             entity_type="pfi",
             entity_id=pfi.id,
             changes={"pfi_number": pfi_number, "amount": str(total),
-                     "currency": operation.currency, "source": "system_generated"},
+                     "currency": operation.currency, "source": "system_generated",
+                     "source_operation_id": str(operation_id)},
         ))
 
         await _notify_role(
             db=db,
             role=UserRole.finance_manager,
-            operation_id=operation_id,
+            operation_id=None,
             type_="payment_update",
             title="PFI Ready for Payment",
-            message=f"PFI {pfi_number} has been generated for operation {operation.operation_number}. Payment required.",
+            message=f"PFI {pfi_number} has been generated from operation {operation.operation_number}. Payment required.",
             priority="high",
             wa_template="pfi_received",
             wa_kwargs={
@@ -498,10 +533,17 @@ class PfiService:
 
     @staticmethod
     async def list_pfis(operation_id: UUID, db: AsyncSession) -> List[PFI]:
+        """PFIs visible on this operation — either legacy-linked directly
+        (PFI.operation_id) or allocated to it via PfiAllocation."""
         await _get_operation_or_404(operation_id, db)
         result = await db.execute(
             select(PFI)
-            .where(PFI.operation_id == operation_id)
+            .outerjoin(PfiAllocation, PfiAllocation.pfi_id == PFI.id)
+            .where(or_(
+                PFI.operation_id == operation_id,
+                PfiAllocation.operation_id == operation_id,
+            ))
+            .distinct()
             .order_by(PFI.created_at.asc())
         )
         pfis = list(result.scalars().all())
@@ -559,14 +601,16 @@ class PfiService:
 
     @staticmethod
     async def _attach_balance(pfi: PFI, db: AsyncSession) -> PFI:
-        """Annotate transient allocated_litres/remaining_litres onto a PFI instance.
-        Allocation (splitting one PFI's volume across several operations) was
-        removed — linking is a simple 1:1 pick now — so allocated_litres is
-        always 0 and remaining_litres always equals quantity_litres. Left in
-        place because PfiOut still declares these fields and several read paths
-        call it; harmless to leave rather than thread removal through them all."""
-        pfi.allocated_litres = Decimal("0")
-        pfi.remaining_litres = pfi.quantity_litres
+        """Annotate transient allocated_litres/remaining_litres onto a PFI
+        instance from its PfiAllocation rows (a PFI can be allocated across
+        several operations)."""
+        result = await db.execute(
+            select(func.coalesce(func.sum(PfiAllocation.quantity_litres), 0))
+            .where(PfiAllocation.pfi_id == pfi.id)
+        )
+        allocated = Decimal(result.scalar() or 0)
+        pfi.allocated_litres = allocated
+        pfi.remaining_litres = (pfi.quantity_litres - allocated) if pfi.quantity_litres is not None else None
         return pfi
 
 
@@ -581,13 +625,20 @@ class PaymentService:
     ) -> Payment:
         operation = await _get_operation_or_404(operation_id, db)
 
-        # Verify PFI belongs to this operation
+        # Verify PFI belongs to this operation — either legacy-linked directly
+        # or allocated to it via PfiAllocation
         pfi_result = await db.execute(
-            select(PFI).where(
-                and_(PFI.id == data.pfi_id, PFI.operation_id == operation_id)
+            select(PFI)
+            .outerjoin(PfiAllocation, PfiAllocation.pfi_id == PFI.id)
+            .where(
+                PFI.id == data.pfi_id,
+                or_(
+                    PFI.operation_id == operation_id,
+                    PfiAllocation.operation_id == operation_id,
+                ),
             )
         )
-        pfi = pfi_result.scalar_one_or_none()
+        pfi = pfi_result.scalars().first()
         if not pfi:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

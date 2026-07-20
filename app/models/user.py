@@ -18,6 +18,9 @@ class User(Base):
     full_name = Column(String(150), nullable=False)
     phone = Column(String(20), nullable=True)
     role = Column(SAEnum(UserRole, name="user_role"), nullable=False)
+    # BM-only: when set, require_roles() gates on this instead of `role` — the
+    # real role/id are never mutated, only the permission check is redirected.
+    acting_as_role = Column(SAEnum(UserRole, name="user_role"), nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     avatar_url = Column(Text, nullable=True)
     last_login_at = Column(DateTime(timezone=True), nullable=True)

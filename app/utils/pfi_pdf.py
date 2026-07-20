@@ -10,7 +10,7 @@ import io
 import os
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
@@ -108,10 +108,9 @@ def generate_pfi_pdf(
     operation_number: str,
     operation_type: str,
     operation_version: int,
-    product_type: Optional[str],
+    products: List[dict],
     loading_location: Optional[str],
     discharge_location: Optional[str],
-    expected_volume_mt: Optional[Decimal],
     currency: str,
     rate_per_mt: Decimal,
     tax_rate: Decimal,
@@ -127,7 +126,11 @@ def generate_pfi_pdf(
     prepared_by_name: str,
     prepared_by_role: str = "Bunker Manager",
 ) -> bytes:
-    """Return PDF bytes for a PFI document."""
+    """Return PDF bytes for a PFI document.
+
+    `products` is a list of {"product_type": str, "quantity_mt": Decimal} — one
+    row is rendered per product, each billed at the same rate_per_mt.
+    """
 
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
@@ -140,14 +143,23 @@ def generate_pfi_pdf(
     )
 
     # ── computed values ────────────────────────────────────────────────────────
-    vol = float(expected_volume_mt or 0)
     rate = float(rate_per_mt)
-    subtotal = vol * rate
+    product_rows = [
+        {
+            "product_type": p["product_type"],
+            "label": PRODUCT_LABELS.get(p["product_type"] or "", p["product_type"] or "N/A"),
+            "qty": float(p["quantity_mt"] or 0),
+        }
+        for p in products
+    ]
+    for row in product_rows:
+        row["amount"] = row["qty"] * rate
+    vol = sum(row["qty"] for row in product_rows)
+    subtotal = sum(row["amount"] for row in product_rows)
     tax_pct  = float(tax_rate)
     tax_amt  = subtotal * tax_pct / 100
     total    = subtotal + tax_amt
     valid_until = issue_date + timedelta(days=validity_days)
-    product_label = PRODUCT_LABELS.get(product_type or "", product_type or "N/A")
     op_type_label = OP_TYPE_LABELS.get(operation_type, operation_type.replace("_", " ").title())
 
     story = []
@@ -314,10 +326,6 @@ def generate_pfi_pdf(
     if loading_location or discharge_location:
         route = f"{loading_location or '—'} → {discharge_location or '—'}"
 
-    service_desc = (description or f"{product_label} supply and delivery services")
-    if route:
-        service_desc += f"\nRoute: {route}"
-
     svc_header = [
         Paragraph("DESCRIPTION", _style("th", fontName="Helvetica-Bold", fontSize=8.5,
                                          textColor=WHITE, leading=11)),
@@ -329,22 +337,40 @@ def generate_pfi_pdf(
                                                   textColor=WHITE, alignment=TA_RIGHT, leading=11)),
     ]
 
-    svc_row = [
-        Paragraph(service_desc, BODY),
-        Paragraph(_fmt_number(vol, 3) if vol else "TBD", _style("qty",
-            fontName="Helvetica", fontSize=9, alignment=TA_CENTER, leading=13)),
-        Paragraph(_fmt_number(rate) if rate else "TBD", _style("rate",
-            fontName="Helvetica", fontSize=9, alignment=TA_RIGHT, leading=13)),
-        Paragraph(_fmt_number(subtotal) if (vol and rate) else "TBD", _style("amt",
-            fontName="Helvetica-Bold", fontSize=9, alignment=TA_RIGHT, textColor=NAVY, leading=13)),
-    ]
+    svc_rows = []
+    if product_rows:
+        for i, row in enumerate(product_rows):
+            row_desc = description if (i == 0 and description) else f"{row['label']} supply and delivery services"
+            if route and i == 0:
+                row_desc += f"\nRoute: {route}"
+            svc_rows.append([
+                Paragraph(row_desc, BODY),
+                Paragraph(_fmt_number(row["qty"], 3) if row["qty"] else "TBD", _style(f"qty_{i}",
+                    fontName="Helvetica", fontSize=9, alignment=TA_CENTER, leading=13)),
+                Paragraph(_fmt_number(rate) if rate else "TBD", _style(f"rate_{i}",
+                    fontName="Helvetica", fontSize=9, alignment=TA_RIGHT, leading=13)),
+                Paragraph(_fmt_number(row["amount"]) if (row["qty"] and rate) else "TBD", _style(f"amt_{i}",
+                    fontName="Helvetica-Bold", fontSize=9, alignment=TA_RIGHT, textColor=NAVY, leading=13)),
+            ])
+    else:
+        service_desc = description or "Supply and delivery services"
+        if route:
+            service_desc += f"\nRoute: {route}"
+        svc_rows.append([
+            Paragraph(service_desc, BODY),
+            Paragraph("TBD", _style("qty", fontName="Helvetica", fontSize=9, alignment=TA_CENTER, leading=13)),
+            Paragraph("TBD", _style("rate", fontName="Helvetica", fontSize=9, alignment=TA_RIGHT, leading=13)),
+            Paragraph("TBD", _style("amt", fontName="Helvetica-Bold", fontSize=9, alignment=TA_RIGHT, textColor=NAVY, leading=13)),
+        ])
 
     col_w = [CONTENT_W * 0.45, CONTENT_W * 0.18, CONTENT_W * 0.18, CONTENT_W * 0.19]
-    svc_table = Table([svc_header, svc_row], colWidths=col_w)
+    svc_table = Table([svc_header] + svc_rows, colWidths=col_w)
+    row_bg = [("BACKGROUND", (0, i), (-1, i), LIGHT) for i in range(1, len(svc_rows) + 1)]
     svc_table.setStyle(TableStyle([
         ("BACKGROUND",    (0, 0), (-1, 0), NAVY),
-        ("BACKGROUND",    (0, 1), (-1, 1), LIGHT),
+        *row_bg,
         ("BOX",           (0, 0), (-1, -1), 0.5, BORDER),
+        ("INNERGRID",     (0, 1), (-1, -1), 0.5, BORDER),
         ("LINEABOVE",     (0, 1), (-1, 1), 0.5, BORDER),
         ("TOPPADDING",    (0, 0), (-1, -1), 5),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 5),

@@ -25,20 +25,51 @@ class InlineTaskAssignment(BaseModel):
 
 # ── Operation Schemas ──────────────────────────────────────────────────────────
 
+class OperationProductCreate(BaseModel):
+    product_type: ProductType
+    quantity_mt: Decimal
+
+    @field_validator("quantity_mt")
+    @classmethod
+    def positive_quantity(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError("Quantity must be greater than zero")
+        return v
+
+
+class OperationPfiAllocationCreate(BaseModel):
+    pfi_id: UUID
+    quantity_litres: Decimal
+
+    @field_validator("quantity_litres")
+    @classmethod
+    def positive_quantity(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError("Quantity must be greater than zero")
+        return v
+
+
 class CreateOperationRequest(BaseModel):
     type: OperationType
     client_id: UUID
-    product_type: ProductType
-    expected_volume_mt: Optional[Decimal] = None
+    products: List[OperationProductCreate]
     currency: str = "NGN"
     vessel_id: Optional[UUID] = None
     loading_location: Optional[str] = None
     discharge_location: Optional[str] = None
     notes: Optional[str] = None
-    # PFI-first flow: link to a pre-existing paid PFI
-    pfi_id: Optional[UUID] = None
+    # BM selects existing paid/standalone PFIs and how much of each to draw
+    # down — PFIs can only ever be linked at operation creation from here on.
+    pfi_allocations: Optional[List[OperationPfiAllocationCreate]] = None
     # One-step: include task assignments to auto-advance past draft
     assignments: Optional[List[InlineTaskAssignment]] = None
+
+    @field_validator("products")
+    @classmethod
+    def at_least_one_product(cls, v: List[OperationProductCreate]) -> List[OperationProductCreate]:
+        if not v:
+            raise ValueError("At least one product is required")
+        return v
 
     @field_validator("notes", mode="before")
     @classmethod
@@ -47,9 +78,7 @@ class CreateOperationRequest(BaseModel):
 
 
 class UpdateOperationRequest(BaseModel):
-    expected_volume_mt: Optional[Decimal] = None
     actual_volume_mt: Optional[Decimal] = None
-    product_type: Optional[ProductType] = None
     loading_location: Optional[str] = None
     discharge_location: Optional[str] = None
     notes: Optional[str] = None
@@ -85,17 +114,26 @@ class ReopenRequest(BaseModel):
 
 # ── Output Schemas ─────────────────────────────────────────────────────────────
 
+class OperationProductOut(BaseModel):
+    id: UUID
+    operation_id: UUID
+    product_type: str
+    quantity_mt: Decimal
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class OperationOut(BaseModel):
     id: UUID
     operation_number: str
     type: OperationType
     status: OperationStatus
-    product_type: Optional[str] = None
+    products: List[OperationProductOut] = []
     loading_location: Optional[str] = None
     discharge_location: Optional[str] = None
     client_id: UUID
     created_by: UUID
-    expected_volume_mt: Optional[Decimal] = None
     actual_volume_mt: Optional[Decimal] = None
     notes: Optional[str] = None
     paused_at: Optional[datetime] = None

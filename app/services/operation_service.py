@@ -8,7 +8,7 @@ from sqlalchemy import select, func, and_, or_
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
-from app.models.operation import Operation, OperationStatusHistory, TaskAssignment
+from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, OperationProduct
 from app.models.bdn import VesselActivity
 from app.models.finance import PFI
 from app.models.audit import AuditLog
@@ -18,6 +18,7 @@ from app.schemas.operation import (
     CreateOperationRequest, UpdateOperationRequest, OperationFilters,
     TransitionRequest, ReopenRequest,
 )
+from app.schemas.pfi import PfiAllocationCreate
 from app.services.state_machine import StateMachine, StateMachineError
 from app.services.milestone_service import create_milestone_if_applicable
 from app.services.audit_diff import capture_diff
@@ -111,8 +112,6 @@ class OperationService:
             status=OperationStatus.draft,
             client_id=data.client_id,
             created_by=current_user.id,
-            expected_volume_mt=data.expected_volume_mt,
-            product_type=data.product_type.value if data.product_type else None,
             loading_location=data.loading_location,
             discharge_location=data.discharge_location,
             notes=data.notes,
@@ -123,6 +122,14 @@ class OperationService:
         db.add(operation)
         await db.flush()
 
+        for p in data.products:
+            db.add(OperationProduct(
+                operation_id=operation.id,
+                product_type=p.product_type.value,
+                quantity_mt=p.quantity_mt,
+            ))
+        await db.flush()
+
         _write_history(db, operation, None, OperationStatus.draft, current_user.id, "Operation created")
 
         db.add(AuditLog(
@@ -131,10 +138,24 @@ class OperationService:
             action="CREATE_OPERATION",
             entity_type="operation",
             entity_id=operation.id,
-            changes={"operation_number": operation_number, "type": data.type.value, "product": data.product_type.value if data.product_type else None},
+            changes={
+                "operation_number": operation_number,
+                "type": data.type.value,
+                "products": [{"product_type": p.product_type.value, "quantity_mt": str(p.quantity_mt)} for p in data.products],
+            },
             ip_address=request_meta.get("ip") if request_meta else None,
             user_agent=request_meta.get("user_agent") if request_meta else None,
         ))
+
+        # ── PFI allocation at creation — the only place a PFI can be linked ────
+        if data.pfi_allocations:
+            from app.services.pfi_service import PfiService
+            for pa in data.pfi_allocations:
+                await PfiService.allocate_pfi_to_operation(
+                    pa.pfi_id, operation.id,
+                    PfiAllocationCreate(quantity_litres=pa.quantity_litres),
+                    current_user, db,
+                )
 
         # ── One-step: assignments + auto-advance ───────────────────────────────
         if data.assignments:
@@ -172,20 +193,16 @@ class OperationService:
                 _write_history(db, operation, OperationStatus.tasks_assigned, OperationStatus.active, current_user.id, "Vessel-only operation activated")
                 operation.status = OperationStatus.active
                 await _notify_assigned_users(db, operation, f"Operation {operation_number} Active", f"Operation {operation_number} is now active.", "operation_active", "high")
-                await _notify_all_finance(db, operation, f"Operation {operation_number} — Finance Required", f"Operation {operation_number} ({data.product_type.value if data.product_type else 'N/A'}) is active. Prepare PFI and payment docs.")
+                product_summary = ", ".join(p.product_type.value for p in data.products)
+                await _notify_all_finance(db, operation, f"Operation {operation_number} — Finance Required", f"Operation {operation_number} ({product_summary}) is active. Prepare PFI and payment docs.")
             else:
                 # Truck/Full: await logistics feedback
                 _write_history(db, operation, OperationStatus.tasks_assigned, OperationStatus.awaiting_feedback, current_user.id, "Awaiting truck readiness feedback")
                 operation.status = OperationStatus.awaiting_feedback
 
-        # ── PFI-first flow: link a pre-existing paid PFI ──────────────────────
-        if data.pfi_id:
-            from app.services.pfi_service import PfiService
-            await PfiService.link_pfi_to_operation(data.pfi_id, operation.id, current_user, db)
-
         operation.updated_at = datetime.utcnow()
         await db.flush()
-        await db.refresh(operation)
+        await db.refresh(operation, attribute_names=["products"])
         return operation
 
     @staticmethod
@@ -201,6 +218,7 @@ class OperationService:
                 selectinload(Operation.creator),
                 selectinload(Operation.status_history),
                 selectinload(Operation.task_assignments),
+                selectinload(Operation.products),
             )
             .where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
         )
@@ -267,6 +285,7 @@ class OperationService:
         offset = (filters.page - 1) * filters.per_page
         stmt = (
             select(Operation)
+            .options(selectinload(Operation.products))
             .where(and_(*conditions))
             .order_by(Operation.created_at.desc())
             .offset(offset)
@@ -284,7 +303,9 @@ class OperationService:
         request_meta: Optional[dict] = None,
     ) -> Operation:
         result = await db.execute(
-            select(Operation).where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
+            select(Operation)
+            .options(selectinload(Operation.products))
+            .where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
         )
         operation = result.scalar_one_or_none()
         if not operation:
@@ -303,7 +324,7 @@ class OperationService:
             user_agent=request_meta.get("user_agent") if request_meta else None,
         ))
         await db.flush()
-        await db.refresh(operation)
+        await db.refresh(operation, attribute_names=["products"])
         return operation
 
     @staticmethod
@@ -315,7 +336,9 @@ class OperationService:
         request_meta: Optional[dict] = None,
     ) -> Operation:
         result = await db.execute(
-            select(Operation).where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
+            select(Operation)
+            .options(selectinload(Operation.products))
+            .where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
         )
         operation = result.scalar_one_or_none()
         if not operation:
@@ -401,7 +424,7 @@ class OperationService:
             )
 
         await db.flush()
-        await db.refresh(operation)
+        await db.refresh(operation, attribute_names=["products"])
         return operation
 
     @staticmethod
@@ -448,8 +471,6 @@ class OperationService:
             status=OperationStatus.tasks_assigned,
             client_id=parent.client_id,
             created_by=current_user.id,
-            expected_volume_mt=parent.expected_volume_mt,
-            product_type=parent.product_type,
             currency=parent.currency,
             vessel_id=parent.vessel_id,
             notes=parent.notes,
@@ -458,6 +479,17 @@ class OperationService:
             version_notes=data.version_notes,
         )
         db.add(new_op)
+        await db.flush()
+
+        parent_products_result = await db.execute(
+            select(OperationProduct).where(OperationProduct.operation_id == parent.id)
+        )
+        for pp in parent_products_result.scalars().all():
+            db.add(OperationProduct(
+                operation_id=new_op.id,
+                product_type=pp.product_type,
+                quantity_mt=pp.quantity_mt,
+            ))
         await db.flush()
 
         _write_history(db, new_op, None, OperationStatus.tasks_assigned, current_user.id, f"Revision {new_version}: {data.version_notes}")
@@ -470,12 +502,16 @@ class OperationService:
         ))
 
         await db.flush()
-        await db.refresh(new_op)
+        await db.refresh(new_op, attribute_names=["products"])
         return new_op
 
     @staticmethod
     async def pause_operation(operation_id: UUID, reason: str, current_user: User, db: AsyncSession, request_meta: Optional[dict] = None) -> Operation:
-        result = await db.execute(select(Operation).where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None))))
+        result = await db.execute(
+            select(Operation)
+            .options(selectinload(Operation.products))
+            .where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
+        )
         operation = result.scalar_one_or_none()
         if not operation:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
@@ -489,12 +525,16 @@ class OperationService:
         operation.updated_at = datetime.utcnow()
         db.add(AuditLog(user_id=current_user.id, operation_id=operation.id, action="PAUSE_OPERATION", entity_type="operation", entity_id=operation.id, changes={"reason": reason}, ip_address=request_meta.get("ip") if request_meta else None, user_agent=request_meta.get("user_agent") if request_meta else None))
         await db.flush()
-        await db.refresh(operation)
+        await db.refresh(operation, attribute_names=["products"])
         return operation
 
     @staticmethod
     async def resume_operation(operation_id: UUID, reason: Optional[str], current_user: User, db: AsyncSession, request_meta: Optional[dict] = None) -> Operation:
-        result = await db.execute(select(Operation).where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None))))
+        result = await db.execute(
+            select(Operation)
+            .options(selectinload(Operation.products))
+            .where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
+        )
         operation = result.scalar_one_or_none()
         if not operation:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
@@ -505,7 +545,7 @@ class OperationService:
         operation.updated_at = datetime.utcnow()
         db.add(AuditLog(user_id=current_user.id, operation_id=operation.id, action="RESUME_OPERATION", entity_type="operation", entity_id=operation.id, changes={"reason": reason}, ip_address=request_meta.get("ip") if request_meta else None, user_agent=request_meta.get("user_agent") if request_meta else None))
         await db.flush()
-        await db.refresh(operation)
+        await db.refresh(operation, attribute_names=["products"])
         return operation
 
     @staticmethod

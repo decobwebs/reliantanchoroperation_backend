@@ -65,7 +65,7 @@ async def create_operation(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new operation. Only bunker_managers can create operations."""
-    meta = get_request_meta(request)
+    meta = get_request_meta(request, current_user)
     operation = await OperationService.create_operation(body, current_user, db, meta)
 
     return StandardResponse.ok(
@@ -98,7 +98,7 @@ async def update_operation(
     db: AsyncSession = Depends(get_db),
 ):
     """Update an operation's editable fields. Only bunker_managers."""
-    meta = get_request_meta(request)
+    meta = get_request_meta(request, current_user)
     operation = await OperationService.update_operation(operation_id, body, current_user, db, meta)
 
     return StandardResponse.ok(
@@ -119,7 +119,7 @@ async def transition_operation(
     Transition an operation to a new status.
     Permissions are validated against the state machine's TRANSITION_PERMISSIONS map.
     """
-    meta = get_request_meta(request)
+    meta = get_request_meta(request, current_user)
     operation = await OperationService.transition_operation(
         operation_id, body, current_user, db, meta
     )
@@ -139,7 +139,7 @@ async def pause_operation(
     db: AsyncSession = Depends(get_db),
 ):
     """Pause an active operation."""
-    meta = get_request_meta(request)
+    meta = get_request_meta(request, current_user)
     operation = await OperationService.pause_operation(
         operation_id, body.reason, current_user, db, meta
     )
@@ -159,7 +159,7 @@ async def resume_operation(
     db: AsyncSession = Depends(get_db),
 ):
     """Resume a paused operation."""
-    meta = get_request_meta(request)
+    meta = get_request_meta(request, current_user)
     operation = await OperationService.resume_operation(
         operation_id, body.reason, current_user, db, meta
     )
@@ -203,7 +203,7 @@ async def delete_operation(
     db: AsyncSession = Depends(get_db),
 ):
     """Soft-delete an operation. Only permitted for draft operations."""
-    meta = get_request_meta(request)
+    meta = get_request_meta(request, current_user)
     await OperationService.soft_delete_operation(operation_id, current_user, db, meta)
 
     return StandardResponse.ok(message="Operation deleted")
@@ -218,7 +218,7 @@ async def reopen_operation(
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new revision of a completed/archived/cancelled operation. BM only."""
-    meta = get_request_meta(request)
+    meta = get_request_meta(request, current_user)
     new_op = await OperationService.reopen_operation(operation_id, body, current_user, db, meta)
     return StandardResponse.ok(
         data=OperationOut.model_validate(new_op).model_dump(),
@@ -242,9 +242,12 @@ async def list_operation_versions(
     if not op:
         raise HTTPException(status_code=404, detail="Operation not found")
 
+    from sqlalchemy.orm import selectinload
+
     root_id = op.parent_operation_id or op.id
     stmt = (
         select(Operation)
+        .options(selectinload(Operation.products))
         .where(or_(Operation.id == root_id, Operation.parent_operation_id == root_id))
         .order_by(Operation.version.asc())
     )
@@ -265,7 +268,7 @@ async def create_vessel_discharge_event(
 ):
     """Record a vessel-to-vessel (or vessel-to-client) discharge event."""
     from app.services.vessel_discharge_service import VesselDischargeService
-    meta = get_request_meta(request)
+    meta = get_request_meta(request, current_user)
     event = await VesselDischargeService.create_event(operation_id, body, current_user, db)
     return StandardResponse.ok(
         data=VesselDischargeEventOut.model_validate(event).model_dump(),
@@ -313,6 +316,7 @@ async def get_operation_audit_log(
             "user_id": str(log.user_id),
             "user_name": log.user.full_name if log.user else "Unknown",
             "user_role": log.user.role.value if log.user else "",
+            "acted_as_role": log.acted_as_role.value if log.acted_as_role else None,
             "action": log.action,
             "entity_type": log.entity_type,
             "entity_id": str(log.entity_id) if log.entity_id else None,
