@@ -194,7 +194,7 @@ class TruckService:
         current_user: User,
         db: AsyncSession,
     ) -> Dict[str, List[str]]:
-        """Ops Supervisor bulk-adds waiver numbers up front, before sourcing starts."""
+        """Bunker Manager (admin) bulk-adds waiver numbers up front, before sourcing starts."""
         existing_result = await db.execute(
             select(TruckWaiver.waybill_truck_number).where(TruckWaiver.waybill_truck_number.in_(numbers))
         )
@@ -231,7 +231,30 @@ class TruckService:
         if status_filter:
             stmt = stmt.where(TruckWaiver.status == status_filter)
         result = await db.execute(stmt)
-        return list(result.scalars().all())
+        waivers = list(result.scalars().all())
+
+        # Attach linked-truck info (at most one truck_op per waiver today — no
+        # release/reuse mechanism exists, so "current link" is also "full history").
+        waiver_ids = [w.id for w in waivers if w.status == TruckWaiverStatus.linked]
+        linked_by_waiver: Dict[Any, TruckOperation] = {}
+        if waiver_ids:
+            to_result = await db.execute(
+                select(TruckOperation)
+                .options(selectinload(TruckOperation.truck), selectinload(TruckOperation.operation))
+                .where(TruckOperation.waiver_id.in_(waiver_ids))
+            )
+            for to in to_result.scalars().all():
+                linked_by_waiver[to.waiver_id] = to
+
+        for w in waivers:
+            to = linked_by_waiver.get(w.id)
+            w.linked_truck_number = to.truck.truck_number if to and to.truck else None
+            w.linked_operation_id = to.operation_id if to else None
+            w.linked_operation_number = to.operation.operation_number if to and to.operation else None
+            w.linked_driver_name = to.driver_name if to else None
+            w.linked_at = to.waybill_linked_at if to else None
+
+        return waivers
 
     @staticmethod
     async def link_waybill(
@@ -275,6 +298,7 @@ class TruckService:
         truck_op.waybill_document_number = data.waybill_document_number
         if data.waybill_number:
             truck_op.waybill_number = data.waybill_number
+        truck_op.waybill_linked_at = datetime.utcnow()
         truck_op.updated_at = datetime.utcnow()
         waiver.status = TruckWaiverStatus.linked
 

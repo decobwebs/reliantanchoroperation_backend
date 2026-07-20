@@ -73,6 +73,7 @@ class TruckOperation(Base):
     # Waybill — the moment the waiver number, plate, and driver are linked together
     waybill_document_number = Column(String(100), nullable=True)
     waiver_id = Column(UUID(as_uuid=True), ForeignKey("truck_waivers.id"), nullable=True)
+    waybill_linked_at = Column(DateTime(timezone=True), nullable=True)
 
     # Product
     product_type = Column(String(50), nullable=True)

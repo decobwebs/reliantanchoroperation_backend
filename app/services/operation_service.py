@@ -181,7 +181,7 @@ class OperationService:
         # ── PFI-first flow: link a pre-existing paid PFI ──────────────────────
         if data.pfi_id:
             from app.services.pfi_service import PfiService
-            await PfiService.link_pfi_to_operation(data.pfi_id, operation.id, db)
+            await PfiService.link_pfi_to_operation(data.pfi_id, operation.id, current_user, db)
 
         operation.updated_at = datetime.utcnow()
         await db.flush()

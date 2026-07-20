@@ -13,7 +13,6 @@ from app.schemas.pfi import (
     PfiCreate, PfiUpdate, PfiGenerateRequest, PfiOut,
     PaymentCreate, PaymentOut, PaymentConfirmRequest,
     StandalonePfiCreate, PfiConfirmPaymentRequest,
-    PfiAllocationCreate, PfiAllocationUpdate, PfiAllocationOut,
 )
 from app.services.document_service import create_signed_supabase_url
 from app.services.pfi_service import PfiService, PaymentService
@@ -82,22 +81,6 @@ async def list_pfis(
     return StandardResponse.ok(data=items, message="PFIs retrieved")
 
 
-# NOTE: /pfis/active must be registered before /pfis/{pfi_id} — FastAPI matches
-# routes in registration order, so a static path declared after a dynamic one
-# with the same shape gets shadowed (here, "active" would be parsed as pfi_id
-# and fail UUID validation).
-@router.get("/pfis/active", response_model=StandardResponse)
-async def list_active_pfis(
-    current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.finance_manager)
-    ),
-    db: AsyncSession = Depends(get_db),
-):
-    """PFIs with remaining volume — the BM's link-to-operation dropdown source."""
-    pfis = await PfiService.list_active_pfis(db)
-    items = [await _serialize_pfi(p) for p in pfis]
-    return StandardResponse.ok(data=items, message="Active PFIs retrieved")
-
 
 @router.get("/pfis/{pfi_id}", response_model=StandardResponse)
 async def get_pfi(
@@ -132,67 +115,24 @@ async def update_pfi(
     )
 
 
-# ── PFI Allocation (volume drawdown against an operation) ──────────────────────
+# ── Link PFI to operation (simple 1:1 pick, no quantity) ────────────────────────
 
 @router.post(
-    "/operations/{operation_id}/pfis/{pfi_id}/allocations",
+    "/operations/{operation_id}/pfis/{pfi_id}/link",
     response_model=StandardResponse,
-    status_code=status.HTTP_201_CREATED,
 )
-async def allocate_pfi(
+async def link_pfi(
     operation_id: UUID,
     pfi_id: UUID,
-    body: PfiAllocationCreate,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.ops_supervisor)),
     db: AsyncSession = Depends(get_db),
 ):
-    """BM allocates a fixed quantity of a PFI to this operation. Bunker Manager only."""
-    allocation = await PfiService.allocate_pfi_to_operation(pfi_id, operation_id, body, current_user, db)
+    """Pick an existing unlinked PFI and attach it to this operation. BM or Ops Supervisor."""
+    pfi = await PfiService.link_pfi_to_operation(pfi_id, operation_id, current_user, db)
     return StandardResponse.ok(
-        data=PfiAllocationOut.model_validate(allocation).model_dump(),
-        message="PFI allocated to operation",
+        data=await _serialize_pfi(pfi),
+        message=f"PFI {pfi.pfi_number} linked to operation",
     )
-
-
-@router.get("/operations/{operation_id}/pfis/allocations", response_model=StandardResponse)
-async def list_pfi_allocations(
-    operation_id: UUID,
-    current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.finance_manager)
-    ),
-    db: AsyncSession = Depends(get_db),
-):
-    """List PFI allocations for an operation. BM and Finance Manager."""
-    allocations = await PfiService.list_allocations_for_operation(operation_id, db)
-    items = [PfiAllocationOut.model_validate(a).model_dump() for a in allocations]
-    return StandardResponse.ok(data=items, message="Allocations retrieved")
-
-
-@router.put("/pfi-allocations/{allocation_id}", response_model=StandardResponse)
-async def update_pfi_allocation(
-    allocation_id: UUID,
-    body: PfiAllocationUpdate,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
-    db: AsyncSession = Depends(get_db),
-):
-    """Edit an allocation's quantity. Requires a reason. Bunker Manager only."""
-    allocation = await PfiService.update_allocation(allocation_id, body, current_user, db)
-    return StandardResponse.ok(
-        data=PfiAllocationOut.model_validate(allocation).model_dump(),
-        message="Allocation updated",
-    )
-
-
-@router.delete("/pfi-allocations/{allocation_id}", response_model=StandardResponse)
-async def delete_pfi_allocation(
-    allocation_id: UUID,
-    reason: str = Query(..., min_length=1),
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
-    db: AsyncSession = Depends(get_db),
-):
-    """Delete an allocation. Requires a reason. Bunker Manager only."""
-    await PfiService.delete_allocation(allocation_id, reason, current_user, db)
-    return StandardResponse.ok(data=None, message="Allocation deleted")
 
 
 # ── Payment endpoints ──────────────────────────────────────────────────────────

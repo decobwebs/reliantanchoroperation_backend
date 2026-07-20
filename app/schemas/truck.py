@@ -213,6 +213,14 @@ class TruckWaiverOut(BaseModel):
     status: TruckWaiverStatus
     added_by: UUID
     created_at: datetime
+    # Populated when linked — the truck/operation/driver this waiver was paired
+    # with at waybill time. A waiver can only ever be linked once today (no
+    # release/reuse mechanism), so this doubles as the full history.
+    linked_truck_number: Optional[str] = None
+    linked_operation_id: Optional[UUID] = None
+    linked_operation_number: Optional[str] = None
+    linked_driver_name: Optional[str] = None
+    linked_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
 

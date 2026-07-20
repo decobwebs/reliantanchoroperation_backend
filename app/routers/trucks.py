@@ -61,10 +61,10 @@ async def list_trucks(
 )
 async def create_truck(
     body: TruckCreate,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.logistics_officer)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Register a new truck. Bunker Manager only."""
+    """Register a new truck. BM (Fleet Library) or Logistics Officer (inline while sourcing)."""
     truck = await TruckService.create_truck(body, current_user, db)
     return StandardResponse.ok(
         data=TruckOut.model_validate(truck).model_dump(),
@@ -81,10 +81,10 @@ async def create_truck(
 @router.post("/trucks/waivers/bulk", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
 async def bulk_add_waivers(
     body: TruckWaiverBulkCreate,
-    current_user: User = Depends(require_roles(UserRole.ops_supervisor)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Bulk-add waiver/regulatory truck numbers up front, before sourcing starts. Ops Supervisor only."""
+    """Bulk-add waiver/regulatory truck numbers up front, before sourcing starts. Bunker Manager (admin) only."""
     result = await TruckService.bulk_add_waivers(body.waybill_truck_numbers, current_user, db)
     return StandardResponse.ok(
         data=result,

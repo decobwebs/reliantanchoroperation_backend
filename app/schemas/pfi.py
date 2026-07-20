@@ -197,65 +197,6 @@ class PfiOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
-# ── PFI Allocation (drawdown against an operation) ──────────────────────────────
-
-class PfiAllocationCreate(BaseModel):
-    quantity_litres: Decimal
-    notes: Optional[str] = None
-
-    @field_validator("notes", mode="before")
-    @classmethod
-    def strip_notes(cls, v: Optional[str]) -> Optional[str]:
-        return v.strip() if v else v
-
-    @field_validator("quantity_litres")
-    @classmethod
-    def positive_quantity(cls, v: Decimal) -> Decimal:
-        if v <= 0:
-            raise ValueError("Quantity must be greater than zero")
-        return v
-
-
-class PfiAllocationUpdate(BaseModel):
-    quantity_litres: Decimal
-    notes: Optional[str] = None
-    reason: str  # required — this is an edit, not a first-time allocation
-
-    @field_validator("notes", mode="before")
-    @classmethod
-    def strip_notes(cls, v: Optional[str]) -> Optional[str]:
-        return v.strip() if v else v
-
-    @field_validator("reason", mode="before")
-    @classmethod
-    def strip_reason(cls, v: str) -> str:
-        return v.strip() if v else v
-
-    @field_validator("reason")
-    @classmethod
-    def reason_required(cls, v: str) -> str:
-        if not v:
-            raise ValueError("A reason is required to edit an allocation")
-        return v
-
-    @field_validator("quantity_litres")
-    @classmethod
-    def positive_quantity(cls, v: Decimal) -> Decimal:
-        if v <= 0:
-            raise ValueError("Quantity must be greater than zero")
-        return v
-
-
-class PfiAllocationOut(BaseModel):
-    id: UUID
-    pfi_id: UUID
-    operation_id: UUID
-    quantity_litres: Decimal
-    linked_by: UUID
-    notes: Optional[str] = None
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
 
 
 # ── Payment Schemas ────────────────────────────────────────────────────────────
