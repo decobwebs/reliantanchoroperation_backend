@@ -23,7 +23,7 @@ class Operation(Base):
         nullable=False,
         default=OperationStatus.draft,
     )
-    client_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    client_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     expected_volume_mt = Column(Numeric(12, 3), nullable=True)
     actual_volume_mt = Column(Numeric(12, 3), nullable=True)

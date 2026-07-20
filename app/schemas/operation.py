@@ -51,7 +51,8 @@ class OperationPfiAllocationCreate(BaseModel):
 
 class CreateOperationRequest(BaseModel):
     type: OperationType
-    client_id: UUID
+    # BM can create an operation before picking a client — fill it in later.
+    client_id: Optional[UUID] = None
     products: List[OperationProductCreate]
     currency: str = "NGN"
     vessel_id: Optional[UUID] = None
@@ -78,6 +79,7 @@ class CreateOperationRequest(BaseModel):
 
 
 class UpdateOperationRequest(BaseModel):
+    client_id: Optional[UUID] = None
     actual_volume_mt: Optional[Decimal] = None
     loading_location: Optional[str] = None
     discharge_location: Optional[str] = None
@@ -132,7 +134,7 @@ class OperationOut(BaseModel):
     products: List[OperationProductOut] = []
     loading_location: Optional[str] = None
     discharge_location: Optional[str] = None
-    client_id: UUID
+    client_id: Optional[UUID] = None
     created_by: UUID
     actual_volume_mt: Optional[Decimal] = None
     notes: Optional[str] = None
