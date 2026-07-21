@@ -180,14 +180,8 @@ class InvoiceService:
         )
         db.add(invoice)
 
-        # Advance operation status to invoiced
-        if op.status in (
-            OperationStatus.bdn_approved,
-            OperationStatus.pending_completion,
-            OperationStatus.payment_confirmed,
-        ):
-            op.status = OperationStatus.invoiced
-            op.updated_at = datetime.utcnow()
+        # Invoicing is a standalone Finance concern — it never drives or
+        # advances the operation's own status.
 
         db.add(AuditLog(
             user_id=current_user.id,
@@ -391,17 +385,8 @@ class InvoiceService:
         if data.notes:
             invoice.notes = data.notes
 
-        # Transition operation to completed if still in invoiced state.
-        # Standalone invoices have no operation to advance — skip entirely.
-        if invoice.operation_id:
-            op_result = await db.execute(
-                select(Operation).where(Operation.id == invoice.operation_id)
-            )
-            op = op_result.scalar_one_or_none()
-            if op and op.status == OperationStatus.invoiced:
-                op.status = OperationStatus.completed
-                op.completed_at = datetime.utcnow()
-                op.updated_at = datetime.utcnow()
+        # Marking an invoice paid is a Finance-only record — it never drives
+        # or completes the linked operation.
 
         db.add(AuditLog(
             user_id=current_user.id,

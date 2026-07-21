@@ -5,25 +5,26 @@ from app.models.enums import OperationStatus, OperationType, UserRole
 # ── Transition maps per operation type ────────────────────────────────────────
 #
 # COMMERCIAL FLOW (all types):
-#   Finance (PFI, payments, invoices, vouchers) is now a fully standalone
-#   concern, managed from its own portal — it does NOT gate or appear in the
-#   operation's own status pipeline. An operation runs its operational
-#   lifecycle (tasks → feedback → active → delivery/vessel ops → BDN →
-#   invoice → completed) independently of when/whether Finance has recorded
-#   a payment. Payment/PFI records still reference operation_id for
-#   reporting/traceability, they just never drive the operation's status.
+#   Finance (PFI, payments, invoices, vouchers) is a fully standalone concern,
+#   managed from its own portal — it does NOT gate, drive, or appear in the
+#   operation's own status pipeline in any way. An operation runs and
+#   completes its operational lifecycle (tasks → feedback → active →
+#   delivery/vessel ops → BDN → completed) entirely independently of whether
+#   Finance has recorded a payment or raised an invoice. Payment/PFI/invoice
+#   records still reference operation_id for reporting/traceability, they
+#   just never drive or gate the operation's status.
 #
 # TRUCK ONLY:
 #   draft → tasks_assigned → awaiting_feedback → feedback_submitted
-#   → active → pending_completion (delivery done) → invoiced → completed → archived
+#   → active → pending_completion (delivery done) → completed → archived
 #
 # FULL OPERATION:
 #   draft → tasks_assigned → awaiting_feedback → feedback_submitted
-#   → active → vessel_operations → bdn_pending → bdn_approved → invoiced → completed → archived
+#   → active → vessel_operations → bdn_pending → bdn_approved → completed → archived
 #
 # VESSEL ONLY:
 #   draft → tasks_assigned → active
-#   → vessel_operations → bdn_pending → bdn_approved → invoiced → completed → archived
+#   → vessel_operations → bdn_pending → bdn_approved → completed → archived
 #
 # BACKWARD COMPAT paths (payment_processing/payment_confirmed/pfi_linked are
 # retired from the primary flow — these entries exist ONLY so an operation
@@ -47,7 +48,7 @@ TRUCK_ONLY_TRANSITIONS: Dict[str, List[str]] = {
     "pfi_linked":         ["payment_processing"],                 # legacy compat chain only
     "payment_processing": ["payment_confirmed"],                  # legacy compat chain only
     "payment_confirmed":  ["pending_completion", "invoiced"],     # legacy compat chain only
-    "pending_completion": ["invoiced", "active"],
+    "pending_completion": ["completed", "invoiced", "active"],
     "invoiced":           ["completed"],
     "completed":          ["archived"],
 }
@@ -66,7 +67,7 @@ FULL_OPERATION_TRANSITIONS: Dict[str, List[str]] = {
     "payment_confirmed":  ["vessel_operations", "invoiced"],      # legacy compat chain only
     "vessel_operations":  ["bdn_pending"],
     "bdn_pending":        ["bdn_approved", "vessel_operations"],
-    "bdn_approved":       ["invoiced", "pfi_linked", "vessel_operations"],   # pfi_linked = legacy compat
+    "bdn_approved":       ["completed", "invoiced", "pfi_linked", "vessel_operations"],   # pfi_linked = legacy compat
     "invoiced":           ["completed"],
     "completed":          ["archived"],
 }
@@ -81,7 +82,7 @@ VESSEL_ONLY_TRANSITIONS: Dict[str, List[str]] = {
     "payment_confirmed":  ["vessel_operations", "invoiced"],      # legacy compat chain only
     "vessel_operations":  ["bdn_pending"],
     "bdn_pending":        ["bdn_approved", "vessel_operations"],
-    "bdn_approved":       ["invoiced", "pfi_linked", "vessel_operations"],   # pfi_linked = legacy compat
+    "bdn_approved":       ["completed", "invoiced", "pfi_linked", "vessel_operations"],   # pfi_linked = legacy compat
     "invoiced":           ["completed"],
     "completed":          ["archived"],
 }
@@ -122,15 +123,15 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     "active->pending_completion":       ["logistics_officer", "ops_supervisor"],
     "payment_confirmed->pending_completion": ["logistics_officer", "ops_supervisor"],   # legacy compat
     "pending_completion->active":       ["bunker_manager"],
-    "pending_completion->invoiced":     ["finance_manager"],
+    "pending_completion->invoiced":     ["finance_manager"],           # legacy compat only
+    "pending_completion->completed":    ["bunker_manager"],
 
-    # ── Invoicing ─────────────────────────────────────────────────────────────
-    # New path: BDN approved → invoice (FM raises final invoice based on actual BDN)
+    # ── Invoicing (legacy compat only — invoicing no longer gates completion) ──
     "bdn_approved->invoiced":           ["finance_manager"],
-    # Old compat: payment confirmed → invoiced (skips delivery step)
     "payment_confirmed->invoiced":      ["finance_manager"],
 
-    # Closure
+    # Closure — operation completes directly, independent of Finance's invoice
+    "bdn_approved->completed":          ["bunker_manager"],
     "invoiced->completed":              ["bunker_manager"],
     "completed->archived":              ["bunker_manager", "system"],
 
