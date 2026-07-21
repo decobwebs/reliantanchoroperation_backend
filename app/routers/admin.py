@@ -83,14 +83,22 @@ async def list_clients(
 async def create_user(
     body: AdminCreateUserRequest,
     request: Request,
-    current_user: User = AdminUser,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a user with any role (admin function).
+    """Create a user. Bunker Manager can create any role; Finance Manager can
+    only create client profiles — Finance's own standalone job (client +
+    PFI creation), not staff/admin account management.
 
     No password is set here — the admin never sees or chooses one. The new
     user is emailed a link to set their own password.
     """
+    if current_user.role == UserRole.finance_manager and body.role != UserRole.client:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Finance Manager can only create client profiles.",
+        )
+
     user, email_sent = await AuthService.admin_create_user(
         email=body.email,
         full_name=body.full_name,

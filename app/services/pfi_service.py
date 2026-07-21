@@ -8,10 +8,10 @@ from sqlalchemy import select, and_, or_, func
 from fastapi import HTTPException, status
 
 from app.models.finance import PFI, Payment, PfiAllocation
-from app.models.operation import Operation, OperationStatusHistory
+from app.models.operation import Operation
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.models.enums import UserRole, OperationType, OperationStatus, PfiStatus, PfiType, VoucherStatus, VoucherCategory
+from app.models.enums import UserRole, PfiStatus, PfiType, VoucherStatus, VoucherCategory
 from app.services.audit_diff import capture_diff
 
 
@@ -47,7 +47,6 @@ from app.schemas.pfi import (
     PfiAllocationCreate, PfiAllocationUpdate,
 )
 from app.services.notification_service import notify
-from app.services.state_machine import StateMachine, StateMachineError
 from app.utils.number_generator import generate_pfi_number, generate_voucher_number
 from app.utils.pfi_pdf import generate_pfi_pdf
 from app.services.document_service import _upload_to_supabase
@@ -63,35 +62,6 @@ async def _get_operation_or_404(operation_id: UUID, db: AsyncSession) -> Operati
     if not op:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
     return op
-
-
-async def _transition_operation(
-    operation: Operation,
-    to_status: OperationStatus,
-    current_user: User,
-    db: AsyncSession,
-    reason: str = "",
-) -> None:
-    try:
-        StateMachine.validate_transition(
-            operation.type, operation.status, to_status, current_user.acting_as_role or current_user.role
-        )
-    except StateMachineError as exc:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-
-    from_status = operation.status
-    operation.status = to_status
-    operation.updated_at = datetime.utcnow()
-
-    history = OperationStatusHistory(
-        operation_id=operation.id,
-        from_status=from_status,
-        to_status=to_status,
-        changed_by=current_user.id,
-        reason=reason,
-        metadata_={},
-    )
-    db.add(history)
 
 
 class PfiService:
@@ -667,11 +637,9 @@ class PaymentService:
 
         await db.flush()
 
-        # Transition operation to payment_processing
-        await _transition_operation(
-            operation, OperationStatus.payment_processing, current_user, db,
-            reason=f"Payment voucher {voucher_number} recorded"
-        )
+        # Finance is standalone now — recording a payment no longer transitions
+        # the operation's own status (it runs its operational lifecycle
+        # independently of when/whether payment has been made).
 
         audit = AuditLog(
             user_id=current_user.id,
@@ -728,11 +696,8 @@ class PaymentService:
         if pfi:
             pfi.status = PfiStatus.paid
 
-        # Transition to payment_confirmed
-        await _transition_operation(
-            operation, OperationStatus.payment_confirmed, current_user, db,
-            reason=f"Payment {payment.voucher_number} confirmed"
-        )
+        # Finance is standalone now — confirming a payment no longer transitions
+        # the operation's own status.
 
         audit = AuditLog(
             user_id=current_user.id,
@@ -744,14 +709,14 @@ class PaymentService:
         )
         db.add(audit)
 
-        # Notify all Ops Supervisors to proceed (in-app + WhatsApp)
+        # Notify all Ops Supervisors — informational only, doesn't gate anything
         await _notify_role(
             db=db,
             role=UserRole.ops_supervisor,
             operation_id=operation_id,
             type_="milestone",
-            title="Payment Confirmed — Proceed to Vessel Operations",
-            message=f"Payment confirmed for operation {operation.operation_number}. Ready for vessel operations.",
+            title="Payment Confirmed",
+            message=f"Payment confirmed for operation {operation.operation_number}.",
             wa_template="vessel_task_assigned",
             wa_kwargs={"operation_number": operation.operation_number},
         )
