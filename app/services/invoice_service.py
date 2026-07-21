@@ -17,7 +17,7 @@ from app.models.bdn import BDN
 from app.models.operation import Operation
 from app.models.user import User
 from app.models.audit import AuditLog
-from app.models.enums import BdnStatus, InvoiceStatus, OperationStatus, UserRole
+from app.models.enums import InvoiceStatus, OperationStatus, UserRole
 from app.schemas.invoice import (
     InvoiceCreate,
     StandaloneInvoiceCreate,
@@ -112,9 +112,9 @@ class InvoiceService:
         db: AsyncSession,
     ) -> Invoice:
         """
-        Generate an invoice for an operation.
-        - Vessel / full operations: requires an approved BDN (bdn_id must be provided).
-        - Truck-only operations: no BDN required; operation must be in payment_confirmed.
+        Generate an invoice for an operation, at any operation status.
+        - Vessel / full operations: bdn_id is optional; if given, must belong to this operation.
+        - Truck-only operations: no BDN.
         """
         from app.models.enums import OperationType
 
@@ -133,65 +133,32 @@ class InvoiceService:
         is_truck_only = op.type == OperationType.truck_only
 
         if is_truck_only:
-            # Truck-only: invoice after delivery confirmed (pending_completion)
-            # or directly from payment_confirmed (old compat flow).
-            allowed_statuses = {
-                OperationStatus.pending_completion,  # new path: delivery done → invoice
-                OperationStatus.payment_confirmed,   # old compat
-                OperationStatus.invoiced,
-                OperationStatus.completed,
-            }
-            if op.status not in allowed_statuses:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Truck-only invoice requires delivery confirmation (pending_completion) "
-                           f"or payment_confirmed. Current status: '{op.status.value}'.",
-                )
             bdn_id = None
         else:
-            # Vessel / full operation: BDN is required — Invoice is driven by actual delivery.
-            if not data.bdn_id:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="bdn_id is required for vessel or full operations.",
-                )
-            bdn_result = await db.execute(
-                select(BDN).where(
-                    BDN.id == data.bdn_id,
-                    BDN.operation_id == operation_id,
-                    BDN.status == BdnStatus.approved,
-                )
-            )
-            bdn = bdn_result.scalar_one_or_none()
-            if not bdn:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Approved BDN not found for this operation",
-                )
-            # New path: invoice from bdn_approved (BDN drives invoice, payment was advance).
-            # Old compat: invoice from payment_confirmed (pre-redesign flow).
-            allowed_statuses = {
-                OperationStatus.bdn_approved,        # new primary path
-                OperationStatus.payment_confirmed,   # old compat
-                OperationStatus.invoiced,
-                OperationStatus.completed,
-            }
-            if op.status not in allowed_statuses:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail=f"Cannot invoice an operation in '{op.status.value}' status. "
-                           f"BDN must be approved first.",
-                )
-            # Prevent duplicate invoices for the same BDN
-            existing = await db.execute(
-                select(Invoice).where(Invoice.bdn_id == data.bdn_id)
-            )
-            if existing.scalar_one_or_none():
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="An invoice already exists for this BDN",
-                )
+            # Vessel / full operation: BDN is optional. If given, it must belong to
+            # this operation; any approval status is accepted.
             bdn_id = data.bdn_id
+            if bdn_id:
+                bdn_result = await db.execute(
+                    select(BDN).where(
+                        BDN.id == data.bdn_id,
+                        BDN.operation_id == operation_id,
+                    )
+                )
+                if not bdn_result.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="BDN not found for this operation",
+                    )
+                # Prevent duplicate invoices for the same BDN
+                existing = await db.execute(
+                    select(Invoice).where(Invoice.bdn_id == data.bdn_id)
+                )
+                if existing.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="An invoice already exists for this BDN",
+                    )
 
         total = data.amount + data.tax_amount
         invoice_number = await generate_invoice_number(db)

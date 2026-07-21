@@ -10,7 +10,6 @@ from fastapi import HTTPException, status
 
 from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, OperationProduct
 from app.models.bdn import VesselActivity
-from app.models.finance import PFI, PfiAllocation
 from app.models.audit import AuditLog
 from app.models.user import User
 from app.models.enums import OperationStatus, OperationType, UserRole
@@ -348,28 +347,6 @@ class OperationService:
             StateMachine.validate_transition(operation.type, operation.status, data.to_status, current_user.acting_as_role or current_user.role)
         except StateMachineError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
-
-        # ── Phase 1 Activation Gate ────────────────────────────────────────────
-        # For vessel and full operations, a PFI must be linked before activation.
-        # PFIs are linked either via the legacy direct FK (PFI.operation_id) or,
-        # since PFI-at-creation, via a PfiAllocation row — check both.
-        if (
-            data.to_status == OperationStatus.active
-            and operation.type != OperationType.truck_only
-        ):
-            pfi_count_result = await db.execute(
-                select(func.count()).select_from(PFI)
-                .outerjoin(PfiAllocation, PfiAllocation.pfi_id == PFI.id)
-                .where(or_(
-                    PFI.operation_id == operation.id,
-                    PfiAllocation.operation_id == operation.id,
-                ))
-            )
-            if (pfi_count_result.scalar() or 0) == 0:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="A PFI (Proforma Invoice) must be linked to this operation before it can be activated.",
-                )
 
         from_status = operation.status
         operation.status = data.to_status

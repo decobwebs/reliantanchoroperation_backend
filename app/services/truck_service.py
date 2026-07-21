@@ -914,11 +914,38 @@ class TruckService:
         if truck_op.quantity_loaded_mt is not None:
             truck_op.variance_mt = truck_op.quantity_loaded_mt - quantity_discharged_mt
 
-        # Set discharge approval gate:
-        # - vessel specified → False (pending BM approval before ROB is written)
-        # - no vessel → None (approval not applicable)
+        # Discharge is written straight through — no manual BM approval gate.
+        # ROB is credited to the destination vessel immediately (system vessels only).
         has_vessel = bool(truck_op.destination_vessel_id or truck_op.destination_vessel_name)
-        truck_op.discharge_approved = False if has_vessel else None
+        truck_op.discharge_approved = True if has_vessel else None
+        if has_vessel:
+            truck_op.discharge_approved_by = current_user.id
+            truck_op.discharge_approved_at = datetime.utcnow()
+
+        if truck_op.destination_vessel_id and quantity_discharged_mt:
+            dv_result = await db.execute(
+                select(Vessel)
+                .where(Vessel.id == truck_op.destination_vessel_id)
+                .with_for_update()
+            )
+            dest_vessel = dv_result.scalar_one_or_none()
+            if dest_vessel:
+                rob_before = dest_vessel.current_rob_mt
+                rob_after = rob_before + quantity_discharged_mt
+                dest_vessel.current_rob_mt = rob_after
+                truck_label = truck_op.truck.truck_number if truck_op.truck else str(truck_op.id)[:8]
+                db.add(RobEntry(
+                    vessel_id=dest_vessel.id,
+                    operation_id=operation_id,
+                    entry_type=RobEntryType.replenishment,
+                    quantity_mt=quantity_discharged_mt,
+                    rob_before_mt=rob_before,
+                    rob_after_mt=rob_after,
+                    recorded_by=current_user.id,
+                    truck_operation_id=truck_op.id,
+                    source_description=f"Truck delivery: {truck_label}",
+                    notes=f"Discharged {float(quantity_discharged_mt):.3f} L from truck {truck_label} into vessel {dest_vessel.vessel_name}.",
+                ))
 
         vessel_label = ""
         if truck_op.destination_vessel_id:
@@ -1675,17 +1702,6 @@ class TruckService:
     ) -> Operation:
         """Supervisor submits completion report → transitions operation to pending_completion."""
         operation = await _get_operation_or_404(operation_id, db)
-
-        # Money-first flow: completion is submitted after payment is confirmed.
-        # 'active' is accepted for backward compatibility (delivery-during-active).
-        if operation.status not in (OperationStatus.active, OperationStatus.payment_confirmed):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=(
-                    "Completion can only be submitted while the operation is Active or "
-                    f"after payment is confirmed. Current status: {operation.status.value}"
-                ),
-            )
 
         try:
             StateMachine.validate_transition(operation.type, operation.status, OperationStatus.pending_completion, current_user.acting_as_role or current_user.role)

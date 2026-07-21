@@ -217,11 +217,6 @@ class PfiService:
         pfi = result.scalar_one_or_none()
         if not pfi:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PFI not found")
-        if pfi.status not in (PfiStatus.paid, PfiStatus.pending, PfiStatus.confirmed, PfiStatus.linked):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"PFI must be paid before it can be allocated. Current status: '{pfi.status.value}'",
-            )
         if pfi.quantity_litres is None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

@@ -230,14 +230,9 @@ class VesselActivityService:
         activity = await VesselActivityService._get_or_404(activity_id, db)
         VesselActivityService._assert_active(activity, current_user)
 
-        if activity.new_rob_mt is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Record vessel receipt before recording discharge",
-            )
-
         activity.quantity_discharged_mt = data.quantity_discharged_mt
-        activity.final_rob_mt = activity.new_rob_mt - data.quantity_discharged_mt
+        if activity.new_rob_mt is not None:
+            activity.final_rob_mt = activity.new_rob_mt - data.quantity_discharged_mt
 
         if data.discharge_start_at:
             activity.discharge_start_at = data.discharge_start_at
@@ -272,12 +267,6 @@ class VesselActivityService:
     ) -> VesselActivity:
         activity = await VesselActivityService._get_or_404(activity_id, db)
         VesselActivityService._assert_active(activity, current_user)
-
-        if activity.vessel_received_mt is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Record vessel receipt before completing activity",
-            )
 
         final_rob = activity.final_rob_mt if activity.final_rob_mt is not None else activity.new_rob_mt
 
