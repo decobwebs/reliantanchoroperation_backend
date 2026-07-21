@@ -105,8 +105,9 @@ class TruckBdnService:
                 detail="A Truck BDN is already pending or approved for this operation",
             )
 
-        # Compute the prefilled/locked fields server-side — the submitter never
-        # supplies these, so the BDN certifies real recorded truck data.
+        # Independently compute what the system has on record — never used to
+        # fill or default anything the submitter enters, only stored alongside
+        # it so the Bunker Manager can compare submitted vs. system-recorded.
         agg_result = await db.execute(
             select(
                 func.coalesce(func.sum(TruckOperation.quantity_loaded_mt), 0),
@@ -115,21 +116,21 @@ class TruckBdnService:
                 func.max(TruckOperation.discharge_end_at),
             ).where(TruckOperation.operation_id == operation_id)
         )
-        loaded, discharged, commenced_at, completed_at = agg_result.one()
+        system_loaded, system_discharged, system_commenced_at, system_completed_at = agg_result.one()
 
-        product_type_result = await db.execute(
+        system_product_type_result = await db.execute(
             select(TruckOperation.product_type)
             .where(and_(TruckOperation.operation_id == operation_id, TruckOperation.product_type.is_not(None)))
             .limit(1)
         )
-        product_type = product_type_result.scalar_one_or_none()
+        system_product_type = system_product_type_result.scalar_one_or_none()
 
-        location_result = await db.execute(
+        system_location_result = await db.execute(
             select(TruckOperation.discharge_location)
             .where(and_(TruckOperation.operation_id == operation_id, TruckOperation.discharge_location.is_not(None)))
             .limit(1)
         )
-        discharge_location = location_result.scalar_one_or_none()
+        system_discharge_location = system_location_result.scalar_one_or_none()
 
         truck_bdn_number = await generate_truck_bdn_number(db)
 
@@ -139,14 +140,27 @@ class TruckBdnService:
             generated_by=current_user.id,
             status=BdnStatus.pending,
             company_name=data.company_name,
-            product_type=product_type,
-            discharge_location=discharge_location,
-            quantity_loaded_mt=loaded,
-            quantity_discharged_mt=discharged,
-            variance_mt=loaded - discharged,
-            discharge_commenced_at=commenced_at,
-            discharge_completed_at=completed_at,
-            discharge_completion_date=completed_at.date() if completed_at else None,
+            product_type=data.product_type,
+            discharge_location=data.discharge_location,
+            quantity_loaded_mt=data.quantity_loaded_mt,
+            quantity_discharged_mt=data.quantity_discharged_mt,
+            variance_mt=data.quantity_loaded_mt - data.quantity_discharged_mt,
+            density=data.density,
+            temperature_before_loading=data.temperature_before_loading,
+            temperature_after_loading=data.temperature_after_loading,
+            vcf=data.vcf,
+            gov=data.gov,
+            gsv=data.gsv,
+            mt_vacuum=data.mt_vacuum,
+            discharge_commenced_at=data.discharge_commenced_at,
+            discharge_completed_at=data.discharge_completed_at,
+            discharge_completion_date=data.discharge_completion_date,
+            system_product_type=system_product_type,
+            system_discharge_location=system_discharge_location,
+            system_quantity_loaded_mt=system_loaded,
+            system_quantity_discharged_mt=system_discharged,
+            system_discharge_commenced_at=system_commenced_at,
+            system_discharge_completed_at=system_completed_at,
             notes=data.notes,
         )
         db.add(truck_bdn)
@@ -180,7 +194,7 @@ class TruckBdnService:
                 wa_kwargs={
                     "operation_number": operation.operation_number,
                     "bdn_number": truck_bdn_number,
-                    "quantity": str(discharged),
+                    "quantity": str(data.quantity_discharged_mt),
                 },
             )
             try:
@@ -189,8 +203,8 @@ class TruckBdnService:
                     recipient_name=recipient.full_name,
                     operation_number=operation.operation_number,
                     truck_bdn_number=truck_bdn_number,
-                    quantity_loaded=str(loaded),
-                    quantity_discharged=str(discharged),
+                    quantity_loaded=str(data.quantity_loaded_mt),
+                    quantity_discharged=str(data.quantity_discharged_mt),
                 )
             except Exception as exc:
                 logger.warning("create_truck_bdn: email failed for %s: %s", recipient.email, exc)
@@ -203,9 +217,11 @@ class TruckBdnService:
             entity_id=truck_bdn.id,
             changes={
                 "truck_bdn_number": truck_bdn_number,
-                "quantity_loaded_mt": str(loaded),
-                "quantity_discharged_mt": str(discharged),
+                "quantity_loaded_mt": str(data.quantity_loaded_mt),
+                "quantity_discharged_mt": str(data.quantity_discharged_mt),
                 "company_name": data.company_name,
+                "system_quantity_loaded_mt": str(system_loaded),
+                "system_quantity_discharged_mt": str(system_discharged),
             },
         ))
 

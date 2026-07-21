@@ -168,7 +168,16 @@ class TruckBdn(Base):
     equivalent of the vessel-only `BDN` (app/models/bdn.py), but a separate
     table/workflow: submitted by the Ops Supervisor or Logistics Officer,
     approved by the Bunker Manager, and required before the operation can
-    complete. One active (pending/approved) row per operation at a time."""
+    complete. One active (pending/approved) row per operation at a time.
+
+    Every field below is manually entered by the submitter — nothing is
+    prefilled. For the fields the system can independently derive from the
+    operation's trucks (product type, discharge location, quantities,
+    discharge timing), the system's own computed value is captured
+    separately in the matching `system_*` column so the Bunker Manager can
+    compare what was submitted against what the system recorded and catch
+    discrepancies. Density, temperatures, VCF, GOV, GSV, and MTvac have no
+    system-computed counterpart — they're lab/meter readings, submitter-only."""
     __tablename__ = "truck_bdns"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -180,15 +189,35 @@ class TruckBdn(Base):
 
     company_name = Column(String(200), nullable=False)  # client being supplied to
 
-    # Prefilled/computed at submission — locked for the submitter, BM-editable only.
-    product_type = Column(String(100), nullable=True)
-    discharge_location = Column(Text, nullable=True)
+    # Submitted manually by the Ops Supervisor / Logistics Officer — required.
+    product_type = Column(String(100), nullable=False)
+    discharge_location = Column(Text, nullable=False)
     quantity_loaded_mt = Column(Numeric(12, 3), nullable=False)
     quantity_discharged_mt = Column(Numeric(12, 3), nullable=False)
     variance_mt = Column(Numeric(12, 3), nullable=True)
-    discharge_commenced_at = Column(DateTime(timezone=True), nullable=True)
-    discharge_completed_at = Column(DateTime(timezone=True), nullable=True)
-    discharge_completion_date = Column(Date, nullable=True)
+    discharge_commenced_at = Column(DateTime(timezone=True), nullable=False)
+    discharge_completed_at = Column(DateTime(timezone=True), nullable=False)
+    discharge_completion_date = Column(Date, nullable=False)
+
+    # Product quality — submitter-only, no system-computed equivalent.
+    density = Column(Numeric(8, 4), nullable=False)
+    temperature_before_loading = Column(Numeric(6, 2), nullable=False)
+    temperature_after_loading = Column(Numeric(6, 2), nullable=False)
+
+    # Delivery quantity/method — submitter-only, no system-computed equivalent.
+    vcf = Column(Numeric(8, 4), nullable=False)             # Volume Correction Factor
+    gov = Column(Numeric(14, 2), nullable=False)             # Gross Observed Volume
+    gsv = Column(Numeric(14, 2), nullable=False)             # Gross Standard Volume
+    mt_vacuum = Column(Numeric(12, 3), nullable=False)       # MTvac
+
+    # System-computed snapshot at submission time — for BM comparison only,
+    # never edited, never shown to the submitter as a default.
+    system_product_type = Column(String(100), nullable=True)
+    system_discharge_location = Column(Text, nullable=True)
+    system_quantity_loaded_mt = Column(Numeric(12, 3), nullable=True)
+    system_quantity_discharged_mt = Column(Numeric(12, 3), nullable=True)
+    system_discharge_commenced_at = Column(DateTime(timezone=True), nullable=True)
+    system_discharge_completed_at = Column(DateTime(timezone=True), nullable=True)
 
     rejection_reason = Column(Text, nullable=True)
     approved_at = Column(DateTime(timezone=True), nullable=True)
