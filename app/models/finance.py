@@ -93,6 +93,7 @@ class Invoice(Base):
     # Nullable: Finance can raise ad-hoc invoices outside any operation.
     operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=True)
     bdn_id = Column(UUID(as_uuid=True), ForeignKey("bdns.id"), nullable=True)
+    truck_bdn_id = Column(UUID(as_uuid=True), ForeignKey("truck_bdns.id"), nullable=True)
     # Nullable: a standalone invoice may be billed to a manually-entered client
     # who isn't a registered user (client_name/client_email carry it instead).
     client_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
@@ -117,6 +118,7 @@ class Invoice(Base):
     # Relationships
     operation = relationship("Operation", back_populates="invoices")
     bdn = relationship("BDN", back_populates="invoices")
+    truck_bdn = relationship("TruckBdn", back_populates="invoices")
     client = relationship("User", foreign_keys=[client_id])
     generator = relationship("User", foreign_keys=[generated_by])
 

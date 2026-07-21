@@ -16,7 +16,12 @@ from app.models.enums import OperationStatus, OperationType, UserRole
 #
 # TRUCK ONLY:
 #   draft → tasks_assigned → awaiting_feedback → feedback_submitted
-#   → active → pending_completion (delivery done) → completed → archived
+#   → active → pending_completion (delivery done) → bdn_pending → bdn_approved
+#   → completed → archived
+#   (Truck BDN: Ops Supervisor/Logistics Officer submits, Bunker Manager
+#   approves — same bdn_pending/bdn_approved statuses vessel/full already use,
+#   backed by a separate `truck_bdns` table/workflow, see
+#   app/services/truck_bdn_service.py.)
 #
 # FULL OPERATION:
 #   draft → tasks_assigned → awaiting_feedback → feedback_submitted
@@ -48,7 +53,9 @@ TRUCK_ONLY_TRANSITIONS: Dict[str, List[str]] = {
     "pfi_linked":         ["payment_processing"],                 # legacy compat chain only
     "payment_processing": ["payment_confirmed"],                  # legacy compat chain only
     "payment_confirmed":  ["pending_completion", "invoiced"],     # legacy compat chain only
-    "pending_completion": ["completed", "invoiced", "active"],
+    "pending_completion": ["bdn_pending", "invoiced", "active"],
+    "bdn_pending":        ["bdn_approved", "pending_completion"],
+    "bdn_approved":       ["completed", "invoiced"],
     "invoiced":           ["completed"],
     "completed":          ["archived"],
 }
@@ -124,7 +131,10 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     "payment_confirmed->pending_completion": ["logistics_officer", "ops_supervisor"],   # legacy compat
     "pending_completion->active":       ["bunker_manager"],
     "pending_completion->invoiced":     ["finance_manager"],           # legacy compat only
-    "pending_completion->completed":    ["bunker_manager"],
+    # Truck BDN gate — a truck operation must have an approved Truck BDN
+    # before it can complete (see app/services/truck_bdn_service.py).
+    "pending_completion->bdn_pending":  ["ops_supervisor", "logistics_officer", "bunker_manager"],
+    "bdn_pending->pending_completion":  ["bunker_manager"],            # reject path — resubmit
 
     # ── Invoicing (legacy compat only — invoicing no longer gates completion) ──
     "bdn_approved->invoiced":           ["finance_manager"],

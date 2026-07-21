@@ -49,6 +49,11 @@ class InvoiceService:
         if invoice.bdn_id:
             bdn = await db.get(BDN, invoice.bdn_id)
 
+        truck_bdn = None
+        if invoice.truck_bdn_id:
+            from app.models.truck import TruckBdn
+            truck_bdn = await db.get(TruckBdn, invoice.truck_bdn_id)
+
         # Resolve who to bill, in order:
         #   operation-bound -> the operation's client (eager-loaded)
         #   standalone + registered client -> load that user
@@ -79,9 +84,10 @@ class InvoiceService:
             ),
             loading_location=operation.loading_location if operation else None,
             discharge_location=operation.discharge_location if operation else None,
-            bdn_number=bdn.bdn_number if bdn else None,
+            bdn_number=(bdn.bdn_number if bdn else (truck_bdn.truck_bdn_number if truck_bdn else None)),
             quantity_delivered_mt=(
                 bdn.quantity_delivered_mt if bdn
+                else truck_bdn.quantity_discharged_mt if truck_bdn
                 else (
                     (operation.actual_volume_mt or sum((p.quantity_mt for p in operation.products), Decimal("0")))
                     if operation else None
@@ -114,9 +120,10 @@ class InvoiceService:
         """
         Generate an invoice for an operation, at any operation status.
         - Vessel / full operations: bdn_id is optional; if given, must belong to this operation.
-        - Truck-only operations: no BDN.
+        - Truck-only operations: truck_bdn_id is optional; if given, must belong to this operation.
         """
         from app.models.enums import OperationType
+        from app.models.truck import TruckBdn
 
         op_result = await db.execute(
             select(Operation)
@@ -134,9 +141,32 @@ class InvoiceService:
 
         if is_truck_only:
             bdn_id = None
+            truck_bdn_id = data.truck_bdn_id
+            if truck_bdn_id:
+                tb_result = await db.execute(
+                    select(TruckBdn).where(
+                        TruckBdn.id == truck_bdn_id,
+                        TruckBdn.operation_id == operation_id,
+                    )
+                )
+                if not tb_result.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Truck BDN not found for this operation",
+                    )
+                # Prevent duplicate invoices for the same Truck BDN
+                existing = await db.execute(
+                    select(Invoice).where(Invoice.truck_bdn_id == truck_bdn_id)
+                )
+                if existing.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="An invoice already exists for this Truck BDN",
+                    )
         else:
             # Vessel / full operation: BDN is optional. If given, it must belong to
             # this operation; any approval status is accepted.
+            truck_bdn_id = None
             bdn_id = data.bdn_id
             if bdn_id:
                 bdn_result = await db.execute(
@@ -167,6 +197,7 @@ class InvoiceService:
             invoice_number=invoice_number,
             operation_id=operation_id,
             bdn_id=bdn_id,
+            truck_bdn_id=truck_bdn_id,
             client_id=op.client_id,
             generated_by=current_user.id,
             amount=data.amount,
@@ -194,6 +225,7 @@ class InvoiceService:
                 "amount": str(data.amount),
                 "currency": data.currency,
                 "bdn_id": str(bdn_id) if bdn_id else None,
+                "truck_bdn_id": str(truck_bdn_id) if truck_bdn_id else None,
             },
         ))
 

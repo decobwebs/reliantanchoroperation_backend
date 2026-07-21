@@ -1,13 +1,15 @@
 import uuid
 from datetime import datetime
 from sqlalchemy import (
-    Column, String, Boolean, DateTime, Text, Numeric, ForeignKey,
+    Column, String, Boolean, DateTime, Date, Text, Numeric, ForeignKey,
     Enum as SAEnum, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
-from app.models.enums import TruckStatus, TruckOpStatus, AuditResult, TruckWaiverStatus, AuditPhase
+from app.models.enums import (
+    TruckStatus, TruckOpStatus, AuditResult, TruckWaiverStatus, AuditPhase, BdnStatus
+)
 
 
 class Truck(Base):
@@ -159,3 +161,42 @@ class TruckSafetyAudit(Base):
 
     truck_operation = relationship("TruckOperation", back_populates="safety_audits")
     conductor = relationship("User", foreign_keys=[conducted_by])
+
+
+class TruckBdn(Base):
+    """Bunker Delivery Note for a truck-only operation — the truck-flow
+    equivalent of the vessel-only `BDN` (app/models/bdn.py), but a separate
+    table/workflow: submitted by the Ops Supervisor or Logistics Officer,
+    approved by the Bunker Manager, and required before the operation can
+    complete. One active (pending/approved) row per operation at a time."""
+    __tablename__ = "truck_bdns"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    truck_bdn_number = Column(String(20), unique=True, nullable=False)
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=False)
+    generated_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    reviewed_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    status = Column(SAEnum(BdnStatus, name="bdn_status"), default=BdnStatus.pending, nullable=False)
+
+    company_name = Column(String(200), nullable=False)  # client being supplied to
+
+    # Prefilled/computed at submission — locked for the submitter, BM-editable only.
+    product_type = Column(String(100), nullable=True)
+    discharge_location = Column(Text, nullable=True)
+    quantity_loaded_mt = Column(Numeric(12, 3), nullable=False)
+    quantity_discharged_mt = Column(Numeric(12, 3), nullable=False)
+    variance_mt = Column(Numeric(12, 3), nullable=True)
+    discharge_commenced_at = Column(DateTime(timezone=True), nullable=True)
+    discharge_completed_at = Column(DateTime(timezone=True), nullable=True)
+    discharge_completion_date = Column(Date, nullable=True)
+
+    rejection_reason = Column(Text, nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    pdf_url = Column(Text, nullable=True)
+    notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    operation = relationship("Operation", back_populates="truck_bdns")
+    generator = relationship("User", foreign_keys=[generated_by])
+    reviewer = relationship("User", foreign_keys=[reviewed_by])
+    invoices = relationship("Invoice", back_populates="truck_bdn")

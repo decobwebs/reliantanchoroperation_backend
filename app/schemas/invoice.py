@@ -7,7 +7,8 @@ from pydantic import BaseModel, field_validator, model_validator
 
 
 class InvoiceCreate(BaseModel):
-    bdn_id: Optional[UUID] = None   # required for vessel/full ops; omit for truck_only
+    bdn_id: Optional[UUID] = None          # vessel/full operations only
+    truck_bdn_id: Optional[UUID] = None    # truck-only operations only
     amount: Decimal
     currency: str = "USD"
     exchange_rate: Optional[Decimal] = None
@@ -98,6 +99,7 @@ class InvoiceOut(BaseModel):
     invoice_number: str
     operation_id: Optional[UUID] = None   # null for standalone (ad-hoc) invoices
     bdn_id: Optional[UUID] = None
+    truck_bdn_id: Optional[UUID] = None
     client_id: Optional[UUID] = None      # null when billed to a manual client
     client_name: Optional[str] = None
     client_email: Optional[str] = None

@@ -336,6 +336,40 @@ async def email_bdn_approved(
     )
 
 
+async def email_truck_bdn_submitted(
+    to_email: str,
+    recipient_name: str,
+    operation_number: str,
+    truck_bdn_number: str,
+    quantity_loaded: str,
+    quantity_discharged: str,
+) -> bool:
+    subject = f"Truck BDN Ready for Review — {truck_bdn_number}"
+    body = f"""
+      <p style="margin:0 0 14px;">Dear {_esc(recipient_name)},</p>
+      <p style="margin:0 0 14px;">A Truck Bunker Delivery Note has been submitted for
+      operation <strong>{_esc(operation_number)}</strong>:</p>
+      <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 14px;width:100%;">
+        <tr>
+          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Truck BDN Number</td>
+          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(truck_bdn_number)}</td>
+        </tr>
+        <tr>
+          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Quantity Loaded</td>
+          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(quantity_loaded)} L</td>
+        </tr>
+        <tr>
+          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Quantity Discharged</td>
+          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(quantity_discharged)} L</td>
+        </tr>
+      </table>
+    """
+    return await send_email(
+        [to_email], subject,
+        _wrap_email(title="Truck Bunker Delivery Note Submitted", body_html=body),
+    )
+
+
 async def email_feedback_rejected(
     to_email: str,
     recipient_name: str,

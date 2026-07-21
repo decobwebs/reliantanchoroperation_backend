@@ -7,7 +7,7 @@ from app.models.enums import (
 from app.models.user import User
 from app.models.vessel import Vessel
 from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, TruckFeedback, OperationProduct
-from app.models.truck import Truck, TruckOperation, TruckSafetyAudit
+from app.models.truck import Truck, TruckOperation, TruckSafetyAudit, TruckBdn
 from app.models.bdn import RobEntry, BDN
 from app.models.finance import PFI, Payment, Invoice, PfiAllocation
 from app.models.document import Document
@@ -21,7 +21,7 @@ __all__ = [
     "NotificationType", "AuditResult",
     "User", "Vessel",
     "Operation", "OperationStatusHistory", "TaskAssignment", "TruckFeedback", "OperationProduct",
-    "Truck", "TruckOperation", "TruckSafetyAudit",
+    "Truck", "TruckOperation", "TruckSafetyAudit", "TruckBdn",
     "RobEntry", "BDN",
     "PFI", "Payment", "Invoice", "PfiAllocation",
     "Document", "Notification",
