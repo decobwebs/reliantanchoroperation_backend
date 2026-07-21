@@ -186,7 +186,7 @@ def generate_invoice_pdf(
         parties = Table([[bill_to_cell]], colWidths=[CONTENT_W])
     else:
         product_lines = (
-            [Paragraph(f"Product: {_safe(row['label'])} ({_fmt_money(row['qty'])} MT)"
+            [Paragraph(f"Product: {_safe(row['label'])} ({_fmt_money(row['qty'])} L)"
                        if row["qty"] is not None else f"Product: {_safe(row['label'])}", BODY)
              for row in product_rows]
             or [Paragraph("Product: -", BODY)]

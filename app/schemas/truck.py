@@ -207,6 +207,51 @@ class TruckWaiverBulkCreate(BaseModel):
         return cleaned
 
 
+class TruckWaiverUpdate(BaseModel):
+    waybill_truck_number: str
+    reason: str  # required — this is an edit, not a first-time creation
+
+    @field_validator("waybill_truck_number", mode="before")
+    @classmethod
+    def clean_number(cls, v: str) -> str:
+        return v.strip().upper() if v else v
+
+    @field_validator("waybill_truck_number")
+    @classmethod
+    def number_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Waiver number cannot be empty")
+        return v
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to edit a waiver number")
+        return v
+
+
+class TruckWaiverDeleteRequest(BaseModel):
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to remove a waiver number")
+        return v
+
+
 class TruckWaiverOut(BaseModel):
     id: UUID
     waybill_truck_number: str

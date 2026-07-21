@@ -27,6 +27,7 @@ from app.schemas.truck import (
     TruckSafetyAuditCreate, TruckSafetyAuditOut,
     WaiveAuditItemRequest,
     TruckWaiverBulkCreate, TruckWaiverOut, TruckWaybillLinkRequest,
+    TruckWaiverUpdate, TruckWaiverDeleteRequest,
 )
 from app.services.truck_service import TruckService
 from app.services.document_service import _upload_to_supabase, MAX_FILE_SIZE_BYTES
@@ -105,6 +106,33 @@ async def list_waivers(
     waivers = await TruckService.list_waivers(db, status_filter=status_filter)
     items = [TruckWaiverOut.model_validate(w).model_dump() for w in waivers]
     return StandardResponse.ok(data=items, message="Waiver numbers retrieved")
+
+
+@router.put("/trucks/waivers/{waiver_id}", response_model=StandardResponse)
+async def update_waiver(
+    waiver_id: UUID,
+    body: TruckWaiverUpdate,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Edit a waiver number's value. Requires a reason. Bunker Manager only."""
+    waiver = await TruckService.update_waiver(waiver_id, body, current_user, db)
+    return StandardResponse.ok(
+        data=TruckWaiverOut.model_validate(waiver).model_dump(),
+        message=f"Waiver number updated to {waiver.waybill_truck_number}",
+    )
+
+
+@router.delete("/trucks/waivers/{waiver_id}", response_model=StandardResponse)
+async def delete_waiver(
+    waiver_id: UUID,
+    body: TruckWaiverDeleteRequest,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a waiver number. Requires a reason. Blocked once linked to a truck. Bunker Manager only."""
+    await TruckService.delete_waiver(waiver_id, body.reason, current_user, db)
+    return StandardResponse.ok(data=None, message="Waiver number removed")
 
 
 @router.get(

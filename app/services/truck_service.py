@@ -23,6 +23,7 @@ from app.schemas.truck import (
     TruckFeedbackCreate,
     TruckSafetyAuditCreate,
     TruckWaybillLinkRequest,
+    TruckWaiverUpdate,
 )
 from app.services.notification_service import notify
 from app.services.state_machine import StateMachine, StateMachineError
@@ -255,6 +256,84 @@ class TruckService:
             w.linked_at = to.waybill_linked_at if to else None
 
         return waivers
+
+    @staticmethod
+    async def _get_waiver_or_404(waiver_id: UUID, db: AsyncSession) -> TruckWaiver:
+        result = await db.execute(select(TruckWaiver).where(TruckWaiver.id == waiver_id))
+        waiver = result.scalar_one_or_none()
+        if not waiver:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Waiver number not found")
+        return waiver
+
+    @staticmethod
+    async def update_waiver(
+        waiver_id: UUID,
+        data: TruckWaiverUpdate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckWaiver:
+        """BM edits a waiver number's own value. Mistakes are corrected, not
+        recreated — allowed regardless of available/linked status."""
+        waiver = await TruckService._get_waiver_or_404(waiver_id, db)
+
+        existing_result = await db.execute(
+            select(TruckWaiver.id).where(
+                and_(
+                    TruckWaiver.waybill_truck_number == data.waybill_truck_number,
+                    TruckWaiver.id != waiver_id,
+                )
+            )
+        )
+        if existing_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Waiver number '{data.waybill_truck_number}' already exists",
+            )
+
+        changes = capture_diff(waiver, {"waybill_truck_number": data.waybill_truck_number})
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            action="UPDATE_TRUCK_WAIVER",
+            entity_type="truck_waiver",
+            entity_id=waiver.id,
+            changes=changes,
+            reason=data.reason,
+        ))
+
+        await db.flush()
+        await db.refresh(waiver)
+        return waiver
+
+    @staticmethod
+    async def delete_waiver(
+        waiver_id: UUID,
+        reason: str,
+        current_user: User,
+        db: AsyncSession,
+    ) -> None:
+        """BM removes a waiver number. Blocked once it's linked to a truck —
+        unlink it first (no unlink flow exists today; this is intentional,
+        matching the 'linked = permanent record' design)."""
+        waiver = await TruckService._get_waiver_or_404(waiver_id, db)
+
+        if waiver.status == TruckWaiverStatus.linked:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This waiver number is linked to a truck and cannot be deleted.",
+            )
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            action="DELETE_TRUCK_WAIVER",
+            entity_type="truck_waiver",
+            entity_id=waiver.id,
+            changes={"waybill_truck_number": waiver.waybill_truck_number},
+            reason=reason,
+        ))
+
+        await db.delete(waiver)
+        await db.flush()
 
     @staticmethod
     async def link_waybill(
