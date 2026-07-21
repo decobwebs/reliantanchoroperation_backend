@@ -345,7 +345,7 @@ class OperationService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
 
         try:
-            StateMachine.validate_transition(operation.type, operation.status, data.to_status, current_user.role)
+            StateMachine.validate_transition(operation.type, operation.status, data.to_status, current_user.acting_as_role or current_user.role)
         except StateMachineError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 

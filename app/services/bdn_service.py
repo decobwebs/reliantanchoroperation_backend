@@ -40,7 +40,7 @@ async def _transition_operation(
 ) -> None:
     try:
         StateMachine.validate_transition(
-            operation.type, operation.status, to_status, current_user.role
+            operation.type, operation.status, to_status, current_user.acting_as_role or current_user.role
         )
     except StateMachineError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
