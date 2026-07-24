@@ -40,6 +40,9 @@ class Operation(Base):
     vessel_id = Column(UUID(as_uuid=True), ForeignKey("vessels.id"), nullable=True)
     # PFI-first flow: link to a pre-existing paid PFI
     pfi_id = Column(UUID(as_uuid=True), ForeignKey("pfis.id"), nullable=True)
+    # Optional, linkable any time, never a gate — see NavalClearanceService.
+    naval_clearance_id = Column(UUID(as_uuid=True), ForeignKey("naval_clearances.id"), nullable=True)
+    color = Column(String(20), nullable=True)
     # Versioning / reopen support
     version = Column(Integer, default=1, nullable=False)
     parent_operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=True)
@@ -52,6 +55,7 @@ class Operation(Base):
     client = relationship("User", foreign_keys=[client_id], back_populates="client_operations")
     creator = relationship("User", foreign_keys=[created_by], back_populates="created_operations")
     vessel = relationship("Vessel", back_populates="operations")
+    naval_clearance = relationship("NavalClearance", foreign_keys=[naval_clearance_id], lazy="selectin")
     parent_operation = relationship("Operation", remote_side="Operation.id", foreign_keys=[parent_operation_id])
     child_operations = relationship("Operation", foreign_keys=[parent_operation_id], back_populates="parent_operation")
     status_history = relationship("OperationStatusHistory", back_populates="operation", order_by="OperationStatusHistory.created_at")

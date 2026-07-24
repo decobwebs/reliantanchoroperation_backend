@@ -204,7 +204,7 @@ class AuthService:
             pass  # best-effort; must not mask the original error
 
     @staticmethod
-    async def register(email: str, password: str, full_name: str, phone: Optional[str], role: UserRole, db: AsyncSession) -> Dict[str, Any]:
+    async def register(email: str, password: str, full_name: str, phone: Optional[str], role: UserRole, db: AsyncSession, address: Optional[str] = None) -> Dict[str, Any]:
         """Register a new user via Supabase Auth and sync to local DB."""
         try:
             async with httpx.AsyncClient() as client:
@@ -258,6 +258,7 @@ class AuthService:
                 email=email,
                 full_name=full_name,
                 phone=phone,
+                address=address,
                 role=role,
             )
             db.add(user)
@@ -278,6 +279,7 @@ class AuthService:
         phone: Optional[str],
         role: UserRole,
         db: AsyncSession,
+        address: Optional[str] = None,
     ) -> tuple[User, bool]:
         """Bunker-Manager-initiated account creation.
 
@@ -290,7 +292,7 @@ class AuthService:
         random_password = secrets.token_urlsafe(32)
         user = await AuthService.register(
             email=email, password=random_password,
-            full_name=full_name, phone=phone, role=role, db=db,
+            full_name=full_name, phone=phone, role=role, db=db, address=address,
         )
 
         email_sent = False

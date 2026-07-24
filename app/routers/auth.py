@@ -26,32 +26,21 @@ from app.services.auth_service import AuthService
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
-@router.post("/register", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", status_code=status.HTTP_410_GONE)
 async def register(
     body: RegisterRequest,
     request: Request,
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Register a new user. By default, role is set to 'client'.
-    Only a bunker_manager can register users with elevated roles
-    (enforced at service level — public registration always results in client role).
+    Closed. Client accounts are created exclusively by Finance via
+    POST /admin/users going forward — public self-registration is no longer
+    available. Route kept (rather than removed) so existing callers get a
+    clean, explicit error instead of a 404.
     """
-    # Public registration always creates clients; role override is admin-only
-    role = UserRole.client
-
-    user = await AuthService.register(
-        email=body.email,
-        password=body.password,
-        full_name=body.full_name,
-        phone=body.phone,
-        role=role,
-        db=db,
-    )
-
-    return StandardResponse.ok(
-        data=UserOut.model_validate(user).model_dump(),
-        message="Registration successful",
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail="Public registration is closed. Client accounts are created by Finance — contact your Reliant Anchor representative.",
     )
 
 

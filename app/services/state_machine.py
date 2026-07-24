@@ -25,11 +25,17 @@ from app.models.enums import OperationStatus, OperationType, UserRole
 #
 # FULL OPERATION:
 #   draft → tasks_assigned → awaiting_feedback → feedback_submitted
-#   → active → vessel_operations → bdn_pending → bdn_approved → completed → archived
+#   → active → vessel_operations (displayed "Discharging") → pending_completion
+#   (all vessel runs discharge_completed, system-triggered) → bdn_pending
+#   → bdn_approved → completed → archived
+#   (Vessel BDN: Ops Supervisor/Marine submits, one per vessel run, Bunker
+#   Manager approves — the operation only reaches bdn_approved once EVERY
+#   vessel run's BDN is approved. See app/services/vessel_bdn_service.py.)
 #
 # VESSEL ONLY:
 #   draft → tasks_assigned → active
-#   → vessel_operations → bdn_pending → bdn_approved → completed → archived
+#   → vessel_operations (displayed "Discharging") → pending_completion
+#   → bdn_pending → bdn_approved → completed → archived
 #
 # BACKWARD COMPAT paths (payment_processing/payment_confirmed/pfi_linked are
 # retired from the primary flow — these entries exist ONLY so an operation
@@ -72,7 +78,8 @@ FULL_OPERATION_TRANSITIONS: Dict[str, List[str]] = {
     "pfi_linked":         ["payment_processing"],                 # legacy compat chain only
     "payment_processing": ["payment_confirmed"],                  # legacy compat chain only
     "payment_confirmed":  ["vessel_operations", "invoiced"],      # legacy compat chain only
-    "vessel_operations":  ["bdn_pending"],
+    "vessel_operations":  ["pending_completion", "bdn_pending"],   # bdn_pending kept as legacy-compat direct path
+    "pending_completion": ["vessel_operations", "bdn_pending"],
     "bdn_pending":        ["bdn_approved", "vessel_operations"],
     "bdn_approved":       ["completed", "invoiced", "pfi_linked", "vessel_operations"],   # pfi_linked = legacy compat
     "invoiced":           ["completed"],
@@ -87,7 +94,8 @@ VESSEL_ONLY_TRANSITIONS: Dict[str, List[str]] = {
     "pfi_linked":         ["payment_processing"],                 # legacy compat chain only
     "payment_processing": ["payment_confirmed"],                  # legacy compat chain only
     "payment_confirmed":  ["vessel_operations", "invoiced"],      # legacy compat chain only
-    "vessel_operations":  ["bdn_pending"],
+    "vessel_operations":  ["pending_completion", "bdn_pending"],   # bdn_pending kept as legacy-compat direct path
+    "pending_completion": ["vessel_operations", "bdn_pending"],
     "bdn_pending":        ["bdn_approved", "vessel_operations"],
     "bdn_approved":       ["completed", "invoiced", "pfi_linked", "vessel_operations"],   # pfi_linked = legacy compat
     "invoiced":           ["completed"],
@@ -121,6 +129,14 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     # ── Vessel operations — primary path now (finance/payment no longer gates it) ──
     "active->vessel_operations":        ["ops_supervisor", "bunker_manager"],
     "payment_confirmed->vessel_operations": ["ops_supervisor", "bunker_manager"],   # legacy compat
+    # System-triggered when the last non-cancelled VesselActivity reaches
+    # discharge_completed (see VesselActivityService.advance_stage) — manual
+    # roles kept as an escape hatch if one vessel run stalls.
+    "vessel_operations->pending_completion": ["system", "bunker_manager", "marine_manager", "ops_supervisor"],
+    # System-triggered when BM adds another vessel after others have already
+    # finished (see VesselActivityService.create) — keeps operation status
+    # honest without a manual fixup step. BM manual path kept too.
+    "pending_completion->vessel_operations": ["system", "bunker_manager"],
     "vessel_operations->bdn_pending":   ["bunker_manager", "marine_manager"],
     "bdn_pending->bdn_approved":        ["bunker_manager"],
     "bdn_pending->vessel_operations":   ["bunker_manager"],
@@ -131,9 +147,11 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     "payment_confirmed->pending_completion": ["logistics_officer", "ops_supervisor"],   # legacy compat
     "pending_completion->active":       ["bunker_manager"],
     "pending_completion->invoiced":     ["finance_manager"],           # legacy compat only
-    # Truck BDN gate — a truck operation must have an approved Truck BDN
-    # before it can complete (see app/services/truck_bdn_service.py).
-    "pending_completion->bdn_pending":  ["ops_supervisor", "logistics_officer", "bunker_manager"],
+    # BDN gate — shared by truck (Truck BDN, submitted by OS/LO) and
+    # vessel/full (Vessel BDN, submitted by OS/Marine) — an approved BDN is
+    # required before the operation can complete (see truck_bdn_service.py /
+    # vessel_bdn_service.py).
+    "pending_completion->bdn_pending":  ["ops_supervisor", "logistics_officer", "marine_manager", "bunker_manager"],
     "bdn_pending->pending_completion":  ["bunker_manager"],            # reject path — resubmit
 
     # ── Invoicing (legacy compat only — invoicing no longer gates completion) ──

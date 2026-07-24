@@ -20,6 +20,11 @@ from app.schemas.vessel_activity import (
     VesselActivityComplete,
     VesselActivityPatchInitialRob,
     VesselActivityOut,
+    AdvanceStageRequest,
+    AddCommentRequest,
+    VesselActivityCommentOut,
+    RecordHseRequest,
+    RecordDischargeQuantitiesRequest,
 )
 from app.services.vessel_activity_service import VesselActivityService
 
@@ -28,6 +33,11 @@ router = APIRouter(tags=["Vessel Activities"])
 _bm_only = Depends(require_roles(UserRole.bunker_manager))
 _marine_only = Depends(require_roles(UserRole.marine_manager))
 _bm_marine = Depends(require_roles(UserRole.bunker_manager, UserRole.marine_manager))
+# Stage progression: spec assigns this to "Marine / Ops Supervisor".
+_stage_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.marine_manager, UserRole.ops_supervisor))
+# HSE: no dedicated Safety Officer role exists yet — folds into Ops
+# Supervisor + BM for now (widening to a real role later is additive).
+_hse_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.ops_supervisor))
 
 
 # ── Operation-scoped ───────────────────────────────────────────────────────────
@@ -193,3 +203,68 @@ async def cancel_vessel_activity(
         data=VesselActivityOut.model_validate(activity).model_dump(),
         message="Vessel activity cancelled",
     )
+
+
+# ── Per-vessel stage flow ────────────────────────────────────────────────────
+
+@router.post("/vessel-activities/{activity_id}/advance-stage", response_model=StandardResponse)
+async def advance_stage(
+    activity_id: UUID,
+    body: AdvanceStageRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Log (or correct) a stage timestamp — cast_off through discharge_completed.
+    Timestamp is always caller-supplied, never forced to "now"."""
+    activity = await VesselActivityService.advance_stage(activity_id, body, current_user, db)
+    return StandardResponse.ok(
+        data=VesselActivityOut.model_validate(activity).model_dump(),
+        message=f"Stage '{body.stage.value}' recorded",
+    )
+
+
+@router.post("/vessel-activities/{activity_id}/comments", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
+async def add_comment(
+    activity_id: UUID,
+    body: AddCommentRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """A free-text comment not tied to logging a stage transition."""
+    comment = await VesselActivityService.add_comment(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityCommentOut.model_validate(comment).model_dump(), message="Comment added")
+
+
+@router.get("/vessel-activities/{activity_id}/comments", response_model=StandardResponse)
+async def list_comments(
+    activity_id: UUID,
+    current_user: User = _bm_marine,
+    db: AsyncSession = Depends(get_db),
+):
+    comments = await VesselActivityService.list_comments(activity_id, db)
+    items = [VesselActivityCommentOut.model_validate(c).model_dump() for c in comments]
+    return StandardResponse.ok(data=items, message="Comments retrieved")
+
+
+@router.post("/vessel-activities/{activity_id}/hse", response_model=StandardResponse)
+async def record_hse(
+    activity_id: UUID,
+    body: RecordHseRequest,
+    current_user: User = _hse_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Non-blocking HSE safety checklist — a failed item is recorded, never enforced."""
+    activity = await VesselActivityService.record_hse(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="HSE checklist recorded")
+
+
+@router.post("/vessel-activities/{activity_id}/discharge-quantities", response_model=StandardResponse)
+async def record_discharge_quantities(
+    activity_id: UUID,
+    body: RecordDischargeQuantitiesRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Submits GOV/VCF/density readings — the system computes GSV and MTvac."""
+    activity = await VesselActivityService.record_discharge_quantities(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="Discharge quantities recorded")

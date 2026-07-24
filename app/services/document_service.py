@@ -233,6 +233,7 @@ class DocumentService:
         description: Optional[str],
         current_user: User,
         db: AsyncSession,
+        vessel_activity_id: Optional[UUID] = None,
     ) -> Document:
         await _get_operation_or_404(operation_id, db)
 
@@ -265,6 +266,7 @@ class DocumentService:
 
         doc = Document(
             operation_id=operation_id,
+            vessel_activity_id=vessel_activity_id,
             uploaded_by=current_user.id,
             document_type=document_type,
             file_name=safe_name,

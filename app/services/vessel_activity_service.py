@@ -8,15 +8,15 @@ from uuid import UUID
 
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, and_, or_, func
 from sqlalchemy.orm import selectinload
 
-from app.models.bdn import VesselActivity, RobEntry
+from app.models.bdn import VesselActivity, RobEntry, VesselActivityComment
 from app.models.vessel import Vessel
-from app.models.operation import Operation
+from app.models.operation import Operation, OperationStatusHistory
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.models.enums import VesselActivityStatus, RobEntryType, UserRole
+from app.models.enums import VesselActivityStatus, RobEntryType, UserRole, VesselStage, OperationStatus
 from app.schemas.vessel_activity import (
     VesselActivityCreate,
     VesselActivityRecordReceipt,
@@ -24,15 +24,63 @@ from app.schemas.vessel_activity import (
     VesselActivityRecordDischarge,
     VesselActivityComplete,
     VesselActivityPatchInitialRob,
+    AdvanceStageRequest,
+    AddCommentRequest,
+    RecordHseRequest,
+    RecordDischargeQuantitiesRequest,
 )
+from app.services.state_machine import StateMachine, StateMachineError
 from app.utils.number_generator import generate_vessel_activity_number
+
+# Stage order — used to validate forward progression (BM may still correct
+# an already-logged stage; this only stops skipping ahead by mistake).
+_STAGE_ORDER = [
+    VesselStage.cast_off, VesselStage.outbound, VesselStage.alongside,
+    VesselStage.hse_check, VesselStage.discharging, VesselStage.discharge_completed,
+]
 
 
 def _attach_vessel_name(activity: VesselActivity) -> None:
-    """Attach non-mapped vessel fields onto the activity for schema serialisation."""
+    """Attach non-mapped vessel/comment-author fields onto the activity for
+    schema serialisation. Requires `.vessel` and `.comments.recorder` to
+    already be eager-loaded on `activity` (see _get_or_404/list_* queries) —
+    accessing them here otherwise triggers a lazy-load that fails in this
+    async context."""
     vessel = getattr(activity, 'vessel', None)
     activity.vessel_name = vessel.vessel_name if vessel else None  # type: ignore[attr-defined]
     activity.vessel_current_rob_mt = vessel.current_rob_mt if vessel else None  # type: ignore[attr-defined]
+    for c in getattr(activity, 'comments', None) or []:
+        c.recorded_by_name = c.recorder.full_name if getattr(c, 'recorder', None) else None  # type: ignore[attr-defined]
+
+
+async def _transition_operation(
+    operation: Operation,
+    to_status: OperationStatus,
+    current_user: User,
+    db: AsyncSession,
+    reason: str = "",
+) -> None:
+    if operation.status == to_status:
+        return
+    try:
+        StateMachine.validate_transition(
+            operation.type, operation.status, to_status, current_user.acting_as_role or current_user.role
+        )
+    except StateMachineError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+    from_status = operation.status
+    operation.status = to_status
+    operation.updated_at = datetime.utcnow()
+
+    db.add(OperationStatusHistory(
+        operation_id=operation.id,
+        from_status=from_status,
+        to_status=to_status,
+        changed_by=current_user.id,
+        reason=reason,
+        metadata_={},
+    ))
 
 
 class VesselActivityService:
@@ -58,6 +106,11 @@ class VesselActivityService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Assigned user must be a Marine Manager",
             )
+
+        # BM adding another vessel after others already finished — keep the
+        # operation's own status honest without a manual fixup step.
+        if op.status in (OperationStatus.pending_completion, OperationStatus.bdn_pending):
+            await _transition_operation(op, OperationStatus.vessel_operations, current_user, db, reason="New vessel activity added")
 
         activity_number = await generate_vessel_activity_number(db)
         activity = VesselActivity(
@@ -110,7 +163,7 @@ class VesselActivityService:
         )
 
         await db.commit()
-        await db.refresh(activity)
+        await db.refresh(activity, attribute_names=["comments"])
         activity.vessel_name = vessel.vessel_name  # type: ignore[attr-defined]
         activity.vessel_current_rob_mt = vessel.current_rob_mt  # type: ignore[attr-defined]
         return activity
@@ -144,7 +197,11 @@ class VesselActivityService:
             changes={"activity_number": activity.activity_number},
         ))
         await db.commit()
-        await db.refresh(activity)
+        # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
+        # refresh reloads the comments collection but without cascading the
+        # nested .recorder eager-load, so _attach_vessel_name's `c.recorder`
+        # access would otherwise lazy-load and crash in this async context.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
         _attach_vessel_name(activity)
         return activity
 
@@ -193,7 +250,11 @@ class VesselActivityService:
             },
         ))
         await db.commit()
-        await db.refresh(activity)
+        # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
+        # refresh reloads the comments collection but without cascading the
+        # nested .recorder eager-load, so _attach_vessel_name's `c.recorder`
+        # access would otherwise lazy-load and crash in this async context.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
         _attach_vessel_name(activity)
         return activity
 
@@ -216,7 +277,11 @@ class VesselActivityService:
 
         await db.flush()
         await db.commit()
-        await db.refresh(activity)
+        # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
+        # refresh reloads the comments collection but without cascading the
+        # nested .recorder eager-load, so _attach_vessel_name's `c.recorder`
+        # access would otherwise lazy-load and crash in this async context.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
         _attach_vessel_name(activity)
         return activity
 
@@ -254,7 +319,11 @@ class VesselActivityService:
             },
         ))
         await db.commit()
-        await db.refresh(activity)
+        # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
+        # refresh reloads the comments collection but without cascading the
+        # nested .recorder eager-load, so _attach_vessel_name's `c.recorder`
+        # access would otherwise lazy-load and crash in this async context.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
         _attach_vessel_name(activity)
         return activity
 
@@ -372,9 +441,8 @@ class VesselActivityService:
             )
 
         await db.commit()
-        await db.refresh(activity)
-        activity.vessel_name = vessel_name  # type: ignore[attr-defined]
-        activity.vessel_current_rob_mt = vessel.current_rob_mt if vessel else None  # type: ignore[attr-defined]
+        activity = await VesselActivityService._get_or_404(activity.id, db)
+        _attach_vessel_name(activity)
         return activity
 
     @staticmethod
@@ -410,7 +478,11 @@ class VesselActivityService:
             },
         ))
         await db.commit()
-        await db.refresh(activity)
+        # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
+        # refresh reloads the comments collection but without cascading the
+        # nested .recorder eager-load, so _attach_vessel_name's `c.recorder`
+        # access would otherwise lazy-load and crash in this async context.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
         _attach_vessel_name(activity)
         return activity
 
@@ -433,7 +505,11 @@ class VesselActivityService:
             changes={"activity_number": activity.activity_number},
         ))
         await db.commit()
-        await db.refresh(activity)
+        # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
+        # refresh reloads the comments collection but without cascading the
+        # nested .recorder eager-load, so _attach_vessel_name's `c.recorder`
+        # access would otherwise lazy-load and crash in this async context.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
         _attach_vessel_name(activity)
         return activity
 
@@ -441,8 +517,9 @@ class VesselActivityService:
     async def list_by_operation(operation_id: UUID, db: AsyncSession) -> List[VesselActivity]:
         result = await db.execute(
             select(VesselActivity)
+            .execution_options(populate_existing=True)
             .where(VesselActivity.operation_id == operation_id)
-            .options(selectinload(VesselActivity.vessel))
+            .options(selectinload(VesselActivity.vessel), selectinload(VesselActivity.comments).selectinload(VesselActivityComment.recorder))
             .order_by(VesselActivity.created_at.desc())
         )
         activities = list(result.scalars().all())
@@ -454,8 +531,9 @@ class VesselActivityService:
     async def list_assigned_to(user_id: UUID, db: AsyncSession) -> List[VesselActivity]:
         result = await db.execute(
             select(VesselActivity)
+            .execution_options(populate_existing=True)
             .where(VesselActivity.assigned_to == user_id)
-            .options(selectinload(VesselActivity.vessel))
+            .options(selectinload(VesselActivity.vessel), selectinload(VesselActivity.comments).selectinload(VesselActivityComment.recorder))
             .order_by(VesselActivity.created_at.desc())
         )
         activities = list(result.scalars().all())
@@ -473,8 +551,13 @@ class VesselActivityService:
     async def _get_or_404(activity_id: UUID, db: AsyncSession) -> VesselActivity:
         result = await db.execute(
             select(VesselActivity)
+            # populate_existing: without it, an activity already loaded
+            # earlier in this session (e.g. at the start of the same method,
+            # before a mutation) would be returned from the identity map with
+            # its eagerly-loaded collections (comments) stale/pre-mutation.
+            .execution_options(populate_existing=True)
             .where(VesselActivity.id == activity_id)
-            .options(selectinload(VesselActivity.vessel))
+            .options(selectinload(VesselActivity.vessel), selectinload(VesselActivity.comments).selectinload(VesselActivityComment.recorder))
         )
         a = result.scalar_one_or_none()
         if not a:
@@ -494,3 +577,172 @@ class VesselActivityService:
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"Activity must be active (currently '{activity.status.value}'). Start it first.",
             )
+
+    @staticmethod
+    def _assert_authorized(activity: VesselActivity, current_user: User) -> None:
+        """Stage/comment/HSE/discharge-quantity actions: the assigned Marine
+        Manager, any Ops Supervisor, or Bunker Manager — broader than
+        `_assert_active`'s single-assignee check (spec: "Marine / Ops
+        Supervisor" progress stages), and deliberately not status-gated,
+        since stages are the source of truth for progress, not `status`."""
+        allowed_roles = (UserRole.ops_supervisor, UserRole.bunker_manager)
+        if current_user.id != activity.assigned_to and current_user.role not in allowed_roles:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised")
+
+    @staticmethod
+    async def advance_stage(activity_id: UUID, data: AdvanceStageRequest, current_user: User, db: AsyncSession) -> VesselActivity:
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        VesselActivityService._assert_authorized(activity, current_user)
+
+        # Sequence check — allows re-entry/correction of an already-logged
+        # stage (fixing a wrong time doesn't regress overall progress), just
+        # stops skipping ahead of the current position by more than one step.
+        target_idx = _STAGE_ORDER.index(data.stage)
+        current_idx = _STAGE_ORDER.index(activity.stage) if activity.stage else -1
+        if target_idx > current_idx + 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot skip ahead to '{data.stage.value}' — current stage is "
+                       f"'{activity.stage.value if activity.stage else 'not started'}'",
+            )
+
+        setattr(activity, f"stage_{data.stage.value}_at", data.occurred_at)
+        if target_idx >= current_idx:
+            activity.stage = data.stage
+
+        if data.comment:
+            db.add(VesselActivityComment(
+                vessel_activity_id=activity.id, stage=data.stage,
+                comment=data.comment, recorded_by=current_user.id, recorded_at=datetime.utcnow(),
+            ))
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="ADVANCE_VESSEL_STAGE",
+            entity_type="vessel_activity", entity_id=activity.id,
+            changes={"stage": data.stage.value, "occurred_at": data.occurred_at.isoformat()},
+        ))
+
+        # System-triggered: once every non-cancelled VesselActivity on the
+        # operation has reached discharge_completed, the operation itself
+        # auto-advances vessel_operations -> pending_completion.
+        if data.stage == VesselStage.discharge_completed:
+            op = await db.get(Operation, activity.operation_id)
+            if op and op.status == OperationStatus.vessel_operations:
+                remaining_result = await db.execute(
+                    select(func.count()).select_from(VesselActivity).where(
+                        and_(
+                            VesselActivity.operation_id == activity.operation_id,
+                            VesselActivity.status != VesselActivityStatus.cancelled,
+                            # stage IS NULL (not yet started) must count as
+                            # "remaining" too — a plain != excludes NULLs in
+                            # SQL's three-valued logic, which would silently
+                            # drop not-yet-started activities from the count
+                            # and trigger the auto-transition prematurely.
+                            or_(
+                                VesselActivity.stage.is_(None),
+                                VesselActivity.stage != VesselStage.discharge_completed,
+                            ),
+                        )
+                    )
+                )
+                if (remaining_result.scalar() or 0) == 0:
+                    await _transition_operation(
+                        op, OperationStatus.pending_completion, current_user, db,
+                        reason="All vessel runs discharge-completed",
+                    )
+
+        await db.commit()
+        # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
+        # refresh reloads the comments collection (picking up the row just
+        # added) but without cascading the nested .recorder eager-load, so
+        # _attach_vessel_name's `c.recorder` access would otherwise lazy-load
+        # and crash in this async context.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
+        _attach_vessel_name(activity)
+        return activity
+
+    @staticmethod
+    async def add_comment(activity_id: UUID, data: AddCommentRequest, current_user: User, db: AsyncSession) -> VesselActivityComment:
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        VesselActivityService._assert_authorized(activity, current_user)
+
+        comment = VesselActivityComment(
+            vessel_activity_id=activity.id, stage=data.stage,
+            comment=data.comment, recorded_by=current_user.id, recorded_at=datetime.utcnow(),
+        )
+        db.add(comment)
+        await db.commit()
+        await db.refresh(comment)
+        comment.recorded_by_name = current_user.full_name  # type: ignore[attr-defined]
+        return comment
+
+    @staticmethod
+    async def list_comments(activity_id: UUID, db: AsyncSession) -> List[VesselActivityComment]:
+        await VesselActivityService._get_or_404(activity_id, db)
+        result = await db.execute(
+            select(VesselActivityComment)
+            .options(selectinload(VesselActivityComment.recorder))
+            .where(VesselActivityComment.vessel_activity_id == activity_id)
+            .order_by(VesselActivityComment.recorded_at.asc())
+        )
+        comments = list(result.scalars().all())
+        for c in comments:
+            c.recorded_by_name = c.recorder.full_name if c.recorder else None  # type: ignore[attr-defined]
+        return comments
+
+    @staticmethod
+    async def record_hse(activity_id: UUID, data: RecordHseRequest, current_user: User, db: AsyncSession) -> VesselActivity:
+        """Non-blocking safety record — a failed item never blocks progress
+        or any subsequent stage/BDN/completion action."""
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        VesselActivityService._assert_authorized(activity, current_user)
+
+        activity.hse_checklist = [item.model_dump() for item in data.checklist]
+        activity.hse_result = data.result
+        activity.hse_conducted_by = current_user.id
+        activity.hse_conducted_at = datetime.utcnow()
+        activity.hse_notes = data.notes
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="RECORD_VESSEL_HSE",
+            entity_type="vessel_activity", entity_id=activity.id,
+            changes={"result": data.result.value, "items": len(data.checklist)},
+        ))
+        await db.commit()
+        # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
+        # refresh reloads the comments collection but without cascading the
+        # nested .recorder eager-load, so _attach_vessel_name's `c.recorder`
+        # access would otherwise lazy-load and crash in this async context.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
+        _attach_vessel_name(activity)
+        return activity
+
+    @staticmethod
+    async def record_discharge_quantities(activity_id: UUID, data: RecordDischargeQuantitiesRequest, current_user: User, db: AsyncSession) -> VesselActivity:
+        """Supplements record_discharge — the system calculates GSV/MTvac
+        from the submitted readings; nobody does this arithmetic by hand."""
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        VesselActivityService._assert_authorized(activity, current_user)
+
+        activity.gov = data.gov
+        activity.vcf = data.vcf
+        activity.gsv = data.gov * data.vcf
+        activity.mt_vacuum = activity.gsv * data.density
+        activity.density = data.density
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="RECORD_VESSEL_DISCHARGE_QUANTITIES",
+            entity_type="vessel_activity", entity_id=activity.id,
+            changes={"gov": str(data.gov), "vcf": str(data.vcf), "gsv": str(activity.gsv), "mt_vacuum": str(activity.mt_vacuum)},
+        ))
+        await db.commit()
+        # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
+        # refresh reloads the comments collection but without cascading the
+        # nested .recorder eager-load, so _attach_vessel_name's `c.recorder`
+        # access would otherwise lazy-load and crash in this async context.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
+        _attach_vessel_name(activity)
+        return activity

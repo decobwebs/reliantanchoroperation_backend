@@ -24,7 +24,7 @@ if _sentry_dsn:
     )
 
 from app.config import settings
-from app.routers import health, auth, operations, admin, tasks, trucks, vessels, bdns, truck_bdns, notifications, pfis, documents, analytics, portal, invoices, vouchers, vessel_activities
+from app.routers import health, auth, operations, admin, tasks, trucks, vessels, bdns, truck_bdns, notifications, pfis, documents, analytics, portal, invoices, vouchers, vessel_activities, licences, vessel_bdns, client_notifications, kpi
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.audit_log import AuditLogMiddleware
@@ -187,6 +187,10 @@ app.include_router(portal.router, prefix=API_PREFIX)
 app.include_router(invoices.router, prefix=API_PREFIX)
 app.include_router(vouchers.router, prefix=API_PREFIX)
 app.include_router(vessel_activities.router, prefix=API_PREFIX)
+app.include_router(licences.router, prefix=API_PREFIX)
+app.include_router(vessel_bdns.router, prefix=API_PREFIX)
+app.include_router(client_notifications.router, prefix=API_PREFIX)
+app.include_router(kpi.router, prefix=API_PREFIX)
 
 
 @app.get("/", include_in_schema=False)

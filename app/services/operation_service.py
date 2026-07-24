@@ -210,14 +210,28 @@ class OperationService:
         current_user: User,
         db: AsyncSession,
     ) -> Operation:
+        from app.models.licence import NavalClearance, NavalClearanceDrawdown, Bfl
+        from app.services.licence_service import NavalClearanceService
+
         stmt = (
             select(Operation)
+            # populate_existing: without it, an Operation already loaded
+            # earlier in this session/transaction (e.g. right before a field
+            # like naval_clearance_id was just mutated) would be returned
+            # from the identity map with its relationship attributes stale —
+            # a plain FK setattr doesn't invalidate an already-loaded
+            # relationship value.
+            .execution_options(populate_existing=True)
             .options(
                 selectinload(Operation.client),
                 selectinload(Operation.creator),
                 selectinload(Operation.status_history),
                 selectinload(Operation.task_assignments),
                 selectinload(Operation.products),
+                selectinload(Operation.naval_clearance)
+                .selectinload(NavalClearance.drawdowns)
+                .selectinload(NavalClearanceDrawdown.bfl)
+                .selectinload(Bfl.ppdl),
             )
             .where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
         )
@@ -226,6 +240,15 @@ class OperationService:
         if not operation:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
         OperationService._check_visibility(operation, current_user)
+        if operation.naval_clearance:
+            # Lightweight, display-only enrichment — only what
+            # OperationNavalClearanceSummary needs (no .vessels eager-load
+            # here, so avoid touching that relationship).
+            nc = operation.naval_clearance
+            nc.is_valid = NavalClearanceService.is_valid_for_operations(nc)
+            nc.ppdl_number = next((d.bfl.ppdl.ppdl_number for d in nc.drawdowns if d.bfl and d.bfl.ppdl), None)
+            nc.bfl_numbers = sorted({d.bfl.bfl_number for d in nc.drawdowns if d.bfl})
+            nc.products = sorted({d.bfl.product_type for d in nc.drawdowns if d.bfl})
         return operation
 
     @staticmethod
@@ -551,3 +574,57 @@ class OperationService:
         stmt = select(OperationStatusHistory).where(OperationStatusHistory.operation_id == operation_id).order_by(OperationStatusHistory.created_at.asc())
         result = await db.execute(stmt)
         return list(result.scalars().all())
+
+    @staticmethod
+    async def link_naval_clearance(operation_id: UUID, naval_clearance_id: UUID, current_user: User, db: AsyncSession) -> Operation:
+        """Optional, at any time — never a gate. Nothing about PPDL/BFL/
+        products/clients is copied onto the operation; they're always
+        resolved live through the FK when the operation is read."""
+        from app.services.licence_service import _get_naval_clearance_or_404
+
+        result = await db.execute(select(Operation).where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None))))
+        operation = result.scalar_one_or_none()
+        if not operation:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+        nc = await _get_naval_clearance_or_404(naval_clearance_id, db)
+
+        operation.naval_clearance_id = nc.id
+        operation.updated_at = datetime.utcnow()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=operation.id, action="LINK_NAVAL_CLEARANCE",
+            entity_type="operation", entity_id=operation.id,
+            changes={"naval_clearance_id": str(nc.id), "clearance_number": nc.clearance_number},
+        ))
+        await db.flush()
+        return await OperationService.get_operation(operation_id, current_user, db)
+
+    @staticmethod
+    async def unlink_naval_clearance(operation_id: UUID, reason: str, current_user: User, db: AsyncSession) -> Operation:
+        result = await db.execute(select(Operation).where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None))))
+        operation = result.scalar_one_or_none()
+        if not operation:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+        if not operation.naval_clearance_id:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No Naval Clearance is linked to this operation")
+
+        previous_id = operation.naval_clearance_id
+        operation.naval_clearance_id = None
+        operation.updated_at = datetime.utcnow()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=operation.id, action="UNLINK_NAVAL_CLEARANCE",
+            entity_type="operation", entity_id=operation.id,
+            changes={"naval_clearance_id": {"from": str(previous_id), "to": None}}, reason=reason,
+        ))
+        await db.flush()
+        return await OperationService.get_operation(operation_id, current_user, db)
+
+    @staticmethod
+    async def set_color(operation_id: UUID, color: Optional[str], current_user: User, db: AsyncSession) -> Operation:
+        result = await db.execute(select(Operation).where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None))))
+        operation = result.scalar_one_or_none()
+        if not operation:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+        operation.color = color
+        operation.updated_at = datetime.utcnow()
+        await db.flush()
+        return operation
