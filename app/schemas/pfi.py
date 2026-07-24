@@ -9,6 +9,7 @@ from pydantic import BaseModel, field_validator
 
 class StandalonePfiCreate(BaseModel):
     """Create a PFI before an operation exists. operation_id is set later."""
+    pfi_number: Optional[str] = None     # BM/FM can give it their own code/title; auto-generated (PFI-YYYY-NNNN) if omitted
     amount: Decimal
     currency: str = "NGN"
     exchange_rate: Optional[Decimal] = None
@@ -23,10 +24,17 @@ class StandalonePfiCreate(BaseModel):
     def upper_currency(cls, v: str) -> str:
         return v.strip().upper()
 
-    @field_validator("supplier_name", "description", "client_ref", mode="before")
+    @field_validator("pfi_number", "supplier_name", "description", "client_ref", mode="before")
     @classmethod
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
+
+    @field_validator("pfi_number")
+    @classmethod
+    def pfi_number_not_blank(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v:
+            raise ValueError("PFI number cannot be blank if provided")
+        return v
 
     @field_validator("amount")
     @classmethod
@@ -50,6 +58,7 @@ class PfiConfirmPaymentRequest(BaseModel):
 
 
 class PfiUpdate(BaseModel):
+    pfi_number: Optional[str] = None     # BM/FM can rename/retitle the PFI
     amount: Optional[Decimal] = None
     currency: Optional[str] = None
     exchange_rate: Optional[Decimal] = None
@@ -65,10 +74,17 @@ class PfiUpdate(BaseModel):
     def upper_currency(cls, v: Optional[str]) -> Optional[str]:
         return v.strip().upper() if v else v
 
-    @field_validator("supplier_name", "description", "client_ref", mode="before")
+    @field_validator("pfi_number", "supplier_name", "description", "client_ref", mode="before")
     @classmethod
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
+
+    @field_validator("pfi_number")
+    @classmethod
+    def pfi_number_not_blank(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v:
+            raise ValueError("PFI number cannot be blank")
+        return v
 
     @field_validator("reason", mode="before")
     @classmethod

@@ -76,7 +76,13 @@ class PfiService:
         Create a PFI before any operation exists.
         Can be called by BM or FM. operation_id is null until BM creates the operation.
         """
-        pfi_number = await generate_pfi_number(db)
+        if data.pfi_number:
+            existing = await db.execute(select(PFI.id).where(PFI.pfi_number == data.pfi_number))
+            if existing.scalar_one_or_none():
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"A PFI with number '{data.pfi_number}' already exists")
+            pfi_number = data.pfi_number
+        else:
+            pfi_number = await generate_pfi_number(db)
 
         amount_ngn = None
         if data.currency == "NGN":
@@ -540,6 +546,14 @@ class PfiService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="PFI not found")
 
         update_data = data.model_dump(exclude_unset=True, exclude={"reason"})
+
+        if "pfi_number" in update_data and update_data["pfi_number"] != pfi.pfi_number:
+            existing = await db.execute(
+                select(PFI.id).where(and_(PFI.pfi_number == update_data["pfi_number"], PFI.id != pfi_id))
+            )
+            if existing.scalar_one_or_none():
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"A PFI with number '{update_data['pfi_number']}' already exists")
+
         changes = capture_diff(pfi, update_data)
 
         # Recompute amount_ngn if anything affecting it changed.

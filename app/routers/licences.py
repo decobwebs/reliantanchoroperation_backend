@@ -20,7 +20,6 @@ from app.services.eta_service import EtaService
 
 router = APIRouter(tags=["Licences"])
 
-_marine_only = Depends(require_roles(UserRole.marine_manager))
 _marine_bm = Depends(require_roles(UserRole.marine_manager, UserRole.bunker_manager))
 _bm_only = Depends(require_roles(UserRole.bunker_manager))
 
@@ -30,7 +29,7 @@ _bm_only = Depends(require_roles(UserRole.bunker_manager))
 @router.post("/ppdls", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
 async def create_ppdl(
     body: PpdlCreate,
-    current_user: User = _marine_only,
+    current_user: User = _marine_bm,
     db: AsyncSession = Depends(get_db),
 ):
     """Issue a new PPDL. Becomes the current PPDL — every operation created
@@ -77,7 +76,7 @@ async def update_ppdl_product(
 @router.post("/bfls", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
 async def create_bfl(
     body: BflCreate,
-    current_user: User = _marine_only,
+    current_user: User = _marine_bm,
     db: AsyncSession = Depends(get_db),
 ):
     """Issue a new BFL, drawing down from the current PPDL's matching product balance."""
@@ -141,7 +140,7 @@ async def deactivate_bfl(
 @router.post("/naval-clearances", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
 async def create_naval_clearance(
     body: NavalClearanceCreate,
-    current_user: User = _marine_only,
+    current_user: User = _marine_bm,
     db: AsyncSession = Depends(get_db),
 ):
     nc = await NavalClearanceService.create_naval_clearance(body, current_user, db)
@@ -171,7 +170,7 @@ async def get_naval_clearance(
 async def add_loading_location(
     nc_id: UUID,
     body: NavalClearanceLoadingLocationAdd,
-    current_user: User = _marine_only,
+    current_user: User = _marine_bm,
     db: AsyncSession = Depends(get_db),
 ):
     nc = await NavalClearanceService.add_loading_location(nc_id, body, current_user, db)
@@ -183,7 +182,7 @@ async def remove_loading_location(
     nc_id: UUID,
     location_id: UUID,
     body: NavalClearanceRemoveWithReason,
-    current_user: User = _marine_only,
+    current_user: User = _marine_bm,
     db: AsyncSession = Depends(get_db),
 ):
     nc = await NavalClearanceService.remove_loading_location(nc_id, location_id, body.reason, current_user, db)
@@ -194,7 +193,7 @@ async def remove_loading_location(
 async def add_vessel(
     nc_id: UUID,
     body: NavalClearanceVesselCreate,
-    current_user: User = _marine_only,
+    current_user: User = _marine_bm,
     db: AsyncSession = Depends(get_db),
 ):
     nc = await NavalClearanceService.add_vessel(nc_id, body, current_user, db)
@@ -206,7 +205,7 @@ async def remove_vessel(
     nc_id: UUID,
     vessel_id: UUID,
     body: NavalClearanceRemoveWithReason,
-    current_user: User = _marine_only,
+    current_user: User = _marine_bm,
     db: AsyncSession = Depends(get_db),
 ):
     nc = await NavalClearanceService.remove_vessel(nc_id, vessel_id, body.reason, current_user, db)
@@ -217,7 +216,7 @@ async def remove_vessel(
 async def upload_naval_clearance_document(
     nc_id: UUID,
     file: UploadFile = File(...),
-    current_user: User = _marine_only,
+    current_user: User = _marine_bm,
     db: AsyncSession = Depends(get_db),
 ):
     content = await file.read()
