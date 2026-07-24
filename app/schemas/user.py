@@ -11,6 +11,7 @@ class UserOut(BaseModel):
     email: str
     full_name: str
     phone: Optional[str] = None
+    address: Optional[str] = None
     role: UserRole
     acting_as_role: Optional[UserRole] = None
     is_active: bool
@@ -43,6 +44,7 @@ class AdminCreateUserRequest(BaseModel):
     email: EmailStr
     full_name: str
     phone: Optional[str] = None
+    address: Optional[str] = None
     role: UserRole
 
     @field_validator("full_name")
@@ -56,6 +58,7 @@ class AdminCreateUserRequest(BaseModel):
 class AdminUpdateUserRequest(BaseModel):
     full_name: Optional[str] = None
     phone: Optional[str] = None
+    address: Optional[str] = None
     role: Optional[UserRole] = None
     is_active: Optional[bool] = None
     avatar_url: Optional[str] = None

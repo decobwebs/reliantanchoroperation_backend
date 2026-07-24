@@ -78,6 +78,42 @@ class CreateOperationRequest(BaseModel):
         return v.strip() if v else v
 
 
+OPERATION_COLORS = [
+    "red", "orange", "amber", "green", "teal", "blue", "indigo", "purple", "pink", "gray",
+]
+
+
+class LinkNavalClearanceRequest(BaseModel):
+    naval_clearance_id: UUID
+
+
+class UnlinkNavalClearanceRequest(BaseModel):
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to unlink a Naval Clearance")
+        return v
+
+
+class SetOperationColorRequest(BaseModel):
+    color: Optional[str] = None
+
+    @field_validator("color")
+    @classmethod
+    def valid_color(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and v not in OPERATION_COLORS:
+            raise ValueError(f"Color must be one of: {', '.join(OPERATION_COLORS)}")
+        return v
+
+
 class UpdateOperationRequest(BaseModel):
     client_id: Optional[UUID] = None
     actual_volume_mt: Optional[Decimal] = None
@@ -126,6 +162,17 @@ class OperationProductOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class OperationNavalClearanceSummary(BaseModel):
+    id: UUID
+    clearance_number: str
+    ppdl_number: Optional[str] = None
+    bfl_numbers: List[str] = []
+    products: List[str] = []
+    is_valid: bool = True
+
+    model_config = {"from_attributes": True}
+
+
 class OperationOut(BaseModel):
     id: UUID
     operation_number: str
@@ -144,6 +191,9 @@ class OperationOut(BaseModel):
     completion_notes: Optional[str] = None
     currency: str
     vessel_id: Optional[UUID] = None
+    naval_clearance_id: Optional[UUID] = None
+    naval_clearance: Optional[OperationNavalClearanceSummary] = None
+    color: Optional[str] = None
     trucks_required: Optional[int] = None
     version: int = 1
     parent_operation_id: Optional[UUID] = None

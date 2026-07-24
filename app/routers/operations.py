@@ -13,7 +13,7 @@ from app.schemas.common import StandardResponse, PaginatedResponse
 from app.schemas.operation import (
     CreateOperationRequest, UpdateOperationRequest, TransitionRequest,
     PauseRequest, ResumeRequest, OperationOut, StatusHistoryOut, OperationFilters,
-    ReopenRequest,
+    ReopenRequest, LinkNavalClearanceRequest, UnlinkNavalClearanceRequest, SetOperationColorRequest,
 )
 from app.schemas.truck import VesselDischargeEventCreate, VesselDischargeEventOut
 from app.services.operation_service import OperationService
@@ -105,6 +105,42 @@ async def update_operation(
         data=OperationOut.model_validate(operation).model_dump(),
         message="Operation updated",
     )
+
+
+@router.post("/{operation_id}/link-naval-clearance", response_model=StandardResponse)
+async def link_naval_clearance(
+    operation_id: UUID,
+    body: LinkNavalClearanceRequest,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Attach a Naval Clearance to an operation — optional, at any time,
+    never a gate on operational progress."""
+    operation = await OperationService.link_naval_clearance(operation_id, body.naval_clearance_id, current_user, db)
+    return StandardResponse.ok(data=OperationOut.model_validate(operation).model_dump(), message="Naval Clearance linked")
+
+
+@router.post("/{operation_id}/unlink-naval-clearance", response_model=StandardResponse)
+async def unlink_naval_clearance(
+    operation_id: UUID,
+    body: UnlinkNavalClearanceRequest,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    operation = await OperationService.unlink_naval_clearance(operation_id, body.reason, current_user, db)
+    return StandardResponse.ok(data=OperationOut.model_validate(operation).model_dump(), message="Naval Clearance unlinked")
+
+
+@router.patch("/{operation_id}/color", response_model=StandardResponse)
+async def set_operation_color(
+    operation_id: UUID,
+    body: SetOperationColorRequest,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cosmetic only — no reason required."""
+    operation = await OperationService.set_color(operation_id, body.color, current_user, db)
+    return StandardResponse.ok(data=OperationOut.model_validate(operation).model_dump(), message="Operation color updated")
 
 
 @router.post("/{operation_id}/transition", response_model=StandardResponse)

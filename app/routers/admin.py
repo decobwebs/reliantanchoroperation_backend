@@ -58,13 +58,15 @@ async def list_users(
 
 @router.get("/clients", response_model=StandardResponse)
 async def list_clients(
-    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager, UserRole.marine_manager)),
     db: AsyncSession = Depends(get_db),
 ):
-    """List active client users — for billing pickers (e.g. standalone invoices).
+    """List active client users — for billing pickers (e.g. standalone invoices)
+    and for Marine selecting clients onto a Naval Clearance.
 
-    Deliberately narrower than /admin/users (which is BM-only): Finance needs to
-    choose who to bill, but has no business listing staff/admin accounts.
+    Deliberately narrower than /admin/users (which is BM-only): Finance/Marine
+    need to choose an existing client, but have no business listing staff/admin
+    accounts.
     """
     result = await db.execute(
         select(User)
@@ -105,6 +107,7 @@ async def create_user(
         phone=body.phone,
         role=body.role,
         db=db,
+        address=body.address,
     )
 
     message = (

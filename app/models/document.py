@@ -15,6 +15,7 @@ class Document(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=False)
+    vessel_activity_id = Column(UUID(as_uuid=True), ForeignKey("vessel_activities.id"), nullable=True)
     uploaded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     document_type = Column(SAEnum(DocType, name="doc_type"), nullable=False)
     file_name = Column(String(500), nullable=False)

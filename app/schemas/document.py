@@ -8,6 +8,7 @@ from app.models.enums import DocType
 class DocumentOut(BaseModel):
     id: UUID
     operation_id: UUID
+    vessel_activity_id: Optional[UUID] = None
     uploaded_by: UUID
     document_type: DocType
     file_name: str

@@ -370,6 +370,68 @@ async def email_truck_bdn_submitted(
     )
 
 
+async def email_vessel_bdn_submitted(
+    to_email: str,
+    recipient_name: str,
+    operation_number: str,
+    vessel_bdn_number: str,
+    quantity_loaded: str,
+    quantity_discharged: str,
+) -> bool:
+    subject = f"Vessel BDN Ready for Review — {vessel_bdn_number}"
+    body = f"""
+      <p style="margin:0 0 14px;">Dear {_esc(recipient_name)},</p>
+      <p style="margin:0 0 14px;">A Vessel Bunker Delivery Note has been submitted for
+      operation <strong>{_esc(operation_number)}</strong>:</p>
+      <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 14px;width:100%;">
+        <tr>
+          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Vessel BDN Number</td>
+          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(vessel_bdn_number)}</td>
+        </tr>
+        <tr>
+          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Quantity Loaded</td>
+          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(quantity_loaded)} L</td>
+        </tr>
+        <tr>
+          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Quantity Discharged</td>
+          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(quantity_discharged)} L</td>
+        </tr>
+      </table>
+    """
+    return await send_email(
+        [to_email], subject,
+        _wrap_email(title="Vessel Bunker Delivery Note Submitted", body_html=body),
+    )
+
+
+async def email_client_notification(
+    to_email: str,
+    recipient_name: str,
+    subject: str,
+    body_html: str,
+) -> bool:
+    """Client-facing send — isolated to a single recipient by construction
+    (one call = one email, no CC/BCC ever). Always do-not-reply: the client
+    is directed to their usual point of contact, never back to this address."""
+    body = f"""
+      <p style="margin:0 0 14px;">Dear {_esc(recipient_name)},</p>
+      <p style="margin:0 0 14px;">{body_html}</p>
+      <table role="presentation" cellpadding="0" cellspacing="0"
+             style="margin:18px 0 0;width:100%;background-color:{_BG};border-radius:6px;">
+        <tr><td style="padding:12px 14px;">
+          <p style="margin:0;color:{_MUTED};font-size:12px;line-height:1.6;">
+            This is an automated, do-not-reply notification. For any questions, please contact your
+            usual Reliant Anchor point of contact.
+          </p>
+        </td></tr>
+      </table>
+    """
+    return await send_email(
+        [to_email], subject,
+        _wrap_email(title=subject, body_html=body),
+    )
+
+
 async def email_feedback_rejected(
     to_email: str,
     recipient_name: str,

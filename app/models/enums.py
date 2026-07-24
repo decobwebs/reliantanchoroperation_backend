@@ -173,6 +173,17 @@ class VesselActivityStatus(str, enum.Enum):
     cancelled = "cancelled"
 
 
+class VesselStage(str, enum.Enum):
+    """Per-vessel-run stage sequence — Reliant's own barge's physical
+    journey, independent of (and additive to) VesselActivityStatus."""
+    cast_off = "cast_off"
+    outbound = "outbound"
+    alongside = "alongside"
+    hse_check = "hse_check"
+    discharging = "discharging"
+    discharge_completed = "discharge_completed"
+
+
 class InvoiceStatus(str, enum.Enum):
     draft = "draft"
     sent = "sent"
@@ -195,6 +206,8 @@ class DocType(str, enum.Enum):
     pfi = "pfi"
     report = "report"
     clearance = "clearance"
+    hse_form = "hse_form"
+    hse_signed_copy = "hse_signed_copy"
     other = "other"
 
 

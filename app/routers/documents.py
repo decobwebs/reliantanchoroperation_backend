@@ -41,14 +41,17 @@ async def upload_document(
     file: UploadFile = File(...),
     document_type: DocType = Form(...),
     description: Optional[str] = Form(None),
+    vessel_activity_id: Optional[UUID] = Form(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Upload a file to Supabase Storage and register it on the operation.
-    Accepts multipart/form-data. Max 10MB. Allowed: PDF, images, Office docs, CSV, TXT."""
+    Accepts multipart/form-data. Max 10MB. Allowed: PDF, images, Office docs, CSV, TXT.
+    Optionally scoped to a specific vessel_activity_id (e.g. HSE form/signed
+    copy uploads, since an operation can have several vessel runs)."""
     await _assert_can_access_operation(operation_id, current_user, db)
     doc = await DocumentService.upload_document(
-        operation_id, file, document_type, description, current_user, db
+        operation_id, file, document_type, description, current_user, db, vessel_activity_id=vessel_activity_id,
     )
     return StandardResponse.ok(
         data=DocumentOut.model_validate(doc).model_dump(),
