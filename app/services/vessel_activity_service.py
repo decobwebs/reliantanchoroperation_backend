@@ -803,6 +803,7 @@ class VesselActivityService:
 
         activity.commence_system_at = datetime.utcnow()
         activity.commence_user_at = data.commenced_user_at
+        activity.commence_description = data.description
         activity.status = VesselActivityStatus.active
 
         await db.flush()
@@ -812,6 +813,7 @@ class VesselActivityService:
             changes={
                 "commence_system_at": activity.commence_system_at.isoformat(),
                 "commence_user_at": data.commenced_user_at.isoformat(),
+                "description": data.description,
             },
         ))
         await db.commit()

@@ -130,6 +130,12 @@ class RecordDischargeQuantitiesRequest(BaseModel):
 
 class VesselActivityCommenceRequest(BaseModel):
     commenced_user_at: datetime   # the user's own stated commencement time
+    description: Optional[str] = None
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def strip_description(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
 
 
 class VesselActivityCompleteVesselOpRequest(BaseModel):
@@ -275,6 +281,7 @@ class VesselActivityOut(BaseModel):
     # ── Vessel-only commence/complete flow ──
     commence_system_at: Optional[datetime] = None
     commence_user_at: Optional[datetime] = None
+    commence_description: Optional[str] = None
     complete_system_at: Optional[datetime] = None
     complete_user_at: Optional[datetime] = None
     discharged_quantity_litres: Optional[Decimal] = None

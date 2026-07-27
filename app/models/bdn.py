@@ -220,6 +220,7 @@ class VesselActivity(Base):
     # caller's own stated time — never one overwriting the other.
     commence_system_at = Column(DateTime(timezone=True), nullable=True)
     commence_user_at = Column(DateTime(timezone=True), nullable=True)
+    commence_description = Column(Text, nullable=True)
     complete_system_at = Column(DateTime(timezone=True), nullable=True)
     complete_user_at = Column(DateTime(timezone=True), nullable=True)
 
