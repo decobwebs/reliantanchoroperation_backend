@@ -10,9 +10,10 @@ from fastapi import HTTPException, status
 
 from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, OperationProduct
 from app.models.bdn import VesselActivity
+from app.models.vessel import Vessel
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.models.enums import OperationStatus, OperationType, UserRole
+from app.models.enums import OperationStatus, OperationType, UserRole, TaskType
 from app.schemas.operation import (
     CreateOperationRequest, UpdateOperationRequest, OperationFilters,
     TransitionRequest, ReopenRequest,
@@ -195,6 +196,33 @@ class OperationService:
                 await _notify_assigned_users(db, operation, f"Operation {operation_number} Active", f"Operation {operation_number} is now active.", "operation_active", "high")
                 product_summary = ", ".join(p.product_type.value for p in data.products)
                 await _notify_all_finance(db, operation, f"Operation {operation_number} — Finance Required", f"Operation {operation_number} ({product_summary}) is active. Prepare PFI and payment docs.")
+
+                # Auto-commence: the BM already picked the vessel and Marine
+                # Manager right here at creation — don't make them repeat that
+                # choice in a separate "Assign Activity" step. Open the vessel
+                # activity now and move straight to vessel_operations.
+                if data.vessel_id:
+                    vessel = await db.get(Vessel, data.vessel_id)
+                    if vessel and vessel.is_active:
+                        mm_user = None
+                        mm_notes = None
+                        for a in data.assignments:
+                            if a.task_type in (TaskType.vessel_operations, TaskType.marine_discharge):
+                                candidate = await db.get(User, a.assigned_to)
+                                if candidate and candidate.role == UserRole.marine_manager:
+                                    mm_user = candidate
+                                    mm_notes = a.instructions
+                                    break
+                        if mm_user:
+                            from app.services.vessel_activity_service import VesselActivityService
+                            await VesselActivityService._create_activity_row(
+                                operation, vessel, mm_user.id, current_user.id, mm_notes, db
+                            )
+                            _write_history(
+                                db, operation, OperationStatus.active, OperationStatus.vessel_operations,
+                                current_user.id, "Vessel activity auto-opened — vessel and marine manager already selected at creation",
+                            )
+                            operation.status = OperationStatus.vessel_operations
             else:
                 # Truck/Full: await logistics feedback
                 _write_history(db, operation, OperationStatus.tasks_assigned, OperationStatus.awaiting_feedback, current_user.id, "Awaiting truck readiness feedback")

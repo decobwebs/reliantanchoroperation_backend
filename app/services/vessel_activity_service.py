@@ -100,6 +100,68 @@ async def _transition_operation(
 class VesselActivityService:
 
     @staticmethod
+    async def _create_activity_row(
+        op: Operation,
+        vessel: Vessel,
+        assigned_to: UUID,
+        assigned_by: UUID,
+        notes: Optional[str],
+        db: AsyncSession,
+    ) -> VesselActivity:
+        """Core row-insert + audit + notify, shared by the BM's manual 'Assign
+        Activity' action and the operation-creation auto-commence path. Does
+        not commit — caller owns the transaction boundary."""
+        activity_number = await generate_vessel_activity_number(db)
+        activity = VesselActivity(
+            activity_number=activity_number,
+            operation_id=op.id,
+            vessel_id=vessel.id,
+            assigned_to=assigned_to,
+            assigned_by=assigned_by,
+            notes=notes,
+            status=VesselActivityStatus.pending,
+            initial_rob_mt=vessel.current_rob_mt,
+        )
+        db.add(activity)
+        await db.flush()
+
+        db.add(AuditLog(
+            user_id=assigned_by,
+            operation_id=op.id,
+            action="CREATE_VESSEL_ACTIVITY",
+            entity_type="vessel_activity",
+            entity_id=activity.id,
+            changes={
+                "activity_number": activity_number,
+                "vessel_id": str(vessel.id),
+                "assigned_to": str(assigned_to),
+            },
+        ))
+
+        from app.services.notification_service import notify
+        await notify(
+            db=db,
+            user_id=assigned_to,
+            type_="vessel_activity_assigned",
+            title=f"Vessel Activity Assigned — {activity_number}",
+            message=(
+                f"You have been assigned to oversee vessel bunkering/discharge for "
+                f"operation {op.operation_number} aboard {vessel.vessel_name}. "
+                f"Please initiate the activity and begin recording."
+            ),
+            priority="high",
+            operation_id=op.id,
+            action_url=f"/operations/{op.id}",
+            channels=["in_app", "whatsapp"],
+            wa_template="task_assigned",
+            wa_kwargs={
+                "operation_number": op.operation_number,
+                "task": f"Vessel activity {activity_number} — {vessel.vessel_name}",
+            },
+        )
+        return activity
+
+    @staticmethod
     async def create(
         operation_id: UUID,
         data: VesselActivityCreate,
@@ -126,54 +188,8 @@ class VesselActivityService:
         if op.status in (OperationStatus.pending_completion, OperationStatus.bdn_pending):
             await _transition_operation(op, OperationStatus.vessel_operations, current_user, db, reason="New vessel activity added")
 
-        activity_number = await generate_vessel_activity_number(db)
-        activity = VesselActivity(
-            activity_number=activity_number,
-            operation_id=operation_id,
-            vessel_id=data.vessel_id,
-            assigned_to=data.assigned_to,
-            assigned_by=current_user.id,
-            notes=data.notes,
-            status=VesselActivityStatus.pending,
-            initial_rob_mt=vessel.current_rob_mt,
-        )
-        db.add(activity)
-        await db.flush()
-
-        db.add(AuditLog(
-            user_id=current_user.id,
-            operation_id=operation_id,
-            action="CREATE_VESSEL_ACTIVITY",
-            entity_type="vessel_activity",
-            entity_id=activity.id,
-            changes={
-                "activity_number": activity_number,
-                "vessel_id": str(data.vessel_id),
-                "assigned_to": str(data.assigned_to),
-            },
-        ))
-
-        # Notify the assigned Marine Manager
-        from app.services.notification_service import notify
-        await notify(
-            db=db,
-            user_id=data.assigned_to,
-            type_="vessel_activity_assigned",
-            title=f"Vessel Activity Assigned — {activity_number}",
-            message=(
-                f"You have been assigned to oversee vessel bunkering/discharge for "
-                f"operation {op.operation_number} aboard {vessel.vessel_name}. "
-                f"Please initiate the activity and begin recording."
-            ),
-            priority="high",
-            operation_id=operation_id,
-            action_url=f"/operations/{operation_id}",
-            channels=["in_app", "whatsapp"],
-            wa_template="task_assigned",
-            wa_kwargs={
-                "operation_number": op.operation_number,
-                "task": f"Vessel activity {activity_number} — {vessel.vessel_name}",
-            },
+        activity = await VesselActivityService._create_activity_row(
+            op, vessel, data.assigned_to, current_user.id, data.notes, db
         )
 
         await db.commit()
