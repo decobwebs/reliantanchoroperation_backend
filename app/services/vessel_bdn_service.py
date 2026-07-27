@@ -12,7 +12,7 @@ from app.models.bdn import BDN, VesselActivity
 from app.models.operation import Operation, OperationStatusHistory
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.models.enums import UserRole, BdnStatus, OperationStatus, VesselActivityStatus, VesselStage
+from app.models.enums import UserRole, BdnStatus, OperationStatus, VesselActivityStatus, VesselStage, OperationType
 from app.schemas.vessel_bdn import VesselBdnCreate, VesselBdnUpdate
 from app.services.notification_service import notify
 from app.services.audit_diff import capture_diff
@@ -85,13 +85,21 @@ class VesselBdnService:
 
         # The one hard gate this whole flow protects: a BDN can't even be
         # submitted, let alone approved, until this specific vessel run has
-        # actually finished discharging.
-        if activity.stage != VesselStage.discharge_completed:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Cannot submit a Vessel BDN — this vessel run has not reached discharge_completed yet "
-                       f"(current stage: {activity.stage.value if activity.stage else 'not started'})",
-            )
+        # actually finished — what "finished" means depends on which flow
+        # this operation runs. Quantities are never a precondition either way.
+        if operation.type == OperationType.vessel_only:
+            if activity.complete_system_at is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Cannot submit a Vessel BDN — Complete Vessel Operation has not been recorded yet",
+                )
+        else:
+            if activity.stage != VesselStage.discharge_completed:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Cannot submit a Vessel BDN — this vessel run has not reached discharge_completed yet "
+                           f"(current stage: {activity.stage.value if activity.stage else 'not started'})",
+                )
 
         # One active BDN per vessel run — mirrors Truck BDN's per-operation
         # uniqueness check, just scoped one level narrower.
@@ -111,11 +119,20 @@ class VesselBdnService:
 
         # Independently compute what the system has on record for THIS vessel
         # run — never used to fill or default anything the submitter enters.
-        system_product_type = activity.product_type
-        system_quantity_loaded = activity.vessel_received_mt
-        system_quantity_discharged = activity.quantity_discharged_mt
-        system_commenced_at = activity.stage_discharging_at
-        system_completed_at = activity.stage_discharge_completed_at
+        # System (not user-entered) timestamps are the comparison baseline
+        # for vessel_only too — same spirit as the stage flow's snapshot.
+        if operation.type == OperationType.vessel_only:
+            system_product_type = None                                  # no product concept in this flow
+            system_quantity_loaded = None                               # no "loaded" analogue either
+            system_quantity_discharged = activity.discharged_quantity_litres
+            system_commenced_at = activity.commence_system_at
+            system_completed_at = activity.complete_system_at
+        else:
+            system_product_type = activity.product_type
+            system_quantity_loaded = activity.vessel_received_mt
+            system_quantity_discharged = activity.quantity_discharged_mt
+            system_commenced_at = activity.stage_discharging_at
+            system_completed_at = activity.stage_discharge_completed_at
 
         bdn_number = await generate_bdn_number(db)
 

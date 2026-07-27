@@ -124,6 +124,93 @@ class RecordDischargeQuantitiesRequest(BaseModel):
         return v
 
 
+# ── Vessel-only commence -> updates -> complete -> quantities flow ─────────
+# Fully separate from the stage flow above and the old ROB-session flow —
+# applies only when operation.type == vessel_only (enforced in the service).
+
+class VesselActivityCommenceRequest(BaseModel):
+    commenced_user_at: datetime   # the user's own stated commencement time
+
+
+class VesselActivityCompleteVesselOpRequest(BaseModel):
+    completed_user_at: datetime   # the user's own stated completion time
+
+
+class AddVesselActivityUpdateRequest(BaseModel):
+    content: str
+    # image is a separate multipart part handled by the router, not here
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def strip_content(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("content")
+    @classmethod
+    def content_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Content cannot be empty")
+        return v
+
+
+class VesselActivityUpdateOut(BaseModel):
+    id: UUID
+    vessel_activity_id: UUID
+    content: str
+    image_url: Optional[str] = None
+    recorded_by: UUID
+    recorded_by_name: Optional[str] = None
+    recorded_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class RecordVesselOperationQuantitiesRequest(BaseModel):
+    discharged_quantity_litres: Decimal
+    received_quantity_litres: Decimal
+    density: Decimal
+    temperature_celsius: Decimal
+    vcf: Decimal
+    gov: Decimal
+    description: Optional[str] = None
+    # Required only on a resubmission (BM correction) — enforced in the
+    # service, not here, since the schema alone can't see prior state.
+    reason: Optional[str] = None
+
+    @field_validator("description", "reason", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("discharged_quantity_litres", "received_quantity_litres", "density", "vcf", "gov")
+    @classmethod
+    def positive_values(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError("Must be greater than zero")
+        return v
+
+
+class VesselActivityCorrectTimingRequest(BaseModel):
+    """BM-only correction of any of the four commence/complete timings."""
+    commence_system_at: Optional[datetime] = None
+    commence_user_at: Optional[datetime] = None
+    complete_system_at: Optional[datetime] = None
+    complete_user_at: Optional[datetime] = None
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to correct a vessel-operation timing")
+        return v
+
+
 class VesselActivityOut(BaseModel):
     model_config = {"from_attributes": True}
 
@@ -178,10 +265,22 @@ class VesselActivityOut(BaseModel):
     hse_conducted_at: Optional[datetime] = None
     hse_notes: Optional[str] = None
 
-    # ── Discharge arithmetic ──
+    # ── Discharge arithmetic — reused by both the stage flow (full_operation)
+    # and the commence/complete flow (vessel_only) ──
     gov: Optional[Decimal] = None
     vcf: Optional[Decimal] = None
     gsv: Optional[Decimal] = None
     mt_vacuum: Optional[Decimal] = None
 
+    # ── Vessel-only commence/complete flow ──
+    commence_system_at: Optional[datetime] = None
+    commence_user_at: Optional[datetime] = None
+    complete_system_at: Optional[datetime] = None
+    complete_user_at: Optional[datetime] = None
+    discharged_quantity_litres: Optional[Decimal] = None
+    received_quantity_litres: Optional[Decimal] = None
+    quantity_recorded_at: Optional[datetime] = None
+    quantity_description: Optional[str] = None
+
     comments: List[VesselActivityCommentOut] = []
+    updates: List[VesselActivityUpdateOut] = []

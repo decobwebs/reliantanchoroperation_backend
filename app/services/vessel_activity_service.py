@@ -11,12 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, or_, func
 from sqlalchemy.orm import selectinload
 
-from app.models.bdn import VesselActivity, RobEntry, VesselActivityComment
+from decimal import Decimal
+
+from app.models.bdn import VesselActivity, RobEntry, VesselActivityComment, VesselActivityUpdate
 from app.models.vessel import Vessel
 from app.models.operation import Operation, OperationStatusHistory
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.models.enums import VesselActivityStatus, RobEntryType, UserRole, VesselStage, OperationStatus
+from app.models.enums import VesselActivityStatus, RobEntryType, UserRole, VesselStage, OperationStatus, OperationType
 from app.schemas.vessel_activity import (
     VesselActivityCreate,
     VesselActivityRecordReceipt,
@@ -28,9 +30,19 @@ from app.schemas.vessel_activity import (
     AddCommentRequest,
     RecordHseRequest,
     RecordDischargeQuantitiesRequest,
+    VesselActivityCommenceRequest,
+    VesselActivityCompleteVesselOpRequest,
+    AddVesselActivityUpdateRequest,
+    RecordVesselOperationQuantitiesRequest,
+    VesselActivityCorrectTimingRequest,
 )
 from app.services.state_machine import StateMachine, StateMachineError
 from app.utils.number_generator import generate_vessel_activity_number
+
+# Marker distinguishing the new commence/complete flow's RobEntry rows from
+# the old complete()'s, so a quantities correction can find and reverse
+# exactly its own pair without touching anything else.
+_QUANTITIES_ROB_SOURCE_SUFFIX = " — quantities"
 
 # Stage order — used to validate forward progression (BM may still correct
 # an already-logged stage; this only stops skipping ahead by mistake).
@@ -41,16 +53,18 @@ _STAGE_ORDER = [
 
 
 def _attach_vessel_name(activity: VesselActivity) -> None:
-    """Attach non-mapped vessel/comment-author fields onto the activity for
-    schema serialisation. Requires `.vessel` and `.comments.recorder` to
-    already be eager-loaded on `activity` (see _get_or_404/list_* queries) —
-    accessing them here otherwise triggers a lazy-load that fails in this
-    async context."""
+    """Attach non-mapped vessel/comment-author/update-author fields onto the
+    activity for schema serialisation. Requires `.vessel`, `.comments.recorder`,
+    and `.updates.recorder` to already be eager-loaded on `activity` (see
+    _get_or_404/list_* queries) — accessing them here otherwise triggers a
+    lazy-load that fails in this async context."""
     vessel = getattr(activity, 'vessel', None)
     activity.vessel_name = vessel.vessel_name if vessel else None  # type: ignore[attr-defined]
     activity.vessel_current_rob_mt = vessel.current_rob_mt if vessel else None  # type: ignore[attr-defined]
     for c in getattr(activity, 'comments', None) or []:
         c.recorded_by_name = c.recorder.full_name if getattr(c, 'recorder', None) else None  # type: ignore[attr-defined]
+    for u in getattr(activity, 'updates', None) or []:
+        u.recorded_by_name = u.recorder.full_name if getattr(u, 'recorder', None) else None  # type: ignore[attr-defined]
 
 
 async def _transition_operation(
@@ -519,7 +533,11 @@ class VesselActivityService:
             select(VesselActivity)
             .execution_options(populate_existing=True)
             .where(VesselActivity.operation_id == operation_id)
-            .options(selectinload(VesselActivity.vessel), selectinload(VesselActivity.comments).selectinload(VesselActivityComment.recorder))
+            .options(
+                selectinload(VesselActivity.vessel),
+                selectinload(VesselActivity.comments).selectinload(VesselActivityComment.recorder),
+                selectinload(VesselActivity.updates).selectinload(VesselActivityUpdate.recorder),
+            )
             .order_by(VesselActivity.created_at.desc())
         )
         activities = list(result.scalars().all())
@@ -533,7 +551,11 @@ class VesselActivityService:
             select(VesselActivity)
             .execution_options(populate_existing=True)
             .where(VesselActivity.assigned_to == user_id)
-            .options(selectinload(VesselActivity.vessel), selectinload(VesselActivity.comments).selectinload(VesselActivityComment.recorder))
+            .options(
+                selectinload(VesselActivity.vessel),
+                selectinload(VesselActivity.comments).selectinload(VesselActivityComment.recorder),
+                selectinload(VesselActivity.updates).selectinload(VesselActivityUpdate.recorder),
+            )
             .order_by(VesselActivity.created_at.desc())
         )
         activities = list(result.scalars().all())
@@ -557,7 +579,11 @@ class VesselActivityService:
             # its eagerly-loaded collections (comments) stale/pre-mutation.
             .execution_options(populate_existing=True)
             .where(VesselActivity.id == activity_id)
-            .options(selectinload(VesselActivity.vessel), selectinload(VesselActivity.comments).selectinload(VesselActivityComment.recorder))
+            .options(
+                selectinload(VesselActivity.vessel),
+                selectinload(VesselActivity.comments).selectinload(VesselActivityComment.recorder),
+                selectinload(VesselActivity.updates).selectinload(VesselActivityUpdate.recorder),
+            )
         )
         a = result.scalar_one_or_none()
         if not a:
@@ -627,30 +653,14 @@ class VesselActivityService:
         # operation has reached discharge_completed, the operation itself
         # auto-advances vessel_operations -> pending_completion.
         if data.stage == VesselStage.discharge_completed:
-            op = await db.get(Operation, activity.operation_id)
-            if op and op.status == OperationStatus.vessel_operations:
-                remaining_result = await db.execute(
-                    select(func.count()).select_from(VesselActivity).where(
-                        and_(
-                            VesselActivity.operation_id == activity.operation_id,
-                            VesselActivity.status != VesselActivityStatus.cancelled,
-                            # stage IS NULL (not yet started) must count as
-                            # "remaining" too — a plain != excludes NULLs in
-                            # SQL's three-valued logic, which would silently
-                            # drop not-yet-started activities from the count
-                            # and trigger the auto-transition prematurely.
-                            or_(
-                                VesselActivity.stage.is_(None),
-                                VesselActivity.stage != VesselStage.discharge_completed,
-                            ),
-                        )
-                    )
-                )
-                if (remaining_result.scalar() or 0) == 0:
-                    await _transition_operation(
-                        op, OperationStatus.pending_completion, current_user, db,
-                        reason="All vessel runs discharge-completed",
-                    )
+            await VesselActivityService._maybe_auto_complete_operation(
+                activity.operation_id, current_user, db,
+                is_activity_pending=or_(
+                    VesselActivity.stage.is_(None),
+                    VesselActivity.stage != VesselStage.discharge_completed,
+                ),
+                reason="All vessel runs discharge-completed",
+            )
 
         await db.commit()
         # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
@@ -661,6 +671,35 @@ class VesselActivityService:
         activity = await VesselActivityService._get_or_404(activity.id, db)
         _attach_vessel_name(activity)
         return activity
+
+    @staticmethod
+    async def _maybe_auto_complete_operation(
+        operation_id: UUID, current_user: User, db: AsyncSession, *,
+        is_activity_pending, reason: str,
+    ) -> None:
+        """Shared by advance_stage (stage-based, full_operation) and
+        complete_vessel_operation (vessel_only): once every non-cancelled
+        VesselActivity on the operation has finished, auto-advance
+        vessel_operations -> pending_completion. `is_activity_pending` is a
+        SQLAlchemy boolean expression selecting rows that still count as
+        "not done yet" — callers must use the NULL-safe `or_(col.is_(None),
+        col != done_value)` form, never a plain `!=`, since SQL's
+        three-valued logic silently excludes NULL rows from a plain `!=`
+        and would trigger this prematurely."""
+        op = await db.get(Operation, operation_id)
+        if not op or op.status != OperationStatus.vessel_operations:
+            return
+        remaining_result = await db.execute(
+            select(func.count()).select_from(VesselActivity).where(
+                and_(
+                    VesselActivity.operation_id == operation_id,
+                    VesselActivity.status != VesselActivityStatus.cancelled,
+                    is_activity_pending,
+                )
+            )
+        )
+        if (remaining_result.scalar() or 0) == 0:
+            await _transition_operation(op, OperationStatus.pending_completion, current_user, db, reason=reason)
 
     @staticmethod
     async def add_comment(activity_id: UUID, data: AddCommentRequest, current_user: User, db: AsyncSession) -> VesselActivityComment:
@@ -715,6 +754,263 @@ class VesselActivityService:
         # refresh reloads the comments collection but without cascading the
         # nested .recorder eager-load, so _attach_vessel_name's `c.recorder`
         # access would otherwise lazy-load and crash in this async context.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
+        _attach_vessel_name(activity)
+        return activity
+
+    # ── Vessel-only: commence -> updates -> complete -> quantities ─────────────
+    # Fully separate from the stage flow above and the old ROB-session flow —
+    # applies only when operation.type == vessel_only (enforced below); the
+    # old start()/record_receipt()/record_bunkering()/record_discharge()/
+    # complete() stay untouched and simply aren't called for these activities.
+
+    @staticmethod
+    async def _assert_vessel_only(activity: VesselActivity, db: AsyncSession) -> Operation:
+        op = await db.get(Operation, activity.operation_id)
+        if not op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+        if op.type != OperationType.vessel_only:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This action only applies to vessel-only operations",
+            )
+        return op
+
+    @staticmethod
+    async def commence(activity_id: UUID, data: VesselActivityCommenceRequest, current_user: User, db: AsyncSession) -> VesselActivity:
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        await VesselActivityService._assert_vessel_only(activity, db)
+        VesselActivityService._assert_authorized(activity, current_user)
+
+        if activity.commence_system_at is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="This vessel run has already been commenced")
+
+        activity.commence_system_at = datetime.utcnow()
+        activity.commence_user_at = data.commenced_user_at
+        activity.status = VesselActivityStatus.active
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="COMMENCE_VESSEL_OPERATION",
+            entity_type="vessel_activity", entity_id=activity.id,
+            changes={
+                "commence_system_at": activity.commence_system_at.isoformat(),
+                "commence_user_at": data.commenced_user_at.isoformat(),
+            },
+        ))
+        await db.commit()
+        activity = await VesselActivityService._get_or_404(activity.id, db)
+        _attach_vessel_name(activity)
+        return activity
+
+    @staticmethod
+    async def add_update(
+        activity_id: UUID, content: str,
+        image_bytes: Optional[bytes], image_filename: Optional[str], image_mime: Optional[str],
+        current_user: User, db: AsyncSession,
+    ) -> VesselActivityUpdate:
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        await VesselActivityService._assert_vessel_only(activity, db)
+        VesselActivityService._assert_authorized(activity, current_user)
+
+        if activity.commence_system_at is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Commence the vessel operation before adding updates")
+
+        image_url = None
+        if image_bytes:
+            import uuid as _uuid
+            from app.services.document_service import _upload_to_supabase
+            ext = image_filename.rsplit(".", 1)[-1] if image_filename and "." in image_filename else "jpg"
+            storage_path = f"vessel-activity-updates/{activity_id}/{_uuid.uuid4()}.{ext}"
+            image_url = await _upload_to_supabase(image_bytes, storage_path, image_mime or "application/octet-stream")
+
+        update = VesselActivityUpdate(
+            vessel_activity_id=activity.id, content=content, image_url=image_url,
+            recorded_by=current_user.id, recorded_at=datetime.utcnow(),
+        )
+        db.add(update)
+        await db.commit()
+        await db.refresh(update)
+        update.recorded_by_name = current_user.full_name  # type: ignore[attr-defined]
+        return update
+
+    @staticmethod
+    async def list_updates(activity_id: UUID, db: AsyncSession) -> List[VesselActivityUpdate]:
+        await VesselActivityService._get_or_404(activity_id, db)
+        result = await db.execute(
+            select(VesselActivityUpdate)
+            .options(selectinload(VesselActivityUpdate.recorder))
+            .where(VesselActivityUpdate.vessel_activity_id == activity_id)
+            .order_by(VesselActivityUpdate.recorded_at.desc())
+        )
+        updates = list(result.scalars().all())
+        for u in updates:
+            u.recorded_by_name = u.recorder.full_name if u.recorder else None  # type: ignore[attr-defined]
+        return updates
+
+    @staticmethod
+    async def complete_vessel_operation(activity_id: UUID, data: VesselActivityCompleteVesselOpRequest, current_user: User, db: AsyncSession) -> VesselActivity:
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        await VesselActivityService._assert_vessel_only(activity, db)
+        VesselActivityService._assert_authorized(activity, current_user)
+
+        if activity.commence_system_at is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Commence the vessel operation before completing it")
+        if activity.complete_system_at is not None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="This vessel run has already been completed")
+
+        activity.complete_system_at = datetime.utcnow()
+        activity.complete_user_at = data.completed_user_at
+        activity.status = VesselActivityStatus.completed
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="COMPLETE_VESSEL_OPERATION",
+            entity_type="vessel_activity", entity_id=activity.id,
+            changes={
+                "complete_system_at": activity.complete_system_at.isoformat(),
+                "complete_user_at": data.completed_user_at.isoformat(),
+            },
+        ))
+
+        # System-triggered — the vessel-only analogue of advance_stage's
+        # discharge_completed auto-transition, sharing the exact same
+        # NULL-safe helper.
+        await VesselActivityService._maybe_auto_complete_operation(
+            activity.operation_id, current_user, db,
+            is_activity_pending=VesselActivity.complete_system_at.is_(None),
+            reason="All vessel-only runs completed",
+        )
+
+        op = await db.get(Operation, activity.operation_id)
+        op_number = op.operation_number if op else str(activity.operation_id)
+        from app.services.notification_service import notify
+        bm_result = await db.execute(select(User).where(User.role == UserRole.bunker_manager, User.is_active == True))
+        for bm in bm_result.scalars().all():
+            await notify(
+                db=db, user_id=bm.id, type_="vessel_activity_completed",
+                title=f"Vessel Operation Completed — {activity.activity_number}",
+                message=f"Vessel operation {activity.activity_number} for operation {op_number} has been completed. Ready for BDN submission.",
+                priority="high", operation_id=activity.operation_id, action_url=f"/operations/{activity.operation_id}",
+                channels=["in_app", "whatsapp"], wa_template="operation_update",
+                wa_kwargs={"operation_number": op_number, "status": f"Vessel operation {activity.activity_number} completed"},
+            )
+
+        await db.commit()
+        activity = await VesselActivityService._get_or_404(activity.id, db)
+        _attach_vessel_name(activity)
+        return activity
+
+    @staticmethod
+    async def record_quantities(activity_id: UUID, data: RecordVesselOperationQuantitiesRequest, current_user: User, db: AsyncSession) -> VesselActivity:
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        await VesselActivityService._assert_vessel_only(activity, db)
+        VesselActivityService._assert_authorized(activity, current_user)
+
+        if activity.complete_system_at is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Complete the vessel operation before recording quantities")
+
+        is_correction = activity.discharged_quantity_litres is not None
+        if is_correction:
+            if current_user.role != UserRole.bunker_manager:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct recorded quantities")
+            if not data.reason:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A reason is required to correct recorded quantities")
+
+        vessel = await db.get(Vessel, activity.vessel_id)
+        rob_source = f"VesselActivity {activity.activity_number}{_QUANTITIES_ROB_SOURCE_SUFFIX}"
+
+        # On correction, reverse the previous pair's net effect before
+        # applying the new one, so the ROB ledger never double-counts.
+        if is_correction and vessel:
+            prev_result = await db.execute(
+                select(RobEntry).where(
+                    and_(RobEntry.vessel_id == activity.vessel_id, RobEntry.source_description == rob_source)
+                )
+            )
+            prev_entries = list(prev_result.scalars().all())
+            reversed_net = sum((e.quantity_mt for e in prev_entries), Decimal("0"))
+            vessel.current_rob_mt = (vessel.current_rob_mt or Decimal("0")) - reversed_net
+            for e in prev_entries:
+                await db.delete(e)
+            await db.flush()
+
+        activity.discharged_quantity_litres = data.discharged_quantity_litres
+        activity.received_quantity_litres = data.received_quantity_litres
+        activity.density = data.density
+        activity.temperature_celsius = data.temperature_celsius
+        activity.vcf = data.vcf
+        activity.gov = data.gov
+        activity.gsv = data.gov * data.vcf
+        activity.mt_vacuum = activity.gsv * data.density
+        activity.quantity_recorded_at = datetime.utcnow()
+        activity.quantity_description = data.description
+
+        # ROB update — Received adds, Discharged subtracts. Discharged uses
+        # the VCF/density-corrected MTvac figure (the custody-transfer-grade
+        # reading); Received uses a simpler direct litres*density conversion
+        # (an operational receipt log figure, not a certified reading).
+        discharged_mt = activity.mt_vacuum
+        received_mt = data.received_quantity_litres * data.density
+        if vessel:
+            rob_before = vessel.current_rob_mt or Decimal("0")
+            rob_after_receipt = rob_before + received_mt
+            db.add(RobEntry(
+                vessel_id=activity.vessel_id, operation_id=activity.operation_id,
+                entry_type=RobEntryType.replenishment, quantity_mt=received_mt,
+                rob_before_mt=rob_before, rob_after_mt=rob_after_receipt,
+                recorded_by=current_user.id, supervisor_id=activity.assigned_to,
+                source_description=rob_source, notes=data.description,
+            ))
+            rob_after_discharge = rob_after_receipt - discharged_mt
+            db.add(RobEntry(
+                vessel_id=activity.vessel_id, operation_id=activity.operation_id,
+                entry_type=RobEntryType.discharge, quantity_mt=-discharged_mt,
+                rob_before_mt=rob_after_receipt, rob_after_mt=rob_after_discharge,
+                recorded_by=current_user.id, supervisor_id=activity.assigned_to,
+                source_description=rob_source, notes=data.description,
+            ))
+            vessel.current_rob_mt = rob_after_discharge
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="RECORD_VESSEL_OPERATION_QUANTITIES",
+            entity_type="vessel_activity", entity_id=activity.id,
+            changes={
+                "discharged_quantity_litres": str(data.discharged_quantity_litres),
+                "received_quantity_litres": str(data.received_quantity_litres),
+                "mt_vacuum": str(activity.mt_vacuum),
+            },
+            reason=data.reason,
+        ))
+        await db.commit()
+        activity = await VesselActivityService._get_or_404(activity.id, db)
+        _attach_vessel_name(activity)
+        return activity
+
+    @staticmethod
+    async def correct_timing(activity_id: UUID, data: VesselActivityCorrectTimingRequest, current_user: User, db: AsyncSession) -> VesselActivity:
+        if current_user.role != UserRole.bunker_manager:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct vessel-operation timings")
+
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        await VesselActivityService._assert_vessel_only(activity, db)
+
+        changes = {}
+        for field in ("commence_system_at", "commence_user_at", "complete_system_at", "complete_user_at"):
+            new_value = getattr(data, field)
+            if new_value is not None:
+                old_value = getattr(activity, field)
+                changes[field] = {"from": old_value.isoformat() if old_value else None, "to": new_value.isoformat()}
+                setattr(activity, field, new_value)
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="CORRECT_VESSEL_OPERATION_TIMING",
+            entity_type="vessel_activity", entity_id=activity.id,
+            changes=changes, reason=data.reason,
+        ))
+        await db.commit()
         activity = await VesselActivityService._get_or_404(activity.id, db)
         _attach_vessel_name(activity)
         return activity

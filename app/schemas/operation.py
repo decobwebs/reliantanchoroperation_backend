@@ -2,9 +2,9 @@ from typing import Optional, List, Any, Dict
 from datetime import datetime
 from uuid import UUID
 from decimal import Decimal
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 from app.models.enums import (
-    OperationType, OperationStatus, TaskType, TaskStatus, Priority, ProductType
+    OperationType, OperationStatus, TaskType, TaskStatus, Priority, ProductType, VesselSourceType
 )
 
 
@@ -51,6 +51,9 @@ class OperationPfiAllocationCreate(BaseModel):
 
 class CreateOperationRequest(BaseModel):
     type: OperationType
+    # Vessel-only only — hard-required for that type, must be absent otherwise.
+    # A pure label (Truck vs Terminal source) — never gates any truck UI.
+    source_type: Optional[VesselSourceType] = None
     # BM can create an operation before picking a client — fill it in later.
     client_id: Optional[UUID] = None
     products: List[OperationProductCreate]
@@ -76,6 +79,14 @@ class CreateOperationRequest(BaseModel):
     @classmethod
     def strip_notes(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
+
+    @model_validator(mode="after")
+    def source_type_matches_operation_type(self):
+        if self.type == OperationType.vessel_only and self.source_type is None:
+            raise ValueError("source_type is required for vessel-only operations")
+        if self.type != OperationType.vessel_only and self.source_type is not None:
+            raise ValueError("source_type only applies to vessel-only operations")
+        return self
 
 
 OPERATION_COLORS = [
@@ -122,6 +133,7 @@ class UpdateOperationRequest(BaseModel):
     notes: Optional[str] = None
     currency: Optional[str] = None
     vessel_id: Optional[UUID] = None
+    source_type: Optional[VesselSourceType] = None
     reason: Optional[str] = None  # why this edit was made — surfaced in the Activity tab
 
 
@@ -177,6 +189,7 @@ class OperationOut(BaseModel):
     id: UUID
     operation_number: str
     type: OperationType
+    source_type: Optional[VesselSourceType] = None
     status: OperationStatus
     products: List[OperationProductOut] = []
     loading_location: Optional[str] = None

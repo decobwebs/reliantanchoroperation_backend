@@ -108,6 +108,7 @@ class OperationService:
         operation = Operation(
             operation_number=operation_number,
             type=data.type,
+            source_type=data.source_type,
             status=OperationStatus.draft,
             client_id=data.client_id,
             created_by=current_user.id,

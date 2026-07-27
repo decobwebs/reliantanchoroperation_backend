@@ -21,6 +21,22 @@ class OperationType(str, enum.Enum):
     full_operation = "full_operation"
 
 
+class VesselSourceType(str, enum.Enum):
+    """Where a vessel-only operation's product comes from — a pure label,
+    never a gate. Values are permanent DB identifiers; the human-facing
+    label for 'terminal' ("TMS") isn't finalized, so it lives only in
+    VESSEL_SOURCE_TYPE_LABELS below — renaming it later is a one-line edit,
+    never touching this enum."""
+    truck = "truck"        # TTS — Truck-to-Ship
+    terminal = "terminal"  # TMS — Terminal-to-Ship (placeholder name)
+
+
+VESSEL_SOURCE_TYPE_LABELS = {
+    VesselSourceType.truck: "TTS (Truck-to-Ship)",
+    VesselSourceType.terminal: "TMS (Terminal-to-Ship)",
+}
+
+
 class OperationStatus(str, enum.Enum):
     draft = "draft"
     tasks_assigned = "tasks_assigned"

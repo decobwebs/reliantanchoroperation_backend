@@ -8,7 +8,7 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
 from app.models.enums import (
-    OperationType, OperationStatus, TaskType, TaskStatus, Priority, FeedbackStatus
+    OperationType, OperationStatus, TaskType, TaskStatus, Priority, FeedbackStatus, VesselSourceType
 )
 
 
@@ -18,6 +18,9 @@ class Operation(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     operation_number = Column(String(20), unique=True, nullable=False)
     type = Column(SAEnum(OperationType, name="operation_type"), nullable=False)
+    # Vessel-only only — a pure label (never gates truck UI), hard-required
+    # at the API layer for that type, NULL for truck_only/full_operation.
+    source_type = Column(SAEnum(VesselSourceType, name="vessel_source_type"), nullable=True)
     status = Column(
         SAEnum(OperationStatus, name="operation_status"),
         nullable=False,

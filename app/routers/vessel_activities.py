@@ -2,9 +2,10 @@
 Vessel Activity endpoints — Marine Supervisor oversight sessions.
 BM creates/assigns; Marine Supervisor records quantities and completes.
 """
+from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, File, Form, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -25,6 +26,11 @@ from app.schemas.vessel_activity import (
     VesselActivityCommentOut,
     RecordHseRequest,
     RecordDischargeQuantitiesRequest,
+    VesselActivityCommenceRequest,
+    VesselActivityCompleteVesselOpRequest,
+    VesselActivityUpdateOut,
+    RecordVesselOperationQuantitiesRequest,
+    VesselActivityCorrectTimingRequest,
 )
 from app.services.vessel_activity_service import VesselActivityService
 
@@ -268,3 +274,91 @@ async def record_discharge_quantities(
     """Submits GOV/VCF/density readings — the system computes GSV and MTvac."""
     activity = await VesselActivityService.record_discharge_quantities(activity_id, body, current_user, db)
     return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="Discharge quantities recorded")
+
+
+# ── Vessel-only: commence -> updates -> complete -> quantities ─────────────────
+# Fully separate from the stage flow above — applies only to vessel_only
+# operations (the service rejects the call otherwise). Same _stage_roles as
+# advance-stage/hse/discharge-quantities: MM/OS write, BM retains full
+# visibility and correction power.
+
+@router.post("/vessel-activities/{activity_id}/commence", response_model=StandardResponse)
+async def commence_vessel_operation(
+    activity_id: UUID,
+    body: VesselActivityCommenceRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Commence a vessel-only operation. Captures both the system instant and
+    the caller's own stated commencement time — both stored, both displayed."""
+    activity = await VesselActivityService.commence(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="Vessel operation commenced")
+
+
+@router.post("/vessel-activities/{activity_id}/updates", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
+async def add_vessel_activity_update(
+    activity_id: UUID,
+    content: str = Form(...),
+    image: Optional[UploadFile] = File(None),
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Free-form operational update — content + optional image, always
+    system-timestamped only."""
+    image_bytes = await image.read() if image else None
+    update = await VesselActivityService.add_update(
+        activity_id, content, image_bytes,
+        image.filename if image else None, image.content_type if image else None,
+        current_user, db,
+    )
+    return StandardResponse.ok(data=VesselActivityUpdateOut.model_validate(update).model_dump(), message="Update added")
+
+
+@router.get("/vessel-activities/{activity_id}/updates", response_model=StandardResponse)
+async def list_vessel_activity_updates(
+    activity_id: UUID,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    updates = await VesselActivityService.list_updates(activity_id, db)
+    items = [VesselActivityUpdateOut.model_validate(u).model_dump() for u in updates]
+    return StandardResponse.ok(data=items, message="Updates retrieved")
+
+
+@router.post("/vessel-activities/{activity_id}/complete-vessel-operation", response_model=StandardResponse)
+async def complete_vessel_operation(
+    activity_id: UUID,
+    body: VesselActivityCompleteVesselOpRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Complete a vessel-only operation — this, not quantities, is what
+    unlocks Vessel BDN submission eligibility."""
+    activity = await VesselActivityService.complete_vessel_operation(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="Vessel operation completed")
+
+
+@router.post("/vessel-activities/{activity_id}/quantities", response_model=StandardResponse)
+async def record_vessel_operation_quantities(
+    activity_id: UUID,
+    body: RecordVesselOperationQuantitiesRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Discharge & Received Quantity — a separate operational note, not a
+    BDN precondition. Also updates the vessel's ROB (Received adds,
+    Discharged subtracts). Resubmission requires Bunker Manager + reason."""
+    activity = await VesselActivityService.record_quantities(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="Quantities recorded")
+
+
+@router.patch("/vessel-activities/{activity_id}/vessel-operation-timing", response_model=StandardResponse)
+async def correct_vessel_operation_timing(
+    activity_id: UUID,
+    body: VesselActivityCorrectTimingRequest,
+    current_user: User = _bm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Correct any of the four commence/complete timings. Bunker Manager only, reason required."""
+    activity = await VesselActivityService.correct_timing(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="Timing corrected")

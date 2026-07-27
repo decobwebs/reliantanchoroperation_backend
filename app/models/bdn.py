@@ -203,10 +203,35 @@ class VesselActivity(Base):
 
     # ── Discharge-completion arithmetic — system calculates gsv/mt_vacuum
     # from the submitted readings, litres-based (spec's BDN convention).
+    # Written by the OLD stage-based flow (full_operation) via
+    # record_discharge_quantities, and reused as-is by the NEW vessel-only
+    # commence/updates/complete/quantities flow's record_quantities — each
+    # VesselActivity row belongs to exactly one operation of one type, so
+    # there's no collision between the two writers.
     gov = Column(Numeric(14, 2), nullable=True)
     vcf = Column(Numeric(8, 4), nullable=True)
     gsv = Column(Numeric(14, 2), nullable=True)
     mt_vacuum = Column(Numeric(12, 3), nullable=True)
+
+    # ── Vessel-only commence/complete flow — additive, independent of both
+    # `status`/`started_at`/`completed_at` (the old ROB-session flow) and
+    # `stage`/`stage_*_at` (the full_operation 6-stage flow) above. Every
+    # pair below always stores BOTH the server-captured instant and the
+    # caller's own stated time — never one overwriting the other.
+    commence_system_at = Column(DateTime(timezone=True), nullable=True)
+    commence_user_at = Column(DateTime(timezone=True), nullable=True)
+    complete_system_at = Column(DateTime(timezone=True), nullable=True)
+    complete_user_at = Column(DateTime(timezone=True), nullable=True)
+
+    # ── Discharge & Received Quantity — vessel-only's simpler operational
+    # note (litres), recorded after Complete Vessel Operation. Distinct from
+    # the gov/vcf/gsv/mt_vacuum arithmetic above, which is also captured
+    # here for vessel-only specifically so the litres->tonnes conversion
+    # needed to keep the vessel's ROB gauge updating is possible.
+    discharged_quantity_litres = Column(Numeric(14, 2), nullable=True)
+    received_quantity_litres = Column(Numeric(14, 2), nullable=True)
+    quantity_recorded_at = Column(DateTime(timezone=True), nullable=True)
+    quantity_description = Column(Text, nullable=True)
 
     # Relationships
     operation = relationship("Operation", back_populates="vessel_activities")
@@ -215,6 +240,7 @@ class VesselActivity(Base):
     assigner = relationship("User", foreign_keys=[assigned_by])
     hse_conductor = relationship("User", foreign_keys=[hse_conducted_by])
     comments = relationship("VesselActivityComment", back_populates="vessel_activity", cascade="all, delete-orphan", order_by="VesselActivityComment.recorded_at")
+    updates = relationship("VesselActivityUpdate", back_populates="vessel_activity", cascade="all, delete-orphan", order_by="VesselActivityUpdate.recorded_at.desc()")
 
 
 class VesselActivityComment(Base):
@@ -232,4 +258,26 @@ class VesselActivityComment(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
     vessel_activity = relationship("VesselActivity", back_populates="comments")
+    recorder = relationship("User", foreign_keys=[recorded_by])
+
+
+class VesselActivityUpdate(Base):
+    """Free-form operational update for the vessel-only commence/updates/
+    complete/quantities flow — content + optional image, always
+    system-timestamped (never user-entered). Deliberately a separate table
+    from VesselActivityComment rather than extending it: `stage` would sit
+    permanently NULL for every vessel-only row, and mixing genuine
+    operational updates with ad-hoc general comments would make the comment
+    list ambiguous. Zero effect on the full_operation comment flow."""
+    __tablename__ = "vessel_activity_updates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vessel_activity_id = Column(UUID(as_uuid=True), ForeignKey("vessel_activities.id", ondelete="CASCADE"), nullable=False)
+    content = Column(Text, nullable=False)
+    image_url = Column(Text, nullable=True)
+    recorded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    recorded_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    vessel_activity = relationship("VesselActivity", back_populates="updates")
     recorder = relationship("User", foreign_keys=[recorded_by])
