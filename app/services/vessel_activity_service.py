@@ -905,6 +905,7 @@ class VesselActivityService:
 
         activity.complete_system_at = datetime.utcnow()
         activity.complete_user_at = data.completed_user_at
+        activity.complete_description = data.description
         activity.status = VesselActivityStatus.completed
 
         await db.flush()
@@ -914,6 +915,7 @@ class VesselActivityService:
             changes={
                 "complete_system_at": activity.complete_system_at.isoformat(),
                 "complete_user_at": data.completed_user_at.isoformat(),
+                "description": data.description,
             },
         ))
 

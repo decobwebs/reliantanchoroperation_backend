@@ -232,6 +232,7 @@ class VesselActivity(Base):
     commence_description = Column(Text, nullable=True)
     complete_system_at = Column(DateTime(timezone=True), nullable=True)
     complete_user_at = Column(DateTime(timezone=True), nullable=True)
+    complete_description = Column(Text, nullable=True)
 
     # ── Superseded — these four (migration 039) held the vessel-only
     # flow's single-shot discharge/received figures back when one
