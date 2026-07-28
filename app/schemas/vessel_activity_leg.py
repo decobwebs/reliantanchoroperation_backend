@@ -40,6 +40,7 @@ class RecordLegHseRequest(BaseModel):
     checklist: List[HseChecklistItem]
     result: AuditResult
     notes: Optional[str] = None
+    safety_officer: Optional[str] = None
     # Required only when overwriting an already-recorded checklist (a BM
     # correction) — enforced in the service, which alone can see prior state.
     reason: Optional[str] = None
@@ -178,6 +179,7 @@ class VesselActivityLegOut(BaseModel):
     hse_conducted_by: Optional[UUID] = None
     hse_conducted_at: Optional[datetime] = None
     hse_notes: Optional[str] = None
+    hse_safety_officer: Optional[str] = None
 
     quantity_discharged_litres: Optional[Decimal] = None
     density: Optional[Decimal] = None

@@ -205,6 +205,7 @@ class VesselActivity(Base):
     hse_conducted_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     hse_conducted_at = Column(DateTime(timezone=True), nullable=True)
     hse_notes = Column(Text, nullable=True)
+    hse_safety_officer = Column(String(200), nullable=True)
 
     # ── Discharge-completion arithmetic — system calculates gsv/mt_vacuum
     # from the submitted readings, litres-based (spec's BDN convention).
@@ -372,6 +373,7 @@ class VesselActivityLeg(Base):
     hse_conducted_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     hse_conducted_at = Column(DateTime(timezone=True), nullable=True)
     hse_notes = Column(Text, nullable=True)
+    hse_safety_officer = Column(String(200), nullable=True)
 
     # ── Per-leg discharge & quality readings — same field names/units as
     # VesselBdn for consistency. gsv/mt_vacuum are system-computed.

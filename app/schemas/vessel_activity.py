@@ -105,6 +105,10 @@ class VesselActivityCommentOut(BaseModel):
 
 
 class HseChecklistItem(BaseModel):
+    # `section` is stored with each item so a completed checklist stays
+    # self-describing — if the template's grouping is later changed, an
+    # already-signed-off record still reads the way it was signed.
+    section: Optional[str] = None
     item: str
     passed: bool
     notes: Optional[str] = None
@@ -114,6 +118,7 @@ class RecordHseRequest(BaseModel):
     checklist: List[HseChecklistItem]
     result: AuditResult
     notes: Optional[str] = None
+    safety_officer: Optional[str] = None
     # Required only when overwriting an already-recorded checklist (a BM
     # correction) — enforced in the service, which alone can see prior state.
     reason: Optional[str] = None
@@ -397,6 +402,7 @@ class VesselActivityOut(BaseModel):
     hse_conducted_by: Optional[UUID] = None
     hse_conducted_at: Optional[datetime] = None
     hse_notes: Optional[str] = None
+    hse_safety_officer: Optional[str] = None
 
     # ── Discharge arithmetic — reused by both the stage flow (full_operation)
     # and the commence/complete flow (vessel_only) ──

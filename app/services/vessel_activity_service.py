@@ -804,6 +804,7 @@ class VesselActivityService:
         activity.hse_conducted_by = current_user.id
         activity.hse_conducted_at = datetime.utcnow()
         activity.hse_notes = data.notes
+        activity.hse_safety_officer = data.safety_officer
 
         await db.flush()
         db.add(AuditLog(
@@ -1321,6 +1322,7 @@ class VesselActivityService:
         leg.hse_conducted_by = current_user.id
         leg.hse_conducted_at = datetime.utcnow()
         leg.hse_notes = data.notes
+        leg.hse_safety_officer = data.safety_officer
 
         await db.flush()
         db.add(AuditLog(
