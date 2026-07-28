@@ -45,7 +45,7 @@ from app.schemas.vessel_activity_leg import (
     CorrectLegTimingRequest,
     CancelLegRequest,
 )
-from app.services.state_machine import StateMachine, StateMachineError
+from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.utils.number_generator import generate_vessel_activity_number
 
 # Marker distinguishing the new commence/complete flow's RobEntry rows from
@@ -101,7 +101,7 @@ async def _transition_operation(
         return
     try:
         StateMachine.validate_transition(
-            operation.type, operation.status, to_status, current_user.acting_as_role or current_user.role
+            operation.type, operation.status, to_status, acting_role(current_user)
         )
     except StateMachineError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))

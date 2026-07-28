@@ -26,7 +26,7 @@ from app.schemas.truck import (
     TruckWaiverUpdate,
 )
 from app.services.notification_service import notify
-from app.services.state_machine import StateMachine, StateMachineError
+from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.services.audit_diff import capture_diff
 from app.models.operation import OperationStatusHistory
 from app.models.truck import TruckWaiver
@@ -74,7 +74,7 @@ async def _transition_operation(
     """Silently transitions an operation status, writing history but not raising on SM errors."""
     try:
         StateMachine.validate_transition(
-            operation.type, operation.status, to_status, current_user.acting_as_role or current_user.role
+            operation.type, operation.status, to_status, acting_role(current_user)
         )
     except StateMachineError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
@@ -1704,7 +1704,7 @@ class TruckService:
         operation = await _get_operation_or_404(operation_id, db)
 
         try:
-            StateMachine.validate_transition(operation.type, operation.status, OperationStatus.pending_completion, current_user.acting_as_role or current_user.role)
+            StateMachine.validate_transition(operation.type, operation.status, OperationStatus.pending_completion, acting_role(current_user))
         except StateMachineError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 

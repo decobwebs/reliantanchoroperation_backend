@@ -19,7 +19,7 @@ from app.schemas.operation import (
     TransitionRequest, ReopenRequest,
 )
 from app.schemas.pfi import PfiAllocationCreate
-from app.services.state_machine import StateMachine, StateMachineError
+from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.services.milestone_service import create_milestone_if_applicable
 from app.services.audit_diff import capture_diff
 from app.utils.number_generator import generate_operation_number
@@ -396,7 +396,7 @@ class OperationService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
 
         try:
-            StateMachine.validate_transition(operation.type, operation.status, data.to_status, current_user.acting_as_role or current_user.role)
+            StateMachine.validate_transition(operation.type, operation.status, data.to_status, acting_role(current_user))
         except StateMachineError as exc:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
 

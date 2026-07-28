@@ -50,13 +50,20 @@ def require_roles(*roles: UserRole, allow_acting_as: bool = True):
     FastAPI dependency factory that enforces role-based access control.
     Usage: Depends(require_roles(UserRole.bunker_manager))
 
-    By default, a BM who has switched "acting as" another role is gated on
-    that acted-as role instead of their real one — this is what lets BM
-    exercise every other role's endpoints. Pass allow_acting_as=False for the
-    small set of actions (payment confirmation, invoice finalization) that
-    must always require the real role, even under acting-as.
+    A real Bunker Manager always passes: the BM has full access to every
+    role's actions at all times, whether or not they are "acting as" someone
+    else and whether or not the underlying task/activity is assigned to them.
+    "Acting as" is a preview of another role's view, never a downgrade of the
+    BM's own authority.
+
+    Otherwise a user who has switched "acting as" another role is gated on
+    that acted-as role instead of their real one. Pass allow_acting_as=False
+    for the small set of actions (payment confirmation, invoice finalization)
+    that must always require the real role — those still exclude the BM.
     """
     async def _check(current_user: User = Depends(get_current_user)) -> User:
+        if allow_acting_as and current_user.role == UserRole.bunker_manager:
+            return current_user
         effective_role = get_effective_role(current_user) if allow_acting_as else current_user.role
         if effective_role not in roles:
             raise HTTPException(

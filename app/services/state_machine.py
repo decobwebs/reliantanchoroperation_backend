@@ -2,6 +2,19 @@ from typing import Dict, List, Optional
 from app.models.enums import OperationStatus, OperationType, UserRole
 
 
+def acting_role(current_user) -> UserRole:
+    """The role a state transition should be validated against.
+
+    A real Bunker Manager always validates as bunker_manager, even while
+    "acting as" another role — the BM has full authority at all times, and
+    acting-as is a preview of another role's view, never a downgrade of the
+    BM's own permissions. Everyone else validates as their acted-as role if
+    set, otherwise their real one."""
+    if current_user.role == UserRole.bunker_manager:
+        return UserRole.bunker_manager
+    return current_user.acting_as_role or current_user.role
+
+
 # ── Transition maps per operation type ────────────────────────────────────────
 #
 # COMMERCIAL FLOW (all types):

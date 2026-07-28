@@ -15,7 +15,7 @@ from app.models.user import User
 from app.models.enums import UserRole, BdnStatus, OperationStatus
 from app.schemas.bdn import BdnCreate
 from app.services.notification_service import notify
-from app.services.state_machine import StateMachine, StateMachineError
+from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.utils.number_generator import generate_bdn_number
 
 
@@ -40,7 +40,7 @@ async def _transition_operation(
 ) -> None:
     try:
         StateMachine.validate_transition(
-            operation.type, operation.status, to_status, current_user.acting_as_role or current_user.role
+            operation.type, operation.status, to_status, acting_role(current_user)
         )
     except StateMachineError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
