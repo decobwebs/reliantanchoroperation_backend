@@ -5,7 +5,7 @@ BM creates/assigns; Marine Supervisor records quantities and completes.
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -32,6 +32,8 @@ from app.schemas.vessel_activity import (
     RecordVesselOperationQuantitiesRequest,
     RecordLoadingReceiptRequest,
     VesselActivityCorrectTimingRequest,
+    EditVesselActivityCommentRequest,
+    UncancelRequest,
 )
 from app.schemas.vessel_activity_leg import (
     VesselActivityLegCreate,
@@ -40,6 +42,7 @@ from app.schemas.vessel_activity_leg import (
     RecordLegQuantitiesRequest,
     CorrectLegTimingRequest,
     CancelLegRequest,
+    EditVesselActivityLegRequest,
     VesselActivityLegOut,
 )
 from app.services.vessel_activity_service import VesselActivityService
@@ -481,3 +484,77 @@ async def cancel_leg(
     """Cancel a receiving-vessel leg. Bunker Manager only, reason required."""
     leg = await VesselActivityService.cancel_leg(leg_id, body, current_user, db)
     return StandardResponse.ok(data=VesselActivityLegOut.model_validate(leg).model_dump(), message="Receiving vessel cancelled")
+
+
+# ── BM corrections ────────────────────────────────────────────────────────────
+# The Bunker Manager can correct any recorded detail of an operation. Every
+# one of these is BM-only and requires a reason, which is audit-logged.
+# Nothing is deletable — a correction edits the record and marks it as edited.
+
+@router.patch("/vessel-activity-updates/{update_id}", response_model=StandardResponse)
+async def edit_vessel_activity_update(
+    update_id: UUID,
+    reason: str = Form(...),
+    content: Optional[str] = Form(None),
+    image: Optional[UploadFile] = File(None),
+    current_user: User = _bm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Correct a posted update's text and/or replace its image."""
+    if not reason.strip():
+        raise HTTPException(status_code=422, detail="A reason is required to correct an update")
+    image_bytes = await image.read() if image else None
+    update = await VesselActivityService.edit_update(
+        update_id, content, reason.strip(), image_bytes,
+        image.filename if image else None, image.content_type if image else None,
+        current_user, db,
+    )
+    return StandardResponse.ok(data=VesselActivityUpdateOut.model_validate(update).model_dump(), message="Update corrected")
+
+
+@router.patch("/vessel-activity-comments/{comment_id}", response_model=StandardResponse)
+async def edit_vessel_activity_comment(
+    comment_id: UUID,
+    body: EditVesselActivityCommentRequest,
+    current_user: User = _bm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Correct a posted comment."""
+    comment = await VesselActivityService.edit_comment(comment_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityCommentOut.model_validate(comment).model_dump(), message="Comment corrected")
+
+
+@router.patch("/vessel-activity-legs/{leg_id}", response_model=StandardResponse)
+async def edit_vessel_activity_leg(
+    leg_id: UUID,
+    body: EditVesselActivityLegRequest,
+    current_user: User = _bm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Correct a receiving vessel's name, IMO number or ETA."""
+    leg = await VesselActivityService.edit_leg(leg_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityLegOut.model_validate(leg).model_dump(), message="Receiving vessel updated")
+
+
+@router.post("/vessel-activity-legs/{leg_id}/uncancel", response_model=StandardResponse)
+async def uncancel_vessel_activity_leg(
+    leg_id: UUID,
+    body: UncancelRequest,
+    current_user: User = _bm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore a cancelled receiving vessel. Re-derives the completion gate."""
+    leg = await VesselActivityService.uncancel_leg(leg_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityLegOut.model_validate(leg).model_dump(), message="Receiving vessel restored")
+
+
+@router.post("/vessel-activities/{activity_id}/uncancel", response_model=StandardResponse)
+async def uncancel_vessel_activity(
+    activity_id: UUID,
+    body: UncancelRequest,
+    current_user: User = _bm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Restore a cancelled vessel activity to the point it had reached."""
+    activity = await VesselActivityService.uncancel(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="Vessel activity restored")

@@ -289,8 +289,15 @@ class VesselActivityComment(Base):
     recorded_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
+    # BM correction markers — a corrected record stays visible as corrected
+    # rather than silently differing from what was originally posted.
+    edited_at = Column(DateTime(timezone=True), nullable=True)
+    edited_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    edit_reason = Column(Text, nullable=True)
+
     vessel_activity = relationship("VesselActivity", back_populates="comments")
     recorder = relationship("User", foreign_keys=[recorded_by])
+    editor = relationship("User", foreign_keys=[edited_by])
 
 
 class VesselActivityUpdate(Base):
@@ -315,9 +322,15 @@ class VesselActivityUpdate(Base):
     recorded_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
+    # BM correction markers — see VesselActivityComment above.
+    edited_at = Column(DateTime(timezone=True), nullable=True)
+    edited_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    edit_reason = Column(Text, nullable=True)
+
     vessel_activity = relationship("VesselActivity", back_populates="updates")
     leg = relationship("VesselActivityLeg", foreign_keys=[leg_id])
     recorder = relationship("User", foreign_keys=[recorded_by])
+    editor = relationship("User", foreign_keys=[edited_by])
 
 
 class VesselActivityLeg(Base):

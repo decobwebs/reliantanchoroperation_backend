@@ -40,6 +40,9 @@ class RecordLegHseRequest(BaseModel):
     checklist: List[HseChecklistItem]
     result: AuditResult
     notes: Optional[str] = None
+    # Required only when overwriting an already-recorded checklist (a BM
+    # correction) — enforced in the service, which alone can see prior state.
+    reason: Optional[str] = None
 
     @field_validator("notes", mode="before")
     @classmethod
@@ -79,8 +82,37 @@ class RecordLegQuantitiesRequest(BaseModel):
         return v
 
 
+class EditVesselActivityLegRequest(BaseModel):
+    """BM-only correction of a receiving vessel's identity details."""
+    receiving_vessel_name: Optional[str] = None
+    imo_number: Optional[str] = None
+    eta_at: Optional[datetime] = None
+    reason: str
+
+    @field_validator("receiving_vessel_name", "imo_number", "reason", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("receiving_vessel_name")
+    @classmethod
+    def name_not_blank(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not v:
+            raise ValueError("Receiving vessel name cannot be blank")
+        return v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to correct a receiving vessel")
+        return v
+
+
 class CorrectLegTimingRequest(BaseModel):
-    """BM-only correction of any of the eight leg stage timestamps."""
+    """BM-only correction of the eight leg stage timestamps, and optionally
+    the leg's own stage — a rollback for a stage logged in error."""
+    stage: Optional[VesselLegStage] = None
     stage_cast_off_system_at: Optional[datetime] = None
     stage_cast_off_user_at: Optional[datetime] = None
     stage_alongside_system_at: Optional[datetime] = None

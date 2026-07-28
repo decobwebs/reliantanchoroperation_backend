@@ -13,12 +13,12 @@ from sqlalchemy.orm import selectinload
 
 from decimal import Decimal
 
-from app.models.bdn import VesselActivity, VesselActivityLeg, RobEntry, VesselActivityComment, VesselActivityUpdate
+from app.models.bdn import BDN, VesselActivity, VesselActivityLeg, RobEntry, VesselActivityComment, VesselActivityUpdate
 from app.models.vessel import Vessel
 from app.models.operation import Operation, OperationStatusHistory
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.models.enums import VesselActivityStatus, RobEntryType, UserRole, VesselStage, VesselLegStage, OperationStatus, OperationType
+from app.models.enums import VesselActivityStatus, RobEntryType, UserRole, VesselStage, VesselLegStage, OperationStatus, OperationType, BdnStatus
 from app.schemas.vessel_activity import (
     VesselActivityCreate,
     VesselActivityRecordReceipt,
@@ -36,6 +36,9 @@ from app.schemas.vessel_activity import (
     RecordVesselOperationQuantitiesRequest,
     RecordLoadingReceiptRequest,
     VesselActivityCorrectTimingRequest,
+    EditVesselActivityUpdateRequest,
+    EditVesselActivityCommentRequest,
+    UncancelRequest,
 )
 from app.schemas.vessel_activity_leg import (
     VesselActivityLegCreate,
@@ -44,7 +47,9 @@ from app.schemas.vessel_activity_leg import (
     RecordLegQuantitiesRequest,
     CorrectLegTimingRequest,
     CancelLegRequest,
+    EditVesselActivityLegRequest,
 )
+from app.services.audit_diff import capture_diff
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.utils.number_generator import generate_vessel_activity_number
 
@@ -508,13 +513,10 @@ class VesselActivityService:
         if current_user.role != UserRole.bunker_manager:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Bunker Manager can edit Initial ROB")
 
+        # Deliberately NOT blocked once the activity is completed — correcting
+        # a figure after the fact is exactly what this is for. Every change is
+        # reason-bearing and audit-logged.
         activity = await VesselActivityService._get_or_404(activity_id, db)
-
-        if activity.status == VesselActivityStatus.completed:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Cannot edit Initial ROB on a completed activity",
-            )
 
         old_value = str(activity.initial_rob_mt) if activity.initial_rob_mt is not None else None
         activity.initial_rob_mt = data.initial_rob_mt
@@ -529,6 +531,7 @@ class VesselActivityService:
                 "activity_number": activity.activity_number,
                 "initial_rob_mt": {"from": old_value, "to": str(data.initial_rob_mt)},
             },
+            reason=data.reason,
         ))
         await db.commit()
         # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
@@ -779,6 +782,23 @@ class VesselActivityService:
         activity = await VesselActivityService._get_or_404(activity_id, db)
         VesselActivityService._assert_authorized(activity, current_user)
 
+        # Overwriting an already-recorded checklist is a correction, not a
+        # fresh record: BM-only, reason required, and the previous checklist
+        # is preserved in the audit entry so the original is never lost.
+        is_correction = activity.hse_result is not None
+        prior = None
+        if is_correction:
+            if current_user.role != UserRole.bunker_manager:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct a recorded HSE checklist")
+            if not data.reason:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A reason is required to correct a recorded HSE checklist")
+            prior = {
+                "result": activity.hse_result.value if activity.hse_result else None,
+                "checklist": activity.hse_checklist,
+                "notes": activity.hse_notes,
+                "conducted_at": activity.hse_conducted_at.isoformat() if activity.hse_conducted_at else None,
+            }
+
         activity.hse_checklist = [item.model_dump() for item in data.checklist]
         activity.hse_result = data.result
         activity.hse_conducted_by = current_user.id
@@ -787,9 +807,11 @@ class VesselActivityService:
 
         await db.flush()
         db.add(AuditLog(
-            user_id=current_user.id, operation_id=activity.operation_id, action="RECORD_VESSEL_HSE",
+            user_id=current_user.id, operation_id=activity.operation_id,
+            action="CORRECT_VESSEL_HSE" if is_correction else "RECORD_VESSEL_HSE",
             entity_type="vessel_activity", entity_id=activity.id,
-            changes={"result": data.result.value, "items": len(data.checklist)},
+            changes={"result": data.result.value, "items": len(data.checklist), "previous": prior},
+            reason=data.reason,
         ))
         await db.commit()
         # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
@@ -1047,6 +1069,15 @@ class VesselActivityService:
                 old_value = getattr(activity, field)
                 changes[field] = {"from": old_value.isoformat() if old_value else None, "to": new_value.isoformat()}
                 setattr(activity, field, new_value)
+        # Free-text on the same correction call — an empty string clears the
+        # field, which `is not None` allows deliberately (unlike the timings,
+        # where clearing a recorded instant makes no sense).
+        for field in ("commence_description", "complete_description", "notes"):
+            new_value = getattr(data, field)
+            if new_value is not None:
+                old_value = getattr(activity, field)
+                changes[field] = {"from": old_value, "to": new_value}
+                setattr(activity, field, new_value or None)
 
         await db.flush()
         db.add(AuditLog(
@@ -1213,7 +1244,18 @@ class VesselActivityService:
         pending_completion. An operation with Loading Completed but zero
         legs must never look done — guarded explicitly below."""
         op = await db.get(Operation, operation_id)
-        if not op or op.status != OperationStatus.vessel_operations:
+        # Re-derives in BOTH directions. A correction can un-finish an
+        # operation (a leg rolled back, a cancelled leg restored) just as
+        # easily as finish it, so a one-way "advance when everything is done"
+        # check would strand the operation at pending_completion after any
+        # rollback. bdn_approved/completed are deliberately excluded — once a
+        # BDN is approved the gate is closed by an explicit decision, not by
+        # leg state.
+        if not op or op.status not in (
+            OperationStatus.vessel_operations,
+            OperationStatus.pending_completion,
+            OperationStatus.bdn_pending,
+        ):
             return
 
         total_result = await db.execute(
@@ -1245,8 +1287,11 @@ class VesselActivityService:
                 )
             )
         )
-        if (remaining_result.scalar() or 0) == 0:
+        remaining = remaining_result.scalar() or 0
+        if remaining == 0 and op.status == OperationStatus.vessel_operations:
             await _transition_operation(op, OperationStatus.pending_completion, current_user, db, reason="All receiving-vessel legs discharge-completed")
+        elif remaining > 0 and op.status in (OperationStatus.pending_completion, OperationStatus.bdn_pending):
+            await _transition_operation(op, OperationStatus.vessel_operations, current_user, db, reason="A receiving vessel is no longer discharge-completed")
 
     @staticmethod
     async def record_leg_hse(leg_id: UUID, data: RecordLegHseRequest, current_user: User, db: AsyncSession) -> VesselActivityLeg:
@@ -1257,6 +1302,20 @@ class VesselActivityService:
         await VesselActivityService._assert_vessel_only(activity, db)
         VesselActivityService._assert_authorized(activity, current_user)
 
+        is_correction = leg.hse_result is not None
+        prior = None
+        if is_correction:
+            if current_user.role != UserRole.bunker_manager:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct a recorded HSE checklist")
+            if not data.reason:
+                raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A reason is required to correct a recorded HSE checklist")
+            prior = {
+                "result": leg.hse_result.value if leg.hse_result else None,
+                "checklist": leg.hse_checklist,
+                "notes": leg.hse_notes,
+                "conducted_at": leg.hse_conducted_at.isoformat() if leg.hse_conducted_at else None,
+            }
+
         leg.hse_checklist = [item.model_dump() for item in data.checklist]
         leg.hse_result = data.result
         leg.hse_conducted_by = current_user.id
@@ -1265,9 +1324,11 @@ class VesselActivityService:
 
         await db.flush()
         db.add(AuditLog(
-            user_id=current_user.id, operation_id=activity.operation_id, action="RECORD_VESSEL_ACTIVITY_LEG_HSE",
+            user_id=current_user.id, operation_id=activity.operation_id,
+            action="CORRECT_VESSEL_ACTIVITY_LEG_HSE" if is_correction else "RECORD_VESSEL_ACTIVITY_LEG_HSE",
             entity_type="vessel_activity_leg", entity_id=leg.id,
-            changes={"result": data.result.value, "items": len(data.checklist)},
+            changes={"result": data.result.value, "items": len(data.checklist), "previous": prior},
+            reason=data.reason,
         ))
         await db.commit()
         leg = await VesselActivityService._get_leg_or_404(leg.id, db)
@@ -1372,12 +1433,34 @@ class VesselActivityService:
                 changes[field] = {"from": old_value.isoformat() if old_value else None, "to": new_value.isoformat()}
                 setattr(leg, field, new_value)
 
+        # Stage rollback — for a stage logged in error. Guarded, because the
+        # leg's stage is what the operation's completion gate counts on.
+        if data.stage is not None and data.stage != leg.stage:
+            if leg.stage == VesselLegStage.discharge_completed:
+                existing = await db.execute(
+                    select(func.count()).select_from(BDN).where(
+                        and_(BDN.vessel_leg_id == leg.id, BDN.status.in_([BdnStatus.pending, BdnStatus.approved]))
+                    )
+                )
+                if (existing.scalar() or 0) > 0:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="Cannot roll this receiving vessel back — a Vessel BDN has already been submitted for it. "
+                               "Reject that BDN first.",
+                    )
+            changes["stage"] = {"from": leg.stage.value if leg.stage else None, "to": data.stage.value}
+            leg.stage = data.stage
+
         await db.flush()
         db.add(AuditLog(
             user_id=current_user.id, operation_id=activity.operation_id, action="CORRECT_VESSEL_ACTIVITY_LEG_TIMING",
             entity_type="vessel_activity_leg", entity_id=leg.id,
             changes=changes, reason=data.reason,
         ))
+        # A rollback can un-complete the operation; a forward correction can
+        # complete it. Re-evaluate either way.
+        await VesselActivityService._maybe_auto_complete_operation_from_legs(activity.operation_id, current_user, db)
+
         await db.commit()
         leg = await VesselActivityService._get_leg_or_404(leg.id, db)
         return leg
@@ -1482,6 +1565,200 @@ class VesselActivityService:
                 "loading_mt_vacuum": str(activity.loading_mt_vacuum),
             },
             reason=data.reason,
+        ))
+        await db.commit()
+        activity = await VesselActivityService._get_or_404(activity.id, db)
+        _attach_vessel_name(activity)
+        return activity
+
+    # ── BM corrections — the Bunker Manager can fix any recorded detail ────
+    # All BM-only, reason-required and audit-logged. Nothing is ever deleted:
+    # a correction edits the record and marks it as edited. Evidence records
+    # (RobEntry, VesselEta, ClientNotificationLog) are never touched by any of
+    # this — those are corrected by appending, never by rewriting.
+
+    @staticmethod
+    def _assert_bm(current_user: User, what: str) -> None:
+        if current_user.role != UserRole.bunker_manager:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Only the Bunker Manager can correct {what}",
+            )
+
+    @staticmethod
+    async def edit_update(
+        update_id: UUID, content: Optional[str], reason: str,
+        image_bytes: Optional[bytes], image_filename: Optional[str], image_mime: Optional[str],
+        current_user: User, db: AsyncSession,
+    ) -> VesselActivityUpdate:
+        VesselActivityService._assert_bm(current_user, "a posted update")
+        result = await db.execute(
+            select(VesselActivityUpdate)
+            .options(selectinload(VesselActivityUpdate.recorder), selectinload(VesselActivityUpdate.editor))
+            .where(VesselActivityUpdate.id == update_id)
+        )
+        update = result.scalar_one_or_none()
+        if not update:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Update not found")
+
+        activity = await VesselActivityService._get_or_404(update.vessel_activity_id, db)
+
+        changes = {}
+        if content is not None and content != update.content:
+            changes["content"] = {"from": update.content, "to": content}
+            update.content = content
+
+        if image_bytes:
+            import uuid as _uuid
+            from app.services.document_service import _upload_to_supabase
+            ext = image_filename.rsplit(".", 1)[-1] if image_filename and "." in image_filename else "jpg"
+            storage_path = f"vessel-activity-updates/{update.vessel_activity_id}/{_uuid.uuid4()}.{ext}"
+            new_url = await _upload_to_supabase(image_bytes, storage_path, image_mime or "application/octet-stream")
+            changes["image_url"] = {"from": update.image_url, "to": new_url}
+            update.image_url = new_url
+
+        update.edited_at = datetime.utcnow()
+        update.edited_by = current_user.id
+        update.edit_reason = reason
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="EDIT_VESSEL_ACTIVITY_UPDATE",
+            entity_type="vessel_activity_update", entity_id=update.id,
+            changes=changes, reason=reason,
+        ))
+        await db.commit()
+
+        result = await db.execute(
+            select(VesselActivityUpdate)
+            .options(selectinload(VesselActivityUpdate.recorder), selectinload(VesselActivityUpdate.editor))
+            .where(VesselActivityUpdate.id == update_id)
+        )
+        update = result.scalar_one()
+        update.recorded_by_name = update.recorder.full_name if update.recorder else None  # type: ignore[attr-defined]
+        update.edited_by_name = update.editor.full_name if update.editor else None  # type: ignore[attr-defined]
+        return update
+
+    @staticmethod
+    async def edit_comment(
+        comment_id: UUID, data: EditVesselActivityCommentRequest, current_user: User, db: AsyncSession,
+    ) -> VesselActivityComment:
+        VesselActivityService._assert_bm(current_user, "a posted comment")
+        result = await db.execute(
+            select(VesselActivityComment)
+            .options(selectinload(VesselActivityComment.recorder), selectinload(VesselActivityComment.editor))
+            .where(VesselActivityComment.id == comment_id)
+        )
+        comment = result.scalar_one_or_none()
+        if not comment:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Comment not found")
+
+        activity = await VesselActivityService._get_or_404(comment.vessel_activity_id, db)
+
+        changes = {"comment": {"from": comment.comment, "to": data.comment}}
+        comment.comment = data.comment
+        comment.edited_at = datetime.utcnow()
+        comment.edited_by = current_user.id
+        comment.edit_reason = data.reason
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="EDIT_VESSEL_ACTIVITY_COMMENT",
+            entity_type="vessel_activity_comment", entity_id=comment.id,
+            changes=changes, reason=data.reason,
+        ))
+        await db.commit()
+
+        result = await db.execute(
+            select(VesselActivityComment)
+            .options(selectinload(VesselActivityComment.recorder), selectinload(VesselActivityComment.editor))
+            .where(VesselActivityComment.id == comment_id)
+        )
+        comment = result.scalar_one()
+        comment.recorded_by_name = comment.recorder.full_name if comment.recorder else None  # type: ignore[attr-defined]
+        comment.edited_by_name = comment.editor.full_name if comment.editor else None  # type: ignore[attr-defined]
+        return comment
+
+    @staticmethod
+    async def edit_leg(
+        leg_id: UUID, data: EditVesselActivityLegRequest, current_user: User, db: AsyncSession,
+    ) -> VesselActivityLeg:
+        VesselActivityService._assert_bm(current_user, "a receiving vessel")
+        leg = await VesselActivityService._get_leg_or_404(leg_id, db)
+        activity = await VesselActivityService._get_or_404(leg.vessel_activity_id, db)
+        await VesselActivityService._assert_vessel_only(activity, db)
+
+        update_data = data.model_dump(exclude_unset=True, exclude={"reason"})
+        changes = capture_diff(leg, update_data)
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="EDIT_VESSEL_ACTIVITY_LEG",
+            entity_type="vessel_activity_leg", entity_id=leg.id,
+            changes=changes, reason=data.reason,
+        ))
+        await db.commit()
+        return await VesselActivityService._get_leg_or_404(leg.id, db)
+
+    @staticmethod
+    async def uncancel_leg(
+        leg_id: UUID, data: UncancelRequest, current_user: User, db: AsyncSession,
+    ) -> VesselActivityLeg:
+        VesselActivityService._assert_bm(current_user, "a cancelled receiving vessel")
+        leg = await VesselActivityService._get_leg_or_404(leg_id, db)
+        activity = await VesselActivityService._get_or_404(leg.vessel_activity_id, db)
+        await VesselActivityService._assert_vessel_only(activity, db)
+
+        if leg.cancelled_at is None:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="This receiving vessel is not cancelled")
+
+        changes = {
+            "cancelled_at": {"from": leg.cancelled_at.isoformat(), "to": None},
+            "cancelled_reason": {"from": leg.cancelled_reason, "to": None},
+        }
+        leg.cancelled_at = None
+        leg.cancelled_reason = None
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="UNCANCEL_VESSEL_ACTIVITY_LEG",
+            entity_type="vessel_activity_leg", entity_id=leg.id,
+            changes=changes, reason=data.reason,
+        ))
+
+        # Restoring a leg that has not finished re-opens the completion gate;
+        # restoring an already-finished one leaves it closed. The shared
+        # re-derivation handles both directions.
+        await VesselActivityService._maybe_auto_complete_operation_from_legs(activity.operation_id, current_user, db)
+
+        await db.commit()
+        return await VesselActivityService._get_leg_or_404(leg.id, db)
+
+    @staticmethod
+    async def uncancel(
+        activity_id: UUID, data: UncancelRequest, current_user: User, db: AsyncSession,
+    ) -> VesselActivity:
+        VesselActivityService._assert_bm(current_user, "a cancelled vessel activity")
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        if activity.status != VesselActivityStatus.cancelled:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="This vessel activity is not cancelled")
+
+        # Restore to whichever point it had actually reached rather than
+        # blindly to `pending` — completing, cancelling, then restoring must
+        # not silently rewind real progress.
+        restored = (
+            VesselActivityStatus.completed if activity.complete_system_at
+            else VesselActivityStatus.active if activity.commence_system_at
+            else VesselActivityStatus.pending
+        )
+        changes = {"status": {"from": VesselActivityStatus.cancelled.value, "to": restored.value}}
+        activity.status = restored
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="UNCANCEL_VESSEL_ACTIVITY",
+            entity_type="vessel_activity", entity_id=activity.id,
+            changes=changes, reason=data.reason,
         ))
         await db.commit()
         activity = await VesselActivityService._get_or_404(activity.id, db)

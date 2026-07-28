@@ -43,6 +43,19 @@ class VesselActivityComplete(BaseModel):
 
 class VesselActivityPatchInitialRob(BaseModel):
     initial_rob_mt: Decimal
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to correct the initial ROB")
+        return v
 
 
 # ── Per-vessel stage flow ────────────────────────────────────────────────────
@@ -83,6 +96,10 @@ class VesselActivityCommentOut(BaseModel):
     recorded_by: UUID
     recorded_by_name: Optional[str] = None
     recorded_at: datetime
+    edited_at: Optional[datetime] = None
+    edited_by: Optional[UUID] = None
+    edited_by_name: Optional[str] = None
+    edit_reason: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -97,6 +114,9 @@ class RecordHseRequest(BaseModel):
     checklist: List[HseChecklistItem]
     result: AuditResult
     notes: Optional[str] = None
+    # Required only when overwriting an already-recorded checklist (a BM
+    # correction) — enforced in the service, which alone can see prior state.
+    reason: Optional[str] = None
 
     @field_validator("notes", mode="before")
     @classmethod
@@ -165,6 +185,68 @@ class AddVesselActivityUpdateRequest(BaseModel):
         return v
 
 
+class EditVesselActivityUpdateRequest(BaseModel):
+    """BM-only correction of a posted update. Records are never deleted —
+    only corrected, with the edit marked on the row itself."""
+    content: Optional[str] = None
+    reason: str
+    # a replacement image is a separate multipart part handled by the router
+
+    @field_validator("content", "reason", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to correct an update")
+        return v
+
+
+class EditVesselActivityCommentRequest(BaseModel):
+    """BM-only correction of a posted comment."""
+    comment: str
+    reason: str
+
+    @field_validator("comment", "reason", mode="before")
+    @classmethod
+    def strip_strings(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("comment")
+    @classmethod
+    def comment_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Comment cannot be empty")
+        return v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to correct a comment")
+        return v
+
+
+class UncancelRequest(BaseModel):
+    """Restoring a cancelled activity or receiving-vessel leg."""
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to restore a cancelled record")
+        return v
+
+
 class VesselActivityUpdateOut(BaseModel):
     id: UUID
     vessel_activity_id: UUID
@@ -174,6 +256,10 @@ class VesselActivityUpdateOut(BaseModel):
     recorded_by: UUID
     recorded_by_name: Optional[str] = None
     recorded_at: datetime
+    edited_at: Optional[datetime] = None
+    edited_by: Optional[UUID] = None
+    edited_by_name: Optional[str] = None
+    edit_reason: Optional[str] = None
 
     model_config = {"from_attributes": True}
 
@@ -233,11 +319,16 @@ class RecordLoadingReceiptRequest(BaseModel):
 
 
 class VesselActivityCorrectTimingRequest(BaseModel):
-    """BM-only correction of any of the four commence/complete timings."""
+    """BM-only correction of the loading record — both timestamp pairs, both
+    descriptions, and the activity notes. Every field is optional; only what
+    is sent is changed. `reason` is always required and audit-logged."""
     commence_system_at: Optional[datetime] = None
     commence_user_at: Optional[datetime] = None
+    commence_description: Optional[str] = None
     complete_system_at: Optional[datetime] = None
     complete_user_at: Optional[datetime] = None
+    complete_description: Optional[str] = None
+    notes: Optional[str] = None
     reason: str
 
     @field_validator("reason", mode="before")
