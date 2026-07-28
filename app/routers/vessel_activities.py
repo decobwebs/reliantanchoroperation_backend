@@ -30,7 +30,17 @@ from app.schemas.vessel_activity import (
     VesselActivityCompleteVesselOpRequest,
     VesselActivityUpdateOut,
     RecordVesselOperationQuantitiesRequest,
+    RecordLoadingReceiptRequest,
     VesselActivityCorrectTimingRequest,
+)
+from app.schemas.vessel_activity_leg import (
+    VesselActivityLegCreate,
+    AdvanceLegStageRequest,
+    RecordLegHseRequest,
+    RecordLegQuantitiesRequest,
+    CorrectLegTimingRequest,
+    CancelLegRequest,
+    VesselActivityLegOut,
 )
 from app.services.vessel_activity_service import VesselActivityService
 
@@ -359,6 +369,115 @@ async def correct_vessel_operation_timing(
     current_user: User = _bm_only,
     db: AsyncSession = Depends(get_db),
 ):
-    """Correct any of the four commence/complete timings. Bunker Manager only, reason required."""
+    """Correct any of the four commence/complete (Loading Commenced/
+    Completed) timings. Bunker Manager only, reason required."""
     activity = await VesselActivityService.correct_timing(activity_id, body, current_user, db)
     return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="Timing corrected")
+
+
+@router.post("/vessel-activities/{activity_id}/loading-receipt", response_model=StandardResponse)
+async def record_loading_receipt(
+    activity_id: UUID,
+    body: RecordLoadingReceiptRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """One-time Received Quantity + quality readings at the loading step.
+    Resubmission requires Bunker Manager + reason."""
+    activity = await VesselActivityService.record_loading_receipt(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="Loading receipt recorded")
+
+
+# ── Receiving-vessel legs — one per receiving vessel, added at any point ───────
+# Delivery repeats per receiving vessel: each leg runs its own Cast Off ->
+# Alongside -> Discharge Commenced -> Discharge Completed sequence.
+
+@router.post("/vessel-activities/{activity_id}/legs", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
+async def add_vessel_activity_leg(
+    activity_id: UUID,
+    body: VesselActivityLegCreate,
+    current_user: User = _bm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Register a new receiving vessel. Bunker Manager only — the master
+    spec names the BM specifically for this action. No gate on Loading
+    Completed; can be added at any point, including after other legs on
+    the same activity already finished."""
+    leg = await VesselActivityService.add_leg(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityLegOut.model_validate(leg).model_dump(), message="Receiving vessel added")
+
+
+@router.get("/vessel-activities/{activity_id}/legs", response_model=StandardResponse)
+async def list_vessel_activity_legs(
+    activity_id: UUID,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    legs = await VesselActivityService.list_legs(activity_id, db)
+    items = [VesselActivityLegOut.model_validate(leg).model_dump() for leg in legs]
+    return StandardResponse.ok(data=items, message="Receiving vessels retrieved")
+
+
+@router.post("/vessel-activity-legs/{leg_id}/advance-stage", response_model=StandardResponse)
+async def advance_leg_stage(
+    leg_id: UUID,
+    body: AdvanceLegStageRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Log (or correct) a leg stage timestamp — cast_off through
+    discharge_completed. Both the system instant and the caller's stated
+    time are stored, never one overwriting the other."""
+    leg = await VesselActivityService.advance_leg_stage(leg_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityLegOut.model_validate(leg).model_dump(), message=f"Leg stage '{body.stage.value}' recorded")
+
+
+@router.post("/vessel-activity-legs/{leg_id}/hse", response_model=StandardResponse)
+async def record_leg_hse(
+    leg_id: UUID,
+    body: RecordLegHseRequest,
+    current_user: User = _hse_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Non-blocking HSE safety checklist for one receiving-vessel leg."""
+    leg = await VesselActivityService.record_leg_hse(leg_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityLegOut.model_validate(leg).model_dump(), message="HSE checklist recorded")
+
+
+@router.post("/vessel-activity-legs/{leg_id}/quantities", response_model=StandardResponse)
+async def record_leg_quantities(
+    leg_id: UUID,
+    body: RecordLegQuantitiesRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Discharge quantity + quality readings for one receiving-vessel leg,
+    recorded once that leg reaches Discharge Completed. Updates the
+    vessel's ROB ledger (subtracts). Resubmission requires Bunker Manager
+    + reason."""
+    leg = await VesselActivityService.record_leg_quantities(leg_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityLegOut.model_validate(leg).model_dump(), message="Quantities recorded")
+
+
+@router.patch("/vessel-activity-legs/{leg_id}/timing", response_model=StandardResponse)
+async def correct_leg_timing(
+    leg_id: UUID,
+    body: CorrectLegTimingRequest,
+    current_user: User = _bm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Correct any of the eight leg stage timings. Bunker Manager only, reason required."""
+    leg = await VesselActivityService.correct_leg_timing(leg_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityLegOut.model_validate(leg).model_dump(), message="Leg timing corrected")
+
+
+@router.post("/vessel-activity-legs/{leg_id}/cancel", response_model=StandardResponse)
+async def cancel_leg(
+    leg_id: UUID,
+    body: CancelLegRequest,
+    current_user: User = _bm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Cancel a receiving-vessel leg. Bunker Manager only, reason required."""
+    leg = await VesselActivityService.cancel_leg(leg_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityLegOut.model_validate(leg).model_dump(), message="Receiving vessel cancelled")

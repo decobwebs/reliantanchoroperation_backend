@@ -162,6 +162,7 @@ class AddVesselActivityUpdateRequest(BaseModel):
 class VesselActivityUpdateOut(BaseModel):
     id: UUID
     vessel_activity_id: UUID
+    leg_id: Optional[UUID] = None
     content: str
     image_url: Optional[str] = None
     recorded_by: UUID
@@ -189,6 +190,35 @@ class RecordVesselOperationQuantitiesRequest(BaseModel):
         return v.strip() if v else v
 
     @field_validator("discharged_quantity_litres", "received_quantity_litres", "density", "vcf", "gov")
+    @classmethod
+    def positive_values(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError("Must be greater than zero")
+        return v
+
+
+class RecordLoadingReceiptRequest(BaseModel):
+    """One-time Received Quantity + quality readings at the loading step —
+    part of the six-stage + multiple-receiving-vessel-legs flow. Loading
+    happens once per barge run; per-leg discharge readings are recorded
+    separately (see app/schemas/vessel_activity_leg.py)."""
+    received_quantity_litres: Decimal
+    density: Decimal
+    temperature_before_loading: Decimal
+    temperature_after_loading: Decimal
+    vcf: Decimal
+    gov: Decimal
+    description: Optional[str] = None
+    # Required only on a resubmission (BM correction) — enforced in the
+    # service, not here, since the schema alone can't see prior state.
+    reason: Optional[str] = None
+
+    @field_validator("description", "reason", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("received_quantity_litres", "density", "temperature_before_loading", "temperature_after_loading", "vcf", "gov")
     @classmethod
     def positive_values(cls, v: Decimal) -> Decimal:
         if v <= 0:
@@ -289,5 +319,27 @@ class VesselActivityOut(BaseModel):
     quantity_recorded_at: Optional[datetime] = None
     quantity_description: Optional[str] = None
 
+    # ── Loading Received Quantity — one-time, six-stage + legs flow ──
+    loading_received_quantity_litres: Optional[Decimal] = None
+    loading_density: Optional[Decimal] = None
+    loading_temperature_before_loading: Optional[Decimal] = None
+    loading_temperature_after_loading: Optional[Decimal] = None
+    loading_vcf: Optional[Decimal] = None
+    loading_gov: Optional[Decimal] = None
+    loading_gsv: Optional[Decimal] = None
+    loading_mt_vacuum: Optional[Decimal] = None
+    loading_quantity_recorded_at: Optional[datetime] = None
+    loading_quantity_description: Optional[str] = None
+
     comments: List[VesselActivityCommentOut] = []
     updates: List[VesselActivityUpdateOut] = []
+    legs: List["VesselActivityLegOut"] = []
+
+
+# Resolves the "VesselActivityLegOut" forward ref above. Imported at the
+# bottom (not the top) because vessel_activity_leg.py imports
+# HseChecklistItem from this module — a top-of-file import here would be
+# circular. By this point HseChecklistItem already exists in this
+# module's namespace, so the circular import resolves cleanly.
+from app.schemas.vessel_activity_leg import VesselActivityLegOut  # noqa: E402
+VesselActivityOut.model_rebuild()

@@ -8,11 +8,11 @@ from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
-from app.models.bdn import BDN, VesselActivity
+from app.models.bdn import BDN, VesselActivity, VesselActivityLeg
 from app.models.operation import Operation, OperationStatusHistory
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.models.enums import UserRole, BdnStatus, OperationStatus, VesselActivityStatus, VesselStage, OperationType
+from app.models.enums import UserRole, BdnStatus, OperationStatus, VesselActivityStatus, VesselStage, VesselLegStage, OperationType
 from app.schemas.vessel_bdn import VesselBdnCreate, VesselBdnUpdate
 from app.services.notification_service import notify
 from app.services.audit_diff import capture_diff
@@ -38,6 +38,13 @@ async def _get_vessel_activity_or_404(vessel_activity_id: UUID, db: AsyncSession
     if not activity:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vessel activity not found")
     return activity
+
+
+async def _get_vessel_activity_leg_or_404(leg_id: UUID, db: AsyncSession) -> VesselActivityLeg:
+    leg = await db.get(VesselActivityLeg, leg_id)
+    if not leg:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Receiving-vessel leg not found")
+    return leg
 
 
 async def _transition_operation(
@@ -218,6 +225,134 @@ class VesselBdnService:
         return bdn
 
     @staticmethod
+    async def create_vessel_bdn_for_leg(leg_id: UUID, data: VesselBdnCreate, current_user: User, db: AsyncSession) -> BDN:
+        """One Vessel BDN per receiving-vessel leg — the six-stage +
+        multiple-receiving-vessel-legs flow's analogue of create_vessel_bdn.
+        Every field is still manually entered, nothing prefilled; the
+        system's own comparison snapshot below is independently computed
+        from the leg (and its parent activity's loading receipt)."""
+        leg = await _get_vessel_activity_leg_or_404(leg_id, db)
+        activity = await _get_vessel_activity_or_404(leg.vessel_activity_id, db)
+        operation = await _get_operation_or_404(activity.operation_id, db)
+
+        if leg.stage != VesselLegStage.discharge_completed:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Cannot submit a Vessel BDN — this receiving vessel has not reached Discharge Completed yet "
+                       f"(current stage: {leg.stage.value if leg.stage else 'not started'})",
+            )
+
+        # One active BDN per leg — scoped one level narrower than the
+        # per-vessel-run uniqueness check above, since multiple legs now
+        # legitimately share one vessel_activity_id.
+        existing_result = await db.execute(
+            select(BDN.id).where(
+                and_(
+                    BDN.vessel_leg_id == leg_id,
+                    BDN.status.in_([BdnStatus.pending, BdnStatus.approved]),
+                )
+            )
+        )
+        if existing_result.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A Vessel BDN is already pending or approved for this receiving vessel",
+            )
+
+        # Independently computed system snapshot for the BM's comparison.
+        # Received Quantity maps to the BDN's loaded-quantity analogue here
+        # (it is not blank) — loading happens once on the parent activity,
+        # discharge happens independently per leg.
+        system_product_type = None
+        system_quantity_loaded = activity.loading_received_quantity_litres
+        system_quantity_discharged = leg.quantity_discharged_litres
+        system_commenced_at = leg.stage_discharge_commenced_system_at
+        system_completed_at = leg.stage_discharge_completed_system_at
+
+        bdn_number = await generate_bdn_number(db)
+
+        bdn = BDN(
+            bdn_number=bdn_number,
+            operation_id=operation.id,
+            vessel_id=activity.vessel_id,
+            vessel_activity_id=activity.id,
+            vessel_leg_id=leg.id,
+            generated_by=current_user.id,
+            status=BdnStatus.pending,
+            # Legacy required columns — kept populated for backward compat.
+            quantity_delivered_mt=data.quantity_discharged_litres,
+            delivery_date=data.discharge_completed_at,
+            company_name=data.company_name,
+            product_type=data.product_type,
+            discharge_location=data.discharge_location,
+            receiving_vessel=data.receiving_vessel,
+            quantity_loaded_litres=data.quantity_loaded_litres,
+            quantity_discharged_litres=data.quantity_discharged_litres,
+            variance_litres=data.quantity_loaded_litres - data.quantity_discharged_litres,
+            density=data.density,
+            temperature_before_loading=data.temperature_before_loading,
+            temperature_after_loading=data.temperature_after_loading,
+            vcf=data.vcf,
+            gov=data.gov,
+            gsv=data.gsv,
+            mt_vacuum=data.mt_vacuum,
+            discharge_commenced_at=data.discharge_commenced_at,
+            discharge_completed_at=data.discharge_completed_at,
+            discharge_completion_date=data.discharge_completion_date,
+            system_product_type=system_product_type,
+            system_quantity_loaded_litres=system_quantity_loaded,
+            system_quantity_discharged_litres=system_quantity_discharged,
+            system_discharge_commenced_at=system_commenced_at,
+            system_discharge_completed_at=system_completed_at,
+            notes=data.notes,
+        )
+        db.add(bdn)
+        await db.flush()
+
+        if operation.status != OperationStatus.bdn_pending:
+            await _transition_operation(operation, OperationStatus.bdn_pending, current_user, db, reason="Vessel BDN submitted")
+
+        recipients_result = await db.execute(
+            select(User).where(User.role.in_([UserRole.bunker_manager, UserRole.finance_manager]))
+        )
+        for recipient in recipients_result.scalars().all():
+            await notify(
+                db=db, user_id=recipient.id, type_="bdn_ready",
+                title="Vessel BDN Ready for Review",
+                message=f"Vessel BDN {bdn_number} for operation {operation.operation_number} "
+                        f"(receiving vessel {leg.receiving_vessel_name}) is ready for review",
+                priority="high" if recipient.role == UserRole.bunker_manager else "normal",
+                operation_id=operation.id, action_url=f"/operations/{operation.id}",
+                channels=["in_app", "whatsapp"], wa_template="bdn_submitted",
+                wa_kwargs={"operation_number": operation.operation_number, "bdn_number": bdn_number, "quantity": str(data.quantity_discharged_litres)},
+            )
+            try:
+                await email_vessel_bdn_submitted(
+                    to_email=recipient.email, recipient_name=recipient.full_name,
+                    operation_number=operation.operation_number, vessel_bdn_number=bdn_number,
+                    quantity_loaded=str(data.quantity_loaded_litres), quantity_discharged=str(data.quantity_discharged_litres),
+                )
+            except Exception as exc:
+                logger.warning("create_vessel_bdn_for_leg: email failed for %s: %s", recipient.email, exc)
+
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=operation.id, action="CREATE_VESSEL_BDN",
+            entity_type="vessel_bdn", entity_id=bdn.id,
+            changes={
+                "bdn_number": bdn_number, "vessel_leg_id": str(leg_id),
+                "quantity_loaded_litres": str(data.quantity_loaded_litres),
+                "quantity_discharged_litres": str(data.quantity_discharged_litres),
+                "system_quantity_loaded_litres": str(system_quantity_loaded) if system_quantity_loaded is not None else None,
+                "system_quantity_discharged_litres": str(system_quantity_discharged) if system_quantity_discharged is not None else None,
+            },
+        ))
+
+        await db.flush()
+        await db.refresh(bdn)
+        bdn._generated_by_name = current_user.full_name
+        return bdn
+
+    @staticmethod
     async def get_vessel_bdn(bdn_id: UUID, db: AsyncSession) -> BDN:
         result = await db.execute(
             select(BDN).where(BDN.id == bdn_id).options(selectinload(BDN.generator))
@@ -255,8 +390,42 @@ class VesselBdnService:
 
     @staticmethod
     async def _approval_progress(operation_id: UUID, db: AsyncSession) -> tuple[int, int]:
-        """(total vessel runs, vessel runs with an approved BDN) — cancelled
-        runs don't count toward the total."""
+        """(total runs, runs with an approved BDN) — cancelled runs don't
+        count toward the total. Vessel-only operations count receiving-
+        vessel legs (each leg submits its own BDN); everything else counts
+        VesselActivity rows exactly as before."""
+        operation = await db.get(Operation, operation_id)
+        if operation and operation.type == OperationType.vessel_only:
+            total_result = await db.execute(
+                select(func.count()).select_from(VesselActivityLeg).join(
+                    VesselActivity, VesselActivityLeg.vessel_activity_id == VesselActivity.id
+                ).where(
+                    and_(
+                        VesselActivity.operation_id == operation_id,
+                        VesselActivity.status != VesselActivityStatus.cancelled,
+                        VesselActivityLeg.cancelled_at.is_(None),
+                    )
+                )
+            )
+            total = total_result.scalar() or 0
+
+            approved_result = await db.execute(
+                select(func.count(func.distinct(BDN.vessel_leg_id))).select_from(BDN).join(
+                    VesselActivityLeg, BDN.vessel_leg_id == VesselActivityLeg.id
+                ).join(
+                    VesselActivity, VesselActivityLeg.vessel_activity_id == VesselActivity.id
+                ).where(
+                    and_(
+                        VesselActivity.operation_id == operation_id,
+                        VesselActivity.status != VesselActivityStatus.cancelled,
+                        VesselActivityLeg.cancelled_at.is_(None),
+                        BDN.status == BdnStatus.approved,
+                    )
+                )
+            )
+            approved = approved_result.scalar() or 0
+            return total, approved
+
         total_result = await db.execute(
             select(func.count()).select_from(VesselActivity).where(
                 and_(VesselActivity.operation_id == operation_id, VesselActivity.status != VesselActivityStatus.cancelled)

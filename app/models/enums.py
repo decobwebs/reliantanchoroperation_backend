@@ -200,6 +200,18 @@ class VesselStage(str, enum.Enum):
     discharge_completed = "discharge_completed"
 
 
+class VesselLegStage(str, enum.Enum):
+    """Delivery-leg stage sequence for a single receiving vessel under the
+    vessel-only Loading -> [many] Receiving Vessel legs flow. Deliberately
+    separate from VesselStage (full_operation's 6-value enum) — a leg's
+    stage must never accept outbound/hse_check/etc., and this enum must
+    never be affected by future edits to VesselStage."""
+    cast_off = "cast_off"
+    alongside = "alongside"
+    discharge_commenced = "discharge_commenced"
+    discharge_completed = "discharge_completed"
+
+
 class InvoiceStatus(str, enum.Enum):
     draft = "draft"
     sent = "sent"

@@ -91,6 +91,7 @@ class VesselBdnOut(BaseModel):
     operation_id: UUID
     vessel_id: UUID
     vessel_activity_id: Optional[UUID] = None
+    vessel_leg_id: Optional[UUID] = None
     generated_by: UUID
     generated_by_name: Optional[str] = None
     reviewed_by: Optional[UUID] = None

@@ -7,7 +7,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
-from app.models.enums import RobEntryType, BdnStatus, VesselActivityStatus, VesselStage, AuditResult
+from app.models.enums import RobEntryType, BdnStatus, VesselActivityStatus, VesselStage, VesselLegStage, AuditResult
 
 
 class RobEntry(Base):
@@ -57,6 +57,10 @@ class BDN(Base):
     operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=False)
     vessel_id = Column(UUID(as_uuid=True), ForeignKey("vessels.id"), nullable=False)
     vessel_activity_id = Column(UUID(as_uuid=True), ForeignKey("vessel_activities.id"), nullable=True)
+    # Vessel-only, one-BDN-per-receiving-vessel flow — set alongside
+    # vessel_activity_id (which still points at the parent loading run) so
+    # existing operation_id-scoped BDN queries need no change.
+    vessel_leg_id = Column(UUID(as_uuid=True), ForeignKey("vessel_activity_legs.id"), nullable=True)
     generated_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     reviewed_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     status = Column(SAEnum(BdnStatus, name="bdn_status"), default=BdnStatus.pending, nullable=False)
@@ -100,6 +104,7 @@ class BDN(Base):
     operation = relationship("Operation", back_populates="bdns")
     vessel = relationship("Vessel", back_populates="bdns")
     vessel_activity = relationship("VesselActivity", foreign_keys=[vessel_activity_id])
+    vessel_leg = relationship("VesselActivityLeg", foreign_keys=[vessel_leg_id])
     generator = relationship("User", foreign_keys=[generated_by])
     reviewer = relationship("User", foreign_keys=[reviewed_by])
     invoices = relationship("Invoice", back_populates="bdn")
@@ -213,26 +218,50 @@ class VesselActivity(Base):
     gsv = Column(Numeric(14, 2), nullable=True)
     mt_vacuum = Column(Numeric(12, 3), nullable=True)
 
-    # ── Vessel-only commence/complete flow — additive, independent of both
-    # `status`/`started_at`/`completed_at` (the old ROB-session flow) and
-    # `stage`/`stage_*_at` (the full_operation 6-stage flow) above. Every
-    # pair below always stores BOTH the server-captured instant and the
-    # caller's own stated time — never one overwriting the other.
+    # ── Vessel-only Loading Commenced/Completed — additive, independent of
+    # both `status`/`started_at`/`completed_at` (the old ROB-session flow)
+    # and `stage`/`stage_*_at` (the full_operation 6-stage flow) above.
+    # Every pair below always stores BOTH the server-captured instant and
+    # the caller's own stated time — never one overwriting the other.
+    # Reused as-is for "Loading Commenced"/"Loading Completed" in the
+    # six-stage + multiple-receiving-vessel-legs rebuild — loading happens
+    # exactly once per barge run, same cardinality as commence/complete
+    # always had, so no new columns were needed for this part.
     commence_system_at = Column(DateTime(timezone=True), nullable=True)
     commence_user_at = Column(DateTime(timezone=True), nullable=True)
     commence_description = Column(Text, nullable=True)
     complete_system_at = Column(DateTime(timezone=True), nullable=True)
     complete_user_at = Column(DateTime(timezone=True), nullable=True)
 
-    # ── Discharge & Received Quantity — vessel-only's simpler operational
-    # note (litres), recorded after Complete Vessel Operation. Distinct from
-    # the gov/vcf/gsv/mt_vacuum arithmetic above, which is also captured
-    # here for vessel-only specifically so the litres->tonnes conversion
-    # needed to keep the vessel's ROB gauge updating is possible.
+    # ── Superseded — these four (migration 039) held the vessel-only
+    # flow's single-shot discharge/received figures back when one
+    # VesselActivity meant one delivery. The six-stage + multi-leg rebuild
+    # (migration 041) splits this: received quantity now lives in the
+    # loading_* columns below (loading happens once), and discharged
+    # quantity now lives per-leg on VesselActivityLeg (delivery repeats
+    # per receiving vessel). Left in place, never dropped, but dead for
+    # any row created after migration 041.
     discharged_quantity_litres = Column(Numeric(14, 2), nullable=True)
     received_quantity_litres = Column(Numeric(14, 2), nullable=True)
     quantity_recorded_at = Column(DateTime(timezone=True), nullable=True)
     quantity_description = Column(Text, nullable=True)
+
+    # ── Loading Received Quantity — the one-time intake reading, taken
+    # once loading is complete. Deliberately separate columns from the
+    # gov/vcf/gsv/mt_vacuum/density block above (full_operation's, written
+    # only by record_discharge_quantities) and from VesselActivityLeg's own
+    # per-leg discharge readings below — three independent writers, three
+    # independent column sets, no shared-column ambiguity.
+    loading_received_quantity_litres = Column(Numeric(14, 2), nullable=True)
+    loading_density = Column(Numeric(8, 4), nullable=True)
+    loading_temperature_before_loading = Column(Numeric(6, 2), nullable=True)
+    loading_temperature_after_loading = Column(Numeric(6, 2), nullable=True)
+    loading_vcf = Column(Numeric(8, 4), nullable=True)
+    loading_gov = Column(Numeric(14, 2), nullable=True)
+    loading_gsv = Column(Numeric(14, 2), nullable=True)         # computed = gov*vcf
+    loading_mt_vacuum = Column(Numeric(12, 3), nullable=True)   # computed = gsv*density
+    loading_quantity_recorded_at = Column(DateTime(timezone=True), nullable=True)
+    loading_quantity_description = Column(Text, nullable=True)
 
     # Relationships
     operation = relationship("Operation", back_populates="vessel_activities")
@@ -240,6 +269,7 @@ class VesselActivity(Base):
     assignee = relationship("User", foreign_keys=[assigned_to])
     assigner = relationship("User", foreign_keys=[assigned_by])
     hse_conductor = relationship("User", foreign_keys=[hse_conducted_by])
+    legs = relationship("VesselActivityLeg", back_populates="vessel_activity", cascade="all, delete-orphan", order_by="VesselActivityLeg.created_at")
     comments = relationship("VesselActivityComment", back_populates="vessel_activity", cascade="all, delete-orphan", order_by="VesselActivityComment.recorded_at")
     updates = relationship("VesselActivityUpdate", back_populates="vessel_activity", cascade="all, delete-orphan", order_by="VesselActivityUpdate.recorded_at.desc()")
 
@@ -274,6 +304,10 @@ class VesselActivityUpdate(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     vessel_activity_id = Column(UUID(as_uuid=True), ForeignKey("vessel_activities.id", ondelete="CASCADE"), nullable=False)
+    # Optional tag to a specific receiving-vessel leg — null means a
+    # general/loading-level update, same nullable-tag convention as
+    # VesselActivityComment.stage above.
+    leg_id = Column(UUID(as_uuid=True), ForeignKey("vessel_activity_legs.id", ondelete="CASCADE"), nullable=True)
     content = Column(Text, nullable=False)
     image_url = Column(Text, nullable=True)
     recorded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
@@ -281,4 +315,66 @@ class VesselActivityUpdate(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
     vessel_activity = relationship("VesselActivity", back_populates="updates")
+    leg = relationship("VesselActivityLeg", foreign_keys=[leg_id])
     recorder = relationship("User", foreign_keys=[recorded_by])
+
+
+class VesselActivityLeg(Base):
+    """One receiving vessel's independent delivery leg under a vessel-only
+    VesselActivity (the loading/barge run). Loading happens once (tracked
+    on the parent VesselActivity's commence/complete pair + loading_*
+    columns); delivery repeats per receiving vessel, each leg running its
+    own Cast Off -> Alongside -> Discharge Commenced -> Discharge Completed
+    sequence, own HSE record, own discharge readings, and own Vessel BDN.
+    The BM can add a leg at any point, including after other legs on the
+    same activity have already reached Discharge Completed."""
+    __tablename__ = "vessel_activity_legs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    vessel_activity_id = Column(UUID(as_uuid=True), ForeignKey("vessel_activities.id", ondelete="CASCADE"), nullable=False)
+    receiving_vessel_name = Column(String(200), nullable=False)
+    imo_number = Column(String(20), nullable=True)
+    eta_at = Column(DateTime(timezone=True), nullable=True)   # single working value, updated in place by BM/MM
+    created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    # ── 4-stage dual timestamp tracker — every stage stores BOTH the
+    # server-captured instant and the caller's own stated time, same
+    # convention as the parent activity's commence/complete pair.
+    stage = Column(SAEnum(VesselLegStage, name="vessel_leg_stage"), nullable=True)
+    stage_cast_off_system_at = Column(DateTime(timezone=True), nullable=True)
+    stage_cast_off_user_at = Column(DateTime(timezone=True), nullable=True)
+    stage_alongside_system_at = Column(DateTime(timezone=True), nullable=True)
+    stage_alongside_user_at = Column(DateTime(timezone=True), nullable=True)
+    stage_discharge_commenced_system_at = Column(DateTime(timezone=True), nullable=True)
+    stage_discharge_commenced_user_at = Column(DateTime(timezone=True), nullable=True)
+    stage_discharge_completed_system_at = Column(DateTime(timezone=True), nullable=True)
+    stage_discharge_completed_user_at = Column(DateTime(timezone=True), nullable=True)
+
+    # ── Per-leg HSE — a fresh safety check for each ship-to-ship
+    # encounter, non-blocking (a failed item never blocks progress).
+    hse_checklist = Column(JSONB, default=list, nullable=False)
+    hse_result = Column(SAEnum(AuditResult, name="audit_result"), nullable=True)
+    hse_conducted_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    hse_conducted_at = Column(DateTime(timezone=True), nullable=True)
+    hse_notes = Column(Text, nullable=True)
+
+    # ── Per-leg discharge & quality readings — same field names/units as
+    # VesselBdn for consistency. gsv/mt_vacuum are system-computed.
+    quantity_discharged_litres = Column(Numeric(14, 2), nullable=True)
+    density = Column(Numeric(8, 4), nullable=True)
+    temperature_before_loading = Column(Numeric(6, 2), nullable=True)
+    temperature_after_loading = Column(Numeric(6, 2), nullable=True)
+    vcf = Column(Numeric(8, 4), nullable=True)
+    gov = Column(Numeric(14, 2), nullable=True)
+    gsv = Column(Numeric(14, 2), nullable=True)          # computed = gov*vcf
+    mt_vacuum = Column(Numeric(12, 3), nullable=True)    # computed = gsv*density
+    quantity_recorded_at = Column(DateTime(timezone=True), nullable=True)
+    quantity_description = Column(Text, nullable=True)
+
+    cancelled_at = Column(DateTime(timezone=True), nullable=True)
+    cancelled_reason = Column(Text, nullable=True)
+
+    vessel_activity = relationship("VesselActivity", back_populates="legs")
+    creator = relationship("User", foreign_keys=[created_by])
+    hse_conductor = relationship("User", foreign_keys=[hse_conducted_by])

@@ -40,6 +40,29 @@ async def create_vessel_bdn(
     )
 
 
+@router.post(
+    "/vessel-activity-legs/{leg_id}/bdn",
+    response_model=StandardResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_vessel_bdn_for_leg(
+    leg_id: UUID,
+    body: VesselBdnCreate,
+    current_user: User = _submit_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Submit a Vessel BDN for one receiving-vessel leg. Ops Supervisor or
+    Marine Manager. Every field manually entered and required — nothing is
+    prefilled."""
+    bdn = await VesselBdnService.create_vessel_bdn_for_leg(leg_id, body, current_user, db)
+    data = VesselBdnOut.model_validate(bdn).model_dump()
+    data["generated_by_name"] = getattr(bdn, "_generated_by_name", None)
+    return StandardResponse.ok(
+        data=data,
+        message=f"Vessel BDN {bdn.bdn_number} submitted — awaiting Bunker Manager approval",
+    )
+
+
 @router.get("/operations/{operation_id}/vessel-bdns", response_model=StandardResponse)
 async def list_vessel_bdns(
     operation_id: UUID,
