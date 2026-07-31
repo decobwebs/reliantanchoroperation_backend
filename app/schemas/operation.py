@@ -277,6 +277,9 @@ class OperationFilters(BaseModel):
     client_id: Optional[UUID] = None
     date_from: Optional[datetime] = None
     date_to: Optional[datetime] = None
+    # Free-text match over operation_number and notes. Purely additive: callers
+    # that omit it get exactly the previous behaviour.
+    search: Optional[str] = None
     page: int = 1
     per_page: int = 20
 

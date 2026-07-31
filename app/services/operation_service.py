@@ -329,6 +329,19 @@ class OperationService:
             conditions.append(Operation.created_at >= filters.date_from)
         if filters.date_to:
             conditions.append(Operation.created_at <= filters.date_to)
+        if filters.search and filters.search.strip():
+            # Escape LIKE wildcards so a literal % or _ in the term can't widen
+            # the match. Applied on top of the role scoping above, never instead.
+            term = filters.search.strip()
+            for ch in ("\\", "%", "_"):
+                term = term.replace(ch, f"\\{ch}")
+            pattern = f"%{term}%"
+            conditions.append(
+                or_(
+                    Operation.operation_number.ilike(pattern, escape="\\"),
+                    Operation.notes.ilike(pattern, escape="\\"),
+                )
+            )
 
         count_result = await db.execute(select(func.count()).select_from(Operation).where(and_(*conditions)))
         total = count_result.scalar_one()

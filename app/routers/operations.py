@@ -32,6 +32,7 @@ async def list_operations(
     client_id: Optional[UUID] = Query(None),
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
+    search: Optional[str] = Query(None, max_length=200),
     page: int = Query(1, ge=1),
     per_page: int = Query(20, ge=1, le=100),
     current_user: User = Depends(get_current_user),
@@ -47,6 +48,7 @@ async def list_operations(
         client_id=client_id,
         date_from=date_from,
         date_to=date_to,
+        search=search,
         page=page,
         per_page=per_page,
     )
