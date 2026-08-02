@@ -44,6 +44,7 @@ from app.schemas.vessel_activity_leg import (
     CancelLegRequest,
     EditVesselActivityLegRequest,
     VesselActivityLegOut,
+    SetLegAdhocClientRequest,
 )
 from app.services.vessel_activity_service import VesselActivityService
 
@@ -522,6 +523,20 @@ async def edit_vessel_activity_comment(
     """Correct a posted comment."""
     comment = await VesselActivityService.edit_comment(comment_id, body, current_user, db)
     return StandardResponse.ok(data=VesselActivityCommentOut.model_validate(comment).model_dump(), message="Comment corrected")
+
+
+@router.patch("/vessel-activity-legs/{leg_id}/adhoc-client", response_model=StandardResponse)
+async def set_leg_adhoc_client(
+    leg_id: UUID,
+    body: SetLegAdhocClientRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Capture an ad-hoc client contact for a receiving vessel with no
+    registered client account. Capture only — no send action in this
+    build. Only settable once the leg has reached Cast Off."""
+    leg = await VesselActivityService.set_leg_adhoc_client(leg_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityLegOut.model_validate(leg).model_dump(), message="Client contact saved")
 
 
 @router.patch("/vessel-activity-legs/{leg_id}", response_model=StandardResponse)

@@ -137,6 +137,26 @@ class CorrectLegTimingRequest(BaseModel):
         return v
 
 
+class SetLegAdhocClientRequest(BaseModel):
+    """Capture-only ad-hoc client contact for a receiving vessel with no
+    registered client account — editable only once the leg has reached
+    cast_off (decision 6). No send action wired to this in this build."""
+    adhoc_client_email: str
+    adhoc_client_name: Optional[str] = None
+
+    @field_validator("adhoc_client_email", "adhoc_client_name", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("adhoc_client_email")
+    @classmethod
+    def email_required(cls, v: str) -> str:
+        if not v or "@" not in v:
+            raise ValueError("A valid email is required")
+        return v
+
+
 class CancelLegRequest(BaseModel):
     reason: str
 
@@ -194,3 +214,6 @@ class VesselActivityLegOut(BaseModel):
 
     cancelled_at: Optional[datetime] = None
     cancelled_reason: Optional[str] = None
+
+    adhoc_client_email: Optional[str] = None
+    adhoc_client_name: Optional[str] = None

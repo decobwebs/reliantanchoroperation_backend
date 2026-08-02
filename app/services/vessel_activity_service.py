@@ -48,6 +48,7 @@ from app.schemas.vessel_activity_leg import (
     CorrectLegTimingRequest,
     CancelLegRequest,
     EditVesselActivityLegRequest,
+    SetLegAdhocClientRequest,
 )
 from app.services.audit_diff import capture_diff
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
@@ -1698,6 +1699,36 @@ class VesselActivityService:
             user_id=current_user.id, operation_id=activity.operation_id, action="EDIT_VESSEL_ACTIVITY_LEG",
             entity_type="vessel_activity_leg", entity_id=leg.id,
             changes=changes, reason=data.reason,
+        ))
+        await db.commit()
+        return await VesselActivityService._get_leg_or_404(leg.id, db)
+
+    @staticmethod
+    async def set_leg_adhoc_client(
+        leg_id: UUID, data: SetLegAdhocClientRequest, current_user: User, db: AsyncSession,
+    ) -> VesselActivityLeg:
+        """Capture-only ad-hoc client contact (decision 6) — for a receiving
+        vessel with no registered client account. No send action wired to
+        this in this build. Settable only once the leg has reached cast_off,
+        matching the JourneyStepper's own gate for that leg."""
+        leg = await VesselActivityService._get_leg_or_404(leg_id, db)
+        activity = await VesselActivityService._get_or_404(leg.vessel_activity_id, db)
+        await VesselActivityService._assert_vessel_only(activity, db)
+
+        if leg.stage is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This receiving vessel hasn't reached Cast Off yet",
+            )
+
+        leg.adhoc_client_email = data.adhoc_client_email
+        leg.adhoc_client_name = data.adhoc_client_name
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id, action="SET_LEG_ADHOC_CLIENT",
+            entity_type="vessel_activity_leg", entity_id=leg.id,
+            changes={"adhoc_client_email": data.adhoc_client_email, "adhoc_client_name": data.adhoc_client_name},
         ))
         await db.commit()
         return await VesselActivityService._get_leg_or_404(leg.id, db)

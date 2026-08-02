@@ -48,3 +48,38 @@ class ClientNotificationLog(Base):
     operation = relationship("Operation", foreign_keys=[operation_id])
     client = relationship("User", foreign_keys=[client_id])
     sender = relationship("User", foreign_keys=[sent_by])
+
+
+class OperationNotification(Base):
+    """One BM-triggered General notification, sent to a picked set of
+    internal staff — a second, wholly separate channel from the automatic
+    role-scoped notifications (finance on finance events, task-assignees on
+    task events), sharing nothing with them but the base notify() helper."""
+    __tablename__ = "operation_notifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=False)
+    sent_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    title = Column(String(200), nullable=False)
+    message = Column(Text, nullable=False)
+    sent_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    operation = relationship("Operation", foreign_keys=[operation_id])
+    sender = relationship("User", foreign_keys=[sent_by])
+    recipients = relationship("OperationNotificationRecipient", back_populates="operation_notification")
+
+
+class OperationNotificationRecipient(Base):
+    """One row per recipient of a General notification — mirrors
+    ClientNotificationLog's one-row-per-recipient shape. notification_id
+    links to the recipient's own in-app Notification row so it appears in
+    their normal feed like anything else."""
+    __tablename__ = "operation_notification_recipients"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    operation_notification_id = Column(UUID(as_uuid=True), ForeignKey("operation_notifications.id"), nullable=False)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    notification_id = Column(UUID(as_uuid=True), ForeignKey("notifications.id"), nullable=True)
+
+    operation_notification = relationship("OperationNotification", back_populates="recipients")
+    user = relationship("User", foreign_keys=[user_id])

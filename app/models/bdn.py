@@ -421,6 +421,12 @@ class VesselActivityLeg(Base):
     cancelled_at = Column(DateTime(timezone=True), nullable=True)
     cancelled_reason = Column(Text, nullable=True)
 
+    # ── Ad-hoc client contact (migration 050) — for a receiving vessel with
+    # no registered client account. Capture only in this build; settable
+    # server-side only once `stage is not None` (cast_off reached).
+    adhoc_client_email = Column(String(255), nullable=True)
+    adhoc_client_name = Column(String(200), nullable=True)
+
     vessel_activity = relationship("VesselActivity", back_populates="legs")
     creator = relationship("User", foreign_keys=[created_by])
     hse_conductor = relationship("User", foreign_keys=[hse_conducted_by])

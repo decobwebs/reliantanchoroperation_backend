@@ -8,7 +8,7 @@ from app.models.user import User
 from app.models.vessel import Vessel
 from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, TruckFeedback, OperationProduct
 from app.models.truck import Truck, TruckOperation, TruckSafetyAudit, TruckBdn
-from app.models.bdn import RobEntry, BDN
+from app.models.bdn import RobEntry, BDN, TerminalLoadingReceipt
 from app.models.finance import PFI, Payment, Invoice, PfiAllocation
 from app.models.document import Document
 from app.models.notification import Notification
@@ -17,7 +17,7 @@ from app.models.licence import (
     Ppdl, PpdlProduct, Bfl, NavalClearance, NavalClearanceDrawdown,
     NavalClearanceLoadingLocation, NavalClearanceVessel,
 )
-from app.models.notification_log import VesselEta, ClientNotificationLog
+from app.models.notification_log import VesselEta, ClientNotificationLog, OperationNotification, OperationNotificationRecipient
 
 __all__ = [
     "UserRole", "OperationType", "OperationStatus", "TaskType", "TaskStatus",
@@ -27,11 +27,11 @@ __all__ = [
     "User", "Vessel",
     "Operation", "OperationStatusHistory", "TaskAssignment", "TruckFeedback", "OperationProduct",
     "Truck", "TruckOperation", "TruckSafetyAudit", "TruckBdn",
-    "RobEntry", "BDN",
+    "RobEntry", "BDN", "TerminalLoadingReceipt",
     "PFI", "Payment", "Invoice", "PfiAllocation",
     "Document", "Notification",
     "AuditLog", "DelegationAssignment", "ClientMilestone", "SystemSetting",
     "Ppdl", "PpdlProduct", "Bfl", "NavalClearance", "NavalClearanceDrawdown",
     "NavalClearanceLoadingLocation", "NavalClearanceVessel",
-    "VesselEta", "ClientNotificationLog",
+    "VesselEta", "ClientNotificationLog", "OperationNotification", "OperationNotificationRecipient",
 ]
