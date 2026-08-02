@@ -18,7 +18,7 @@ router = APIRouter(tags=["BDNs"])
 async def list_bdns(
     operation_id: UUID,
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.marine_manager, UserRole.finance_manager)
+        require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent, UserRole.finance_manager)
     ),
     db: AsyncSession = Depends(get_db),
 ):
@@ -36,7 +36,7 @@ async def list_bdns(
 async def create_bdn(
     operation_id: UUID,
     body: BdnCreate,
-    current_user: User = Depends(require_roles(UserRole.marine_manager)),
+    current_user: User = Depends(require_roles(UserRole.cargo_superintendent)),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a BDN for an operation. Marine Manager only."""
@@ -54,7 +54,7 @@ async def create_bdn(
 async def get_bdn(
     bdn_id: UUID,
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.marine_manager)
+        require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent)
     ),
     db: AsyncSession = Depends(get_db),
 ):

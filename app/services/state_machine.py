@@ -145,12 +145,12 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     # System-triggered when the last non-cancelled VesselActivity reaches
     # discharge_completed (see VesselActivityService.advance_stage) — manual
     # roles kept as an escape hatch if one vessel run stalls.
-    "vessel_operations->pending_completion": ["system", "bunker_manager", "marine_manager", "ops_supervisor"],
+    "vessel_operations->pending_completion": ["system", "bunker_manager", "cargo_superintendent", "ops_supervisor"],
     # System-triggered when BM adds another vessel after others have already
     # finished (see VesselActivityService.create) — keeps operation status
     # honest without a manual fixup step. BM manual path kept too.
     "pending_completion->vessel_operations": ["system", "bunker_manager"],
-    "vessel_operations->bdn_pending":   ["bunker_manager", "marine_manager"],
+    "vessel_operations->bdn_pending":   ["bunker_manager", "cargo_superintendent"],
     "bdn_pending->bdn_approved":        ["bunker_manager"],
     "bdn_pending->vessel_operations":   ["bunker_manager"],
     "bdn_approved->vessel_operations":  ["system", "bunker_manager"],
@@ -164,7 +164,7 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     # vessel/full (Vessel BDN, submitted by OS/Marine) — an approved BDN is
     # required before the operation can complete (see truck_bdn_service.py /
     # vessel_bdn_service.py).
-    "pending_completion->bdn_pending":  ["ops_supervisor", "logistics_officer", "marine_manager", "bunker_manager"],
+    "pending_completion->bdn_pending":  ["ops_supervisor", "logistics_officer", "cargo_superintendent", "bunker_manager"],
     "bdn_pending->pending_completion":  ["bunker_manager"],            # reject path — resubmit
 
     # ── Invoicing (legacy compat only — invoicing no longer gates completion) ──

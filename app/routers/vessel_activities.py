@@ -50,10 +50,10 @@ from app.services.vessel_activity_service import VesselActivityService
 router = APIRouter(tags=["Vessel Activities"])
 
 _bm_only = Depends(require_roles(UserRole.bunker_manager))
-_marine_only = Depends(require_roles(UserRole.marine_manager))
-_bm_marine = Depends(require_roles(UserRole.bunker_manager, UserRole.marine_manager))
+_marine_only = Depends(require_roles(UserRole.cargo_superintendent))
+_bm_marine = Depends(require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent))
 # Stage progression: spec assigns this to "Marine / Ops Supervisor".
-_stage_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.marine_manager, UserRole.ops_supervisor))
+_stage_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent, UserRole.ops_supervisor))
 # HSE: no dedicated Safety Officer role exists yet — folds into Ops
 # Supervisor + BM for now (widening to a real role later is additive).
 _hse_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.ops_supervisor))

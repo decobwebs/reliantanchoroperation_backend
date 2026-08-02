@@ -23,7 +23,7 @@ async def list_vessels(
         require_roles(
             UserRole.bunker_manager,
             UserRole.ops_supervisor,
-            UserRole.marine_manager,
+            UserRole.cargo_superintendent,
             UserRole.logistics_officer,
         )
     ),
@@ -119,7 +119,7 @@ async def get_vessel(
         require_roles(
             UserRole.bunker_manager,
             UserRole.ops_supervisor,
-            UserRole.marine_manager,
+            UserRole.cargo_superintendent,
         )
     ),
     db: AsyncSession = Depends(get_db),
@@ -138,7 +138,7 @@ async def get_cargo_ledger(
         require_roles(
             UserRole.bunker_manager,
             UserRole.ops_supervisor,
-            UserRole.marine_manager,
+            UserRole.cargo_superintendent,
         )
     ),
     db: AsyncSession = Depends(get_db),
@@ -154,7 +154,7 @@ async def get_vessel_bdns(
     current_user: User = Depends(
         require_roles(
             UserRole.bunker_manager,
-            UserRole.marine_manager,
+            UserRole.cargo_superintendent,
             UserRole.ops_supervisor,
         )
     ),

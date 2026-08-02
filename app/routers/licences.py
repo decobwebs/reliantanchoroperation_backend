@@ -20,7 +20,7 @@ from app.services.eta_service import EtaService
 
 router = APIRouter(tags=["Licences"])
 
-_marine_bm = Depends(require_roles(UserRole.marine_manager, UserRole.bunker_manager))
+_marine_bm = Depends(require_roles(UserRole.cargo_superintendent, UserRole.marine_operator, UserRole.bunker_manager))
 _bm_only = Depends(require_roles(UserRole.bunker_manager))
 
 

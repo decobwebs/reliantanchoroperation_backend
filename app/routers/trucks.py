@@ -82,10 +82,10 @@ async def create_truck(
 @router.post("/trucks/waivers/bulk", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
 async def bulk_add_waivers(
     body: TruckWaiverBulkCreate,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.marine_operator)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Bulk-add waiver/regulatory truck numbers up front, before sourcing starts. Bunker Manager (admin) only."""
+    """Bulk-add waiver/regulatory truck numbers up front, before sourcing starts."""
     result = await TruckService.bulk_add_waivers(body.waybill_truck_numbers, current_user, db)
     return StandardResponse.ok(
         data=result,
@@ -98,7 +98,10 @@ async def bulk_add_waivers(
 async def list_waivers(
     status_filter: Optional[TruckWaiverStatus] = Query(None, alias="status"),
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor)
+        require_roles(
+            UserRole.bunker_manager, UserRole.logistics_officer,
+            UserRole.ops_supervisor, UserRole.marine_operator,
+        )
     ),
     db: AsyncSession = Depends(get_db),
 ):
@@ -112,10 +115,10 @@ async def list_waivers(
 async def update_waiver(
     waiver_id: UUID,
     body: TruckWaiverUpdate,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.marine_operator)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Edit a waiver number's value. Requires a reason. Bunker Manager only."""
+    """Edit a waiver number's value. Requires a reason."""
     waiver = await TruckService.update_waiver(waiver_id, body, current_user, db)
     return StandardResponse.ok(
         data=TruckWaiverOut.model_validate(waiver).model_dump(),
@@ -127,7 +130,7 @@ async def update_waiver(
 async def delete_waiver(
     waiver_id: UUID,
     body: TruckWaiverDeleteRequest,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.marine_operator)),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove a waiver number. Requires a reason. Blocked once linked to a truck. Bunker Manager only."""

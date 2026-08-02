@@ -13,8 +13,8 @@ from app.services.vessel_bdn_service import VesselBdnService
 
 router = APIRouter(tags=["Vessel BDNs"])
 
-_submit_roles = Depends(require_roles(UserRole.ops_supervisor, UserRole.marine_manager))
-_review_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.marine_manager, UserRole.ops_supervisor, UserRole.finance_manager))
+_submit_roles = Depends(require_roles(UserRole.ops_supervisor, UserRole.cargo_superintendent))
+_review_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent, UserRole.ops_supervisor, UserRole.finance_manager))
 _bm_only = Depends(require_roles(UserRole.bunker_manager))
 
 

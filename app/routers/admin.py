@@ -58,7 +58,7 @@ async def list_users(
 
 @router.get("/clients", response_model=StandardResponse)
 async def list_clients(
-    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager, UserRole.marine_manager)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager, UserRole.cargo_superintendent)),
     db: AsyncSession = Depends(get_db),
 ):
     """List active client users — for billing pickers (e.g. standalone invoices)

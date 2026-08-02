@@ -205,7 +205,7 @@ class VesselActivityService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Vessel not found or inactive")
 
         assignee = await db.get(User, data.assigned_to)
-        if not assignee or assignee.role != UserRole.marine_manager:
+        if not assignee or assignee.role != UserRole.cargo_superintendent:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Assigned user must be a Marine Manager",

@@ -301,7 +301,7 @@ async def create_vessel_discharge_event(
     operation_id: UUID,
     body: VesselDischargeEventCreate,
     request: Request,
-    current_user: User = Depends(require_roles(UserRole.ops_supervisor, UserRole.marine_manager, UserRole.bunker_manager)),
+    current_user: User = Depends(require_roles(UserRole.ops_supervisor, UserRole.cargo_superintendent, UserRole.bunker_manager)),
     db: AsyncSession = Depends(get_db),
 ):
     """Record a vessel-to-vessel (or vessel-to-client) discharge event."""

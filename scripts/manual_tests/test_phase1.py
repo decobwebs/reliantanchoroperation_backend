@@ -136,7 +136,7 @@ print("\n=== 3. ENSURE ALL TEAM USERS ===")
 ensure_user("lo", LO_EMAIL, "logistics_officer")
 ensure_user("fm", FM_EMAIL, "finance_manager")
 ensure_user("os", OS_EMAIL, "ops_supervisor")
-ensure_user("mm", MM_EMAIL, "marine_manager")
+ensure_user("mm", MM_EMAIL, "cargo_superintendent")
 
 # Client via public register (or login if exists)
 if not ensure_login("client", CLI_EMAIL):

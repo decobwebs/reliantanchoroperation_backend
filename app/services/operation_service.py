@@ -209,7 +209,7 @@ class OperationService:
                         for a in data.assignments:
                             if a.task_type in (TaskType.vessel_operations, TaskType.marine_discharge):
                                 candidate = await db.get(User, a.assigned_to)
-                                if candidate and candidate.role == UserRole.marine_manager:
+                                if candidate and candidate.role == UserRole.cargo_superintendent:
                                     mm_user = candidate
                                     mm_notes = a.instructions
                                     break
@@ -304,8 +304,12 @@ class OperationService:
             conditions.append(Operation.client_id == current_user.id)
         elif current_user.role in (UserRole.bunker_manager, UserRole.finance_manager):
             pass  # see all operations
-        elif current_user.role == UserRole.marine_manager:
-            # Marine managers see operations via vessel activity assignments (not tasks)
+        elif current_user.role in (UserRole.cargo_superintendent, UserRole.marine_operator):
+            # Cargo Superintendents see operations via vessel activity assignments
+            # (not tasks). Marine Operators aren't operation-scoped via tasks or
+            # vessel activities either (their BFL/Naval Clearance/PPDL/waiver work
+            # isn't tied to a specific operation) — default them to the same
+            # branch for now; narrow this if a more specific rule is needed later.
             task_op_ids_stmt = select(TaskAssignment.operation_id).where(TaskAssignment.assigned_to == current_user.id)
             va_op_ids_stmt = select(VesselActivity.operation_id).where(VesselActivity.assigned_to == current_user.id)
             task_result = await db.execute(task_op_ids_stmt)

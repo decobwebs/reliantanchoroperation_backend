@@ -10,9 +10,12 @@ class UserRole(str, enum.Enum):
     bunker_manager = "bunker_manager"
     ops_supervisor = "ops_supervisor"
     logistics_officer = "logistics_officer"
-    marine_manager = "marine_manager"
+    cargo_superintendent = "cargo_superintendent"
     finance_manager = "finance_manager"
     client = "client"
+    # On-the-ground cargo/marine assistant — manages BFL, Naval Clearance,
+    # PPDL, and truck waivers, additively alongside cargo_superintendent.
+    marine_operator = "marine_operator"
 
 
 class OperationType(str, enum.Enum):
