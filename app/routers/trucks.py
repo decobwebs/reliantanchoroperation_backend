@@ -107,7 +107,7 @@ async def list_waivers(
 ):
     """List waiver numbers, optionally filtered by status (e.g. ?status=available)."""
     waivers = await TruckService.list_waivers(db, status_filter=status_filter)
-    items = [TruckWaiverOut.model_validate(w).model_dump() for w in waivers]
+    items = [w.model_dump() for w in waivers]
     return StandardResponse.ok(data=items, message="Waiver numbers retrieved")
 
 

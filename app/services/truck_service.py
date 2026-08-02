@@ -24,6 +24,7 @@ from app.schemas.truck import (
     TruckSafetyAuditCreate,
     TruckWaybillLinkRequest,
     TruckWaiverUpdate,
+    TruckWaiverOut, LinkedTruckSummary,
 )
 from app.services.notification_service import notify
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
@@ -227,35 +228,59 @@ class TruckService:
     async def list_waivers(
         db: AsyncSession,
         status_filter: Optional[TruckWaiverStatus] = None,
-    ) -> List[TruckWaiver]:
+    ) -> List[TruckWaiverOut]:
         stmt = select(TruckWaiver).order_by(TruckWaiver.created_at.desc())
-        if status_filter:
-            stmt = stmt.where(TruckWaiver.status == status_filter)
         result = await db.execute(stmt)
         waivers = list(result.scalars().all())
 
-        # Attach linked-truck info (at most one truck_op per waiver today — no
-        # release/reuse mechanism exists, so "current link" is also "full history").
-        waiver_ids = [w.id for w in waivers if w.status == TruckWaiverStatus.linked]
-        linked_by_waiver: Dict[Any, TruckOperation] = {}
-        if waiver_ids:
+        # Linked-truck info is one-to-many now (31 Jul 2026 decision — a waiver
+        # can cover multiple trucks at once), so `status` is no longer a stored
+        # gate: recompute it live from whichever non-cancelled truck ops still
+        # reference this waiver, same as `delete_waiver`'s live check below.
+        # Built as fresh TruckWaiverOut objects rather than mutated onto the
+        # ORM-tracked TruckWaiver rows — get_db() commits at the end of every
+        # request, so assigning a derived value onto a real mapped column
+        # (`status`) here would silently persist it as a side effect of a list
+        # read.
+        linked_by_waiver: Dict[Any, List[TruckOperation]] = {}
+        if waivers:
             to_result = await db.execute(
                 select(TruckOperation)
                 .options(selectinload(TruckOperation.truck), selectinload(TruckOperation.operation))
-                .where(TruckOperation.waiver_id.in_(waiver_ids))
+                .where(
+                    and_(
+                        TruckOperation.waiver_id.in_([w.id for w in waivers]),
+                        TruckOperation.status != TruckOpStatus.cancelled,
+                    )
+                )
             )
             for to in to_result.scalars().all():
-                linked_by_waiver[to.waiver_id] = to
+                linked_by_waiver.setdefault(to.waiver_id, []).append(to)
 
+        out: List[TruckWaiverOut] = []
         for w in waivers:
-            to = linked_by_waiver.get(w.id)
-            w.linked_truck_number = to.truck.truck_number if to and to.truck else None
-            w.linked_operation_id = to.operation_id if to else None
-            w.linked_operation_number = to.operation.operation_number if to and to.operation else None
-            w.linked_driver_name = to.driver_name if to else None
-            w.linked_at = to.waybill_linked_at if to else None
-
-        return waivers
+            links = linked_by_waiver.get(w.id, [])
+            derived_status = TruckWaiverStatus.linked if links else TruckWaiverStatus.available
+            if status_filter and derived_status != status_filter:
+                continue
+            out.append(TruckWaiverOut(
+                id=w.id,
+                waybill_truck_number=w.waybill_truck_number,
+                status=derived_status,
+                added_by=w.added_by,
+                created_at=w.created_at,
+                linked_trucks=[
+                    LinkedTruckSummary(
+                        truck_number=to.truck.truck_number if to.truck else "—",
+                        operation_id=to.operation_id,
+                        operation_number=to.operation.operation_number if to.operation else "—",
+                        driver_name=to.driver_name,
+                        linked_at=to.waybill_linked_at,
+                    )
+                    for to in links
+                ],
+            ))
+        return out
 
     @staticmethod
     async def _get_waiver_or_404(waiver_id: UUID, db: AsyncSession) -> TruckWaiver:
@@ -312,12 +337,21 @@ class TruckService:
         current_user: User,
         db: AsyncSession,
     ) -> None:
-        """BM removes a waiver number. Blocked once it's linked to a truck —
-        unlink it first (no unlink flow exists today; this is intentional,
-        matching the 'linked = permanent record' design)."""
+        """BM removes a waiver number. Blocked while it's actively linked to
+        any truck — checked live against TruckOperation, since a waiver can
+        now cover several trucks at once and TruckWaiver.status is no longer
+        authoritative (see list_waivers)."""
         waiver = await TruckService._get_waiver_or_404(waiver_id, db)
 
-        if waiver.status == TruckWaiverStatus.linked:
+        active_link = await db.execute(
+            select(TruckOperation.id).where(
+                and_(
+                    TruckOperation.waiver_id == waiver.id,
+                    TruckOperation.status != TruckOpStatus.cancelled,
+                )
+            ).limit(1)
+        )
+        if active_link.scalar_one_or_none() is not None:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="This waiver number is linked to a truck and cannot be deleted.",
@@ -361,14 +395,11 @@ class TruckService:
         waiver = waiver_result.scalar_one_or_none()
         if not waiver:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Waiver number not found")
-        # A waiver already linked to THIS truck_op is fine — editing driver/vendor/
-        # doc-number details after the initial link must not be blocked. Only a
-        # waiver linked elsewhere (or linked to a different truck_op) is a conflict.
-        if waiver.status != TruckWaiverStatus.available and truck_op.waiver_id != waiver.id:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Waiver number '{waiver.waybill_truck_number}' is already linked to another truck",
-            )
+        # 31 Jul 2026 decision: one waiver can cover multiple trucks at once —
+        # a waiver already linked elsewhere is no longer a conflict. (No status
+        # flip here either — TruckWaiver.status is no longer authoritative;
+        # TruckService.list_waivers derives "linked" live from active
+        # TruckOperation links instead.)
 
         truck_op.waiver_id = waiver.id
         truck_op.driver_name = data.driver_name
@@ -379,7 +410,6 @@ class TruckService:
             truck_op.waybill_number = data.waybill_number
         truck_op.waybill_linked_at = datetime.utcnow()
         truck_op.updated_at = datetime.utcnow()
-        waiver.status = TruckWaiverStatus.linked
 
         # Mirror onto the Truck row — see the same note in add_truck_to_operation.
         if truck_op.truck:

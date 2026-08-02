@@ -252,20 +252,29 @@ class TruckWaiverDeleteRequest(BaseModel):
         return v
 
 
+class LinkedTruckSummary(BaseModel):
+    """One truck currently linked to a waiver. A waiver can cover more than
+    one truck at once (31 Jul 2026 decision), so a waiver's links are a list,
+    not a single "current link"."""
+    truck_number: str
+    operation_id: UUID
+    operation_number: str
+    driver_name: Optional[str] = None
+    linked_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
 class TruckWaiverOut(BaseModel):
     id: UUID
     waybill_truck_number: str
+    # Derived live from non-cancelled truck-operation links, not the stored
+    # column — see TruckService.list_waivers. "linked" now means "has at
+    # least one active link", not "has ever been used".
     status: TruckWaiverStatus
     added_by: UUID
     created_at: datetime
-    # Populated when linked — the truck/operation/driver this waiver was paired
-    # with at waybill time. A waiver can only ever be linked once today (no
-    # release/reuse mechanism), so this doubles as the full history.
-    linked_truck_number: Optional[str] = None
-    linked_operation_id: Optional[UUID] = None
-    linked_operation_number: Optional[str] = None
-    linked_driver_name: Optional[str] = None
-    linked_at: Optional[datetime] = None
+    linked_trucks: List[LinkedTruckSummary] = []
 
     model_config = {"from_attributes": True}
 
