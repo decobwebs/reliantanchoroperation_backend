@@ -86,12 +86,21 @@ class BDN(Base):
     temperature_before_loading = Column(Numeric(6, 2), nullable=True)
     temperature_after_loading = Column(Numeric(6, 2), nullable=True)
     vcf = Column(Numeric(8, 4), nullable=True)
-    gov = Column(Numeric(14, 2), nullable=True)
-    gsv = Column(Numeric(14, 2), nullable=True)
-    mt_vacuum = Column(Numeric(12, 3), nullable=True)
+    # Discharging vessel's own readings — renamed from gov/gsv/mt_vacuum
+    # (migration 047) for symmetry with the received_* block below.
+    discharge_gov = Column(Numeric(14, 2), nullable=True)
+    discharge_gsv = Column(Numeric(14, 2), nullable=True)
+    discharge_mt_vacuum = Column(Numeric(12, 3), nullable=True)
     discharge_commenced_at = Column(DateTime(timezone=True), nullable=True)
     discharge_completed_at = Column(DateTime(timezone=True), nullable=True)
     discharge_completion_date = Column(Date, nullable=True)
+
+    # ── Receiving vessel's own independent readings (migration 047) —
+    # never derived from the discharge_* block above. Optional: new data
+    # that in-flight operations at rollout won't have.
+    received_gov = Column(Numeric(14, 2), nullable=True)
+    received_gsv = Column(Numeric(14, 2), nullable=True)
+    received_mt_vacuum = Column(Numeric(12, 3), nullable=True)
 
     # ── System-computed snapshot at submission — comparison only ──
     system_product_type = Column(String(100), nullable=True)
@@ -140,6 +149,27 @@ class VesselDischargeEvent(Base):
     destination_vessel = relationship("Vessel", foreign_keys=[destination_vessel_id], back_populates="discharge_events_as_dest")
     supervisor = relationship("User", foreign_keys=[supervisor_id])
     rob_entry = relationship("RobEntry", foreign_keys=[rob_entry_id])
+
+
+class TerminalLoadingReceipt(Base):
+    """A terminal-sourced loading intake reading (VesselSourceType.terminal
+    operations only) — quantity + GOV/GSV/MT, no density/temperature. Lean
+    counterpart to the truck flow's per-truck delivery figures; both feed
+    the same operation-level Total Loaded Quantity aggregate."""
+    __tablename__ = "terminal_loading_receipts"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=False)
+    quantity_litres = Column(Numeric(14, 2), nullable=False)
+    gov = Column(Numeric(14, 2), nullable=True)
+    gsv = Column(Numeric(14, 2), nullable=True)
+    mt_vacuum = Column(Numeric(12, 3), nullable=True)
+    description = Column(Text, nullable=True)
+    recorded_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    recorded_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    operation = relationship("Operation", back_populates="terminal_loading_receipts")
+    recorder = relationship("User", foreign_keys=[recorded_by])
 
 
 class VesselActivity(Base):

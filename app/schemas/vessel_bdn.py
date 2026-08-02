@@ -21,12 +21,18 @@ class VesselBdnCreate(BaseModel):
     temperature_before_loading: Decimal
     temperature_after_loading: Decimal
     vcf: Decimal
-    gov: Decimal
-    gsv: Decimal
-    mt_vacuum: Decimal
-    discharge_commenced_at: datetime
+    discharge_gov: Decimal
+    discharge_gsv: Decimal
+    discharge_mt_vacuum: Decimal
     discharge_completed_at: datetime
     discharge_completion_date: date
+    # Receiving vessel's independent readings — optional, since this is new
+    # data in-flight operations at rollout won't have. If any one of the
+    # three is given, all three should be for a meaningful comparison, but
+    # that's left to the submitter rather than hard-enforced here.
+    received_gov: Optional[Decimal] = None
+    received_gsv: Optional[Decimal] = None
+    received_mt_vacuum: Optional[Decimal] = None
     notes: Optional[str] = None
 
     @field_validator("company_name", "product_type", "discharge_location", "receiving_vessel", "notes", mode="before")
@@ -41,10 +47,17 @@ class VesselBdnCreate(BaseModel):
             raise ValueError("This field is required")
         return v
 
-    @field_validator("quantity_loaded_litres", "quantity_discharged_litres", "density", "gov", "gsv", "mt_vacuum", "vcf")
+    @field_validator("quantity_loaded_litres", "quantity_discharged_litres", "density", "discharge_gov", "discharge_gsv", "discharge_mt_vacuum", "vcf")
     @classmethod
     def positive_values(cls, v: Decimal) -> Decimal:
         if v <= 0:
+            raise ValueError("Must be greater than zero")
+        return v
+
+    @field_validator("received_gov", "received_gsv", "received_mt_vacuum")
+    @classmethod
+    def positive_if_given(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is not None and v <= 0:
             raise ValueError("Must be greater than zero")
         return v
 
@@ -63,12 +76,15 @@ class VesselBdnUpdate(BaseModel):
     temperature_before_loading: Optional[Decimal] = None
     temperature_after_loading: Optional[Decimal] = None
     vcf: Optional[Decimal] = None
-    gov: Optional[Decimal] = None
-    gsv: Optional[Decimal] = None
-    mt_vacuum: Optional[Decimal] = None
+    discharge_gov: Optional[Decimal] = None
+    discharge_gsv: Optional[Decimal] = None
+    discharge_mt_vacuum: Optional[Decimal] = None
     discharge_commenced_at: Optional[datetime] = None
     discharge_completed_at: Optional[datetime] = None
     discharge_completion_date: Optional[date] = None
+    received_gov: Optional[Decimal] = None
+    received_gsv: Optional[Decimal] = None
+    received_mt_vacuum: Optional[Decimal] = None
     notes: Optional[str] = None
     reason: str
 
@@ -107,12 +123,17 @@ class VesselBdnOut(BaseModel):
     temperature_before_loading: Decimal
     temperature_after_loading: Decimal
     vcf: Decimal
-    gov: Decimal
-    gsv: Decimal
-    mt_vacuum: Decimal
-    discharge_commenced_at: datetime
+    discharge_gov: Decimal
+    discharge_gsv: Decimal
+    discharge_mt_vacuum: Decimal
+    # No longer collected on submission (decision 4) — stays nullable for
+    # backward compat with rows created before this change.
+    discharge_commenced_at: Optional[datetime] = None
     discharge_completed_at: datetime
     discharge_completion_date: date
+    received_gov: Optional[Decimal] = None
+    received_gsv: Optional[Decimal] = None
+    received_mt_vacuum: Optional[Decimal] = None
     system_product_type: Optional[str] = None
     system_discharge_location: Optional[str] = None
     system_quantity_loaded_litres: Optional[Decimal] = None
