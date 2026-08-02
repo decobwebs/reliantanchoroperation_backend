@@ -22,13 +22,19 @@ class Base(DeclarativeBase):
     metadata = metadata
 
 
-# asyncpg with PgBouncer session pooler requires statement_cache_size=0
+# asyncpg with PgBouncer session pooler requires statement_cache_size=0.
+# Supabase's session-mode pooler caps this project at 15 total connections
+# — pool_size + max_overflow used to add up to exactly that ceiling per
+# worker process, leaving zero headroom for a second worker, a migration
+# run, or any other tool connecting at the same time (this is what caused
+# a live EMAXCONNSESSION outage). Sized down with headroom instead.
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.is_development,
     pool_pre_ping=True,
-    pool_size=5,
-    max_overflow=10,
+    pool_size=3,
+    max_overflow=5,
+    pool_timeout=10,
     connect_args={"statement_cache_size": 0},
 )
 
