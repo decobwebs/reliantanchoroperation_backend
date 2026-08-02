@@ -18,7 +18,7 @@ class Ppdl(Base):
     __tablename__ = "ppdls"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    ppdl_number = Column(String(30), unique=True, nullable=False)
+    ppdl_number = Column(String(100), unique=True, nullable=False)
     issue_date = Column(Date, nullable=False)
     expiry_date = Column(Date, nullable=False)
     is_current = Column(Boolean, default=False, nullable=False)
@@ -57,7 +57,7 @@ class Bfl(Base):
     __tablename__ = "bfls"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    bfl_number = Column(String(30), unique=True, nullable=False)
+    bfl_number = Column(String(100), unique=True, nullable=False)
     ppdl_id = Column(UUID(as_uuid=True), ForeignKey("ppdls.id"), nullable=False)
     product_type = Column(String(50), nullable=False)
     quantity_litres = Column(Numeric(14, 2), nullable=False)
@@ -81,7 +81,7 @@ class NavalClearance(Base):
     __tablename__ = "naval_clearances"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    clearance_number = Column(String(30), unique=True, nullable=False)
+    clearance_number = Column(String(100), unique=True, nullable=False)
     date_of_loading = Column(Date, nullable=False)
     expiry_date = Column(Date, nullable=False)
     document_url = Column(Text, nullable=True)
