@@ -144,6 +144,28 @@ class TransitionRequest(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class CloseOperationRequest(BaseModel):
+    """Transitions to completed, optionally capturing a ROB close-out for
+    operations with a vessel. actual_rob_mt is the BM's physical reading —
+    left blank if this operation has no vessel or the BM isn't ready to
+    record it yet (the transition itself still goes through)."""
+    actual_rob_mt: Optional[Decimal] = None
+    completion_notes: Optional[str] = None
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to close an operation")
+        return v
+
+
 class PauseRequest(BaseModel):
     reason: str
 
@@ -202,6 +224,10 @@ class OperationOut(BaseModel):
     paused_reason: Optional[str] = None
     completed_at: Optional[datetime] = None
     completion_notes: Optional[str] = None
+    closed_at: Optional[datetime] = None
+    expected_rob_mt: Optional[Decimal] = None
+    actual_rob_mt: Optional[Decimal] = None
+    rob_closed_by: Optional[UUID] = None
     currency: str
     vessel_id: Optional[UUID] = None
     naval_clearance_id: Optional[UUID] = None
@@ -216,6 +242,17 @@ class OperationOut(BaseModel):
     deleted_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+
+class OperationTotalsOut(BaseModel):
+    """The six BM totals for the Marine tab — each an independent figure,
+    never combined into a forced reconciliation (decision 12)."""
+    total_loaded_mt: Decimal
+    total_discharged_mt: Decimal
+    total_received_mt: Decimal
+    vessels_received: int
+    tts_variance_mt: Decimal
+    sts_variance_mt: Decimal
 
 
 class OperationDetailOut(OperationOut):

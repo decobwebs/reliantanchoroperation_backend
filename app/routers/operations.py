@@ -14,6 +14,7 @@ from app.schemas.operation import (
     CreateOperationRequest, UpdateOperationRequest, TransitionRequest,
     PauseRequest, ResumeRequest, OperationOut, StatusHistoryOut, OperationFilters,
     ReopenRequest, LinkNavalClearanceRequest, UnlinkNavalClearanceRequest, SetOperationColorRequest,
+    CloseOperationRequest, OperationTotalsOut,
 )
 from app.schemas.truck import VesselDischargeEventCreate, VesselDischargeEventOut
 from app.services.operation_service import OperationService
@@ -166,6 +167,35 @@ async def transition_operation(
         data=OperationOut.model_validate(operation).model_dump(),
         message=f"Operation transitioned to '{operation.status.value}'",
     )
+
+
+@router.post("/{operation_id}/close", response_model=StandardResponse)
+async def close_operation(
+    operation_id: UUID,
+    body: CloseOperationRequest,
+    request: Request,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Close an operation — transitions to completed, optionally capturing
+    a ROB close-out (Expected vs Actual, kept separate) when the operation
+    has a vessel. Bunker Manager only."""
+    meta = get_request_meta(request, current_user)
+    operation = await OperationService.close_operation(operation_id, body, current_user, db, meta)
+    return StandardResponse.ok(
+        data=OperationOut.model_validate(operation).model_dump(),
+        message=f"Operation {operation.operation_number} closed",
+    )
+
+
+@router.get("/{operation_id}/totals", response_model=StandardResponse)
+async def get_operation_totals(
+    operation_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    totals = await OperationService.get_operation_totals(operation_id, db)
+    return StandardResponse.ok(data=totals.model_dump())
 
 
 @router.post("/{operation_id}/pause", response_model=StandardResponse)

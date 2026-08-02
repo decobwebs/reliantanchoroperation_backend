@@ -1,5 +1,6 @@
 from typing import List, Optional, Tuple
 from datetime import datetime
+from decimal import Decimal
 from uuid import UUID
 import uuid
 
@@ -9,14 +10,15 @@ from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
 from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, OperationProduct
-from app.models.bdn import VesselActivity
+from app.models.bdn import VesselActivity, BDN, RobEntry, TerminalLoadingReceipt
 from app.models.vessel import Vessel
+from app.models.truck import TruckOperation
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.models.enums import OperationStatus, OperationType, UserRole, TaskType
+from app.models.enums import OperationStatus, OperationType, UserRole, TaskType, RobEntryType, BdnStatus, TruckOpStatus
 from app.schemas.operation import (
     CreateOperationRequest, UpdateOperationRequest, OperationFilters,
-    TransitionRequest, ReopenRequest,
+    TransitionRequest, ReopenRequest, CloseOperationRequest, OperationTotalsOut,
 )
 from app.schemas.pfi import PfiAllocationCreate
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
@@ -479,6 +481,155 @@ class OperationService:
         await db.flush()
         await db.refresh(operation, attribute_names=["products"])
         return operation
+
+    @staticmethod
+    async def close_operation(
+        operation_id: UUID,
+        data: CloseOperationRequest,
+        current_user: User,
+        db: AsyncSession,
+        request_meta: Optional[dict] = None,
+    ) -> Operation:
+        """Transitions an operation to completed, optionally capturing a ROB
+        close-out. Expected ROB is read off the vessel at close time; Actual
+        ROB is the BM's physical reading — the two are kept as separate
+        figures (decision 12), never forced to reconcile. Additive to
+        VesselActivityService.complete()'s existing per-activity ROB write,
+        not a replacement — that write still happens wherever it already
+        did; this is a second, operation-level snapshot."""
+        result = await db.execute(
+            select(Operation)
+            .options(selectinload(Operation.products))
+            .where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
+        )
+        operation = result.scalar_one_or_none()
+        if not operation:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+
+        try:
+            StateMachine.validate_transition(
+                operation.type, operation.status, OperationStatus.completed, acting_role(current_user)
+            )
+        except StateMachineError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+
+        from_status = operation.status
+        now = datetime.utcnow()
+        operation.status = OperationStatus.completed
+        operation.completed_at = now
+        operation.closed_at = now
+        operation.updated_at = now
+        if data.completion_notes:
+            operation.completion_notes = data.completion_notes
+
+        if operation.vessel_id:
+            vessel = await db.get(Vessel, operation.vessel_id)
+            if vessel:
+                operation.expected_rob_mt = vessel.current_rob_mt
+                if data.actual_rob_mt is not None:
+                    rob_before = vessel.current_rob_mt
+                    operation.actual_rob_mt = data.actual_rob_mt
+                    operation.rob_closed_by = current_user.id
+                    vessel.current_rob_mt = data.actual_rob_mt
+                    db.add(RobEntry(
+                        vessel_id=vessel.id,
+                        operation_id=operation.id,
+                        entry_type=RobEntryType.correction,
+                        quantity_mt=data.actual_rob_mt - rob_before,
+                        rob_before_mt=rob_before,
+                        rob_after_mt=data.actual_rob_mt,
+                        recorded_by=current_user.id,
+                        source_description=f"Operation {operation.operation_number} close-out",
+                        notes=data.reason,
+                    ))
+
+        _write_history(db, operation, from_status, OperationStatus.completed, current_user.id, data.reason)
+
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=operation.id,
+            action="CLOSE_OPERATION", entity_type="operation", entity_id=operation.id,
+            changes={
+                "from_status": from_status.value, "to_status": OperationStatus.completed.value,
+                "expected_rob_mt": str(operation.expected_rob_mt) if operation.expected_rob_mt is not None else None,
+                "actual_rob_mt": str(operation.actual_rob_mt) if operation.actual_rob_mt is not None else None,
+                "reason": data.reason,
+            },
+            ip_address=request_meta.get("ip") if request_meta else None,
+            user_agent=request_meta.get("user_agent") if request_meta else None,
+        ))
+
+        await create_milestone_if_applicable(db, operation.id, OperationStatus.completed)
+
+        from app.services.notification_service import notify
+        await _notify_assigned_users(
+            db, operation,
+            f"Operation {operation.operation_number} Completed",
+            f"Operation {operation.operation_number} has been completed and closed by the Bunker Manager.",
+            "approved", "normal",
+        )
+
+        await db.flush()
+        await db.refresh(operation, attribute_names=["products"])
+        return operation
+
+    @staticmethod
+    async def get_operation_totals(operation_id: UUID, db: AsyncSession) -> OperationTotalsOut:
+        """The six BM totals — read from the sources of truth already
+        established: truck deliveries + terminal receipts for Total Loaded
+        (same as the Phase E quantity-summary), approved Vessel BDNs for
+        Discharged/Received/vessel count (BM-verified, not raw system
+        readings), TruckOperation.variance_mt for TTS, and the Discharge vs
+        Received gap on approved BDNs for STS — system-only, informational,
+        never a gating figure (decision 12)."""
+        op_result = await db.execute(
+            select(Operation).where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
+        )
+        if not op_result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
+
+        truck_result = await db.execute(
+            select(func.coalesce(func.sum(TruckOperation.quantity_loaded_mt), 0)).where(
+                and_(TruckOperation.operation_id == operation_id, TruckOperation.status != TruckOpStatus.cancelled)
+            )
+        )
+        truck_loaded_mt = Decimal(truck_result.scalar() or 0)
+
+        terminal_result = await db.execute(
+            select(func.coalesce(func.sum(TerminalLoadingReceipt.mt_vacuum), 0)).where(
+                TerminalLoadingReceipt.operation_id == operation_id
+            )
+        )
+        terminal_loaded_mt = Decimal(terminal_result.scalar() or 0)
+
+        approved_bdns_result = await db.execute(
+            select(BDN.discharge_mt_vacuum, BDN.received_mt_vacuum).where(
+                and_(BDN.operation_id == operation_id, BDN.status == BdnStatus.approved)
+            )
+        )
+        approved_bdns = approved_bdns_result.all()
+        total_discharged_mt = sum((row.discharge_mt_vacuum or 0 for row in approved_bdns), Decimal(0))
+        total_received_mt = sum((row.received_mt_vacuum or 0 for row in approved_bdns if row.received_mt_vacuum is not None), Decimal(0))
+        sts_variance_mt = sum(
+            ((row.discharge_mt_vacuum or 0) - row.received_mt_vacuum for row in approved_bdns if row.received_mt_vacuum is not None),
+            Decimal(0),
+        )
+        vessels_received = len(approved_bdns)
+
+        tts_result = await db.execute(
+            select(func.coalesce(func.sum(TruckOperation.variance_mt), 0)).where(
+                and_(TruckOperation.operation_id == operation_id, TruckOperation.status != TruckOpStatus.cancelled)
+            )
+        )
+        tts_variance_mt = Decimal(tts_result.scalar() or 0)
+
+        return OperationTotalsOut(
+            total_loaded_mt=truck_loaded_mt + terminal_loaded_mt,
+            total_discharged_mt=total_discharged_mt,
+            total_received_mt=total_received_mt,
+            vessels_received=vessels_received,
+            tts_variance_mt=tts_variance_mt,
+            sts_variance_mt=sts_variance_mt,
+        )
 
     @staticmethod
     async def reopen_operation(

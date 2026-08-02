@@ -39,6 +39,13 @@ class Operation(Base):
     paused_reason = Column(Text, nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     completion_notes = Column(Text, nullable=True)
+    # ── Close-time ROB snapshot (decision 12) — Expected (read off the
+    # vessel at close) and Actual (BM-entered physical figure) are kept as
+    # separate figures, never forced to reconcile.
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    expected_rob_mt = Column(Numeric(12, 3), nullable=True)
+    actual_rob_mt = Column(Numeric(12, 3), nullable=True)
+    rob_closed_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     currency = Column(String(3), default="NGN", nullable=False)
     vessel_id = Column(UUID(as_uuid=True), ForeignKey("vessels.id"), nullable=True)
     # PFI-first flow: link to a pre-existing paid PFI
