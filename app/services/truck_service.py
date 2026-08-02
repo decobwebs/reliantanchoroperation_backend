@@ -558,6 +558,59 @@ class TruckService:
         await db.flush()
         return truck_op
 
+    @staticmethod
+    async def remove_truck_from_operation(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        reason: str,
+        current_user: User,
+        db: AsyncSession,
+    ) -> None:
+        """BM removes a truck from an operation — at any phase, including after
+        Logistics Officer feedback has been submitted, to keep the operation
+        clean of trucks that were nominated but never actually used. Blocked
+        once the truck has already recorded delivery/discharge data, so a
+        removal can never silently corrupt the operation's loaded/discharged
+        totals — correct or cancel that truck's own record first."""
+        await _get_operation_or_404(operation_id, db)
+
+        result = await db.execute(
+            select(TruckOperation).where(
+                and_(
+                    TruckOperation.id == truck_op_id,
+                    TruckOperation.operation_id == operation_id,
+                )
+            )
+        )
+        truck_op = result.scalar_one_or_none()
+        if not truck_op:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
+
+        if (
+            truck_op.quantity_discharged_mt is not None
+            or truck_op.discharge_end_at is not None
+            or truck_op.status in (TruckOpStatus.discharging, TruckOpStatus.completed)
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This truck has already recorded delivery data — correct or cancel its own record first.",
+            )
+
+        truck_op.status = TruckOpStatus.cancelled
+        truck_op.updated_at = datetime.utcnow()
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="REMOVE_TRUCK_FROM_OPERATION",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            changes={"truck_id": str(truck_op.truck_id)},
+            reason=reason,
+        ))
+
+        await db.flush()
+
     # ── Safety Audit ─────────────────────────────────────────────────────────
 
     @staticmethod

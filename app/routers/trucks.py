@@ -15,7 +15,7 @@ from app.schemas.common import StandardResponse
 from pydantic import BaseModel
 from app.schemas.truck import (
     TruckCreate, TruckUpdate, TruckOut,
-    TruckOperationCreate, TruckOperationUpdate, TruckOperationOut,
+    TruckOperationCreate, TruckOperationUpdate, TruckOperationRemoveRequest, TruckOperationOut,
     TruckFeedbackCreate, TruckFeedbackOut,
     TruckTransitRequest, TruckDischargeEndRequest,
     DischargeApproveRequest, DischargeEditRequest,
@@ -365,6 +365,26 @@ async def update_truck_operation(
         data=TruckOperationOut.model_validate(truck_op).model_dump(),
         message="Truck operation updated",
     )
+
+
+@router.delete(
+    "/operations/{operation_id}/trucks/{truck_op_id}",
+    response_model=StandardResponse,
+)
+async def remove_truck_from_operation(
+    operation_id: UUID,
+    truck_op_id: UUID,
+    body: TruckOperationRemoveRequest,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Remove a truck from an operation, at any phase. Requires a reason.
+    Blocked once the truck already has recorded delivery/discharge data.
+    Bunker Manager only."""
+    await TruckService.remove_truck_from_operation(
+        operation_id, truck_op_id, body.reason, current_user, db
+    )
+    return StandardResponse.ok(data=None, message="Truck removed from operation")
 
 
 @router.post(

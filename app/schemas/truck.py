@@ -297,6 +297,22 @@ class TruckOperationUpdate(BaseModel):
         return v.strip() if v else v
 
 
+class TruckOperationRemoveRequest(BaseModel):
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to remove a truck from an operation")
+        return v
+
+
 class TruckOperationOut(BaseModel):
     id: UUID
     operation_id: UUID
