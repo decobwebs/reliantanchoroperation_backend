@@ -108,9 +108,12 @@ async def _ppdl_product_balance(ppdl_id: UUID, product_type: str, db: AsyncSessi
     product = product_result.scalar_one_or_none()
     if not product:
         return Decimal("0")
+    # Only active BFLs hold allowance. A deactivated BFL that was never drawn
+    # against must give its litres back, otherwise a mistaken entry silently
+    # shrinks the PPDL allowance for good.
     drawn_result = await db.execute(
         select(func.coalesce(func.sum(Bfl.quantity_litres), 0)).where(
-            and_(Bfl.ppdl_id == ppdl_id, Bfl.product_type == product_type)
+            and_(Bfl.ppdl_id == ppdl_id, Bfl.product_type == product_type, Bfl.is_active == True)  # noqa: E712
         )
     )
     drawn = Decimal(drawn_result.scalar() or 0)
@@ -239,7 +242,11 @@ class BflService:
 
     @staticmethod
     async def create_bfl(data: BflCreate, current_user: User, db: AsyncSession) -> Bfl:
-        existing_result = await db.execute(select(Bfl).where(Bfl.bfl_number == data.bfl_number))
+        # Only a live BFL blocks the number. Deactivated rows are historical and
+        # must not stop the number being entered again after a mistake.
+        existing_result = await db.execute(
+            select(Bfl).where(and_(Bfl.bfl_number == data.bfl_number, Bfl.is_active == True))  # noqa: E712
+        )
         if existing_result.scalar_one_or_none():
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="A BFL with this number already exists")
 
@@ -330,7 +337,20 @@ class BflService:
         return await _attach_bfl_balance(bfl, db)
 
     @staticmethod
-    async def deactivate_bfl(bfl_id: UUID, reason: str, current_user: User, db: AsyncSession) -> Bfl:
+    async def delete_bfl(bfl_id: UUID, reason: str, current_user: User, db: AsyncSession) -> Bfl:
+        """Remove a BFL outright.
+
+        This used to only flip `is_active = False`, which left the row in place
+        and caused two problems: `bfl_number` is UNIQUE, so the number could
+        never be reused after a mistaken entry, and `_ppdl_product_balance`
+        sums every BFL regardless of `is_active`, so the deleted BFL kept
+        consuming its litres off the PPDL allowance forever.
+
+        A BFL with drawdowns against it is still refused below, so anything
+        reaching the delete has no Naval Clearance referencing it and no other
+        table points at `bfls` — the row is genuinely unreferenced. The audit
+        log keeps a full snapshot of what was removed.
+        """
         bfl = await _get_bfl_or_404(bfl_id, db)
         drawn_result = await db.execute(
             select(func.count()).select_from(NavalClearanceDrawdown).where(NavalClearanceDrawdown.bfl_id == bfl_id)
@@ -338,16 +358,36 @@ class BflService:
         if (drawn_result.scalar() or 0) > 0:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Cannot deactivate a BFL that has Naval Clearance drawdowns against it",
+                detail="Cannot delete a BFL that has Naval Clearance drawdowns against it",
             )
-        bfl.is_active = False
+
+        # Snapshot before the row goes — this is the only remaining record.
         db.add(AuditLog(
-            user_id=current_user.id, action="DEACTIVATE_BFL", entity_type="bfl",
-            entity_id=bfl.id, changes={"is_active": {"from": "True", "to": "False"}}, reason=reason,
+            user_id=current_user.id, action="DELETE_BFL", entity_type="bfl",
+            entity_id=bfl.id,
+            changes={
+                "bfl_number": bfl.bfl_number,
+                "ppdl_id": str(bfl.ppdl_id),
+                "product_type": bfl.product_type,
+                "quantity_litres": str(bfl.quantity_litres),
+                "vessel": bfl.vessel,
+                "expiry_date": bfl.expiry_date.isoformat() if bfl.expiry_date else None,
+            },
+            reason=reason,
         ))
         await db.flush()
-        await db.refresh(bfl)
-        return bfl
+
+        # Detach so the caller can still serialise the deleted row in the
+        # response; expunge first or SQLAlchemy re-queries a row that's gone.
+        removed = Bfl(
+            id=bfl.id, bfl_number=bfl.bfl_number, ppdl_id=bfl.ppdl_id,
+            product_type=bfl.product_type, quantity_litres=bfl.quantity_litres,
+            vessel=bfl.vessel, expiry_date=bfl.expiry_date, is_active=False,
+            created_by=bfl.created_by, created_at=bfl.created_at, updated_at=bfl.updated_at,
+        )
+        await db.delete(bfl)
+        await db.flush()
+        return removed
 
 
 class NavalClearanceService:

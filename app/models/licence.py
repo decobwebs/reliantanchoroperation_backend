@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from sqlalchemy import (
     Column, String, Boolean, Date, DateTime, Text, Numeric, Integer,
-    ForeignKey, UniqueConstraint
+    ForeignKey, UniqueConstraint, Index, text
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -55,9 +55,19 @@ class Bfl(Base):
     since a BFL draws exactly once, at creation, against exactly one
     product."""
     __tablename__ = "bfls"
+    __table_args__ = (
+        Index(
+            "uq_bfls_bfl_number_active",
+            "bfl_number",
+            unique=True,
+            postgresql_where=text("is_active"),
+        ),
+    )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    bfl_number = Column(String(100), unique=True, nullable=False)
+    # Unique only among active rows — see migration 053. A deactivated BFL keeps
+    # its number for history without blocking a corrected re-entry.
+    bfl_number = Column(String(100), nullable=False)
     ppdl_id = Column(UUID(as_uuid=True), ForeignKey("ppdls.id"), nullable=False)
     product_type = Column(String(50), nullable=False)
     quantity_litres = Column(Numeric(14, 2), nullable=False)

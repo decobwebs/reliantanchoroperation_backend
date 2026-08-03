@@ -125,14 +125,14 @@ async def update_bfl(
 
 
 @router.delete("/bfls/{bfl_id}", response_model=StandardResponse)
-async def deactivate_bfl(
+async def delete_bfl(
     bfl_id: UUID,
     body: BflDeactivateRequest,
     current_user: User = _marine_bm,
     db: AsyncSession = Depends(get_db),
 ):
-    bfl = await BflService.deactivate_bfl(bfl_id, body.reason, current_user, db)
-    return StandardResponse.ok(data=BflOut.model_validate(bfl).model_dump(), message="BFL deactivated")
+    bfl = await BflService.delete_bfl(bfl_id, body.reason, current_user, db)
+    return StandardResponse.ok(data=BflOut.model_validate(bfl).model_dump(), message="BFL deleted")
 
 
 # ── Naval Clearance ──────────────────────────────────────────────────────────
