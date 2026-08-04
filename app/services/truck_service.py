@@ -95,6 +95,79 @@ async def _transition_operation(
     db.add(history)
 
 
+def truck_op_is_live(truck_op: TruckOperation) -> bool:
+    """A truck currently counts as being on the operation.
+
+    THE rule for "is this truck already on the operation". A removed truck
+    keeps its row for traceability with status `cancelled`, so presence of a
+    row is not the test — this is. Anything deciding whether a truck can be
+    added, re-added, or offered for adding must go through this function and
+    `addable_truck_ids` below, never re-derive it. Two independent copies of
+    this rule (one here, one in the UI) is exactly what caused trucks to
+    disappear from Truck Reports twice.
+    """
+    return truck_op.status != TruckOpStatus.cancelled
+
+
+async def addable_truck_ids(operation_id: UUID, db: AsyncSession) -> List[UUID]:
+    """Approved trucks that can be added to the operation right now.
+
+    Server-side source of truth for the "Initialize Trucks" affordance, so the
+    UI renders a list rather than reimplementing the eligibility rule.
+
+      * live row            -> not addable (already on the operation)
+      * no row at all       -> addable (approved but never initialised)
+      * removed (cancelled) -> addable ONLY if a feedback round approved it
+                               again after the last removal; otherwise a truck
+                               taken off on purpose would be offered up again
+                               by the round that first approved it
+
+    Every approved feedback round counts, not just the newest — the LO can
+    submit readiness more than once and each round is approved separately.
+    """
+    fb_result = await db.execute(
+        select(TruckFeedback)
+        .where(
+            and_(
+                TruckFeedback.operation_id == operation_id,
+                TruckFeedback.status == FeedbackStatus.approved,
+            )
+        )
+        .order_by(TruckFeedback.submitted_at.asc())
+    )
+    # Latest approval time per truck, across every approved round.
+    approved_at: Dict[UUID, datetime] = {}
+    for fb in fb_result.scalars().all():
+        for raw in (fb.truck_ids or []):
+            try:
+                approved_at[UUID(str(raw))] = fb.submitted_at
+            except (ValueError, AttributeError, TypeError):
+                continue  # malformed id in legacy JSONB — skip, never crash the list
+
+    if not approved_at:
+        return []
+
+    ops_result = await db.execute(
+        select(TruckOperation).where(TruckOperation.operation_id == operation_id)
+    )
+    rows_by_truck: Dict[UUID, List[TruckOperation]] = {}
+    for row in ops_result.scalars().all():
+        rows_by_truck.setdefault(row.truck_id, []).append(row)
+
+    addable: List[UUID] = []
+    for truck_id, last_approved in approved_at.items():
+        rows = rows_by_truck.get(truck_id, [])
+        if any(truck_op_is_live(r) for r in rows):
+            continue
+        if not rows:
+            addable.append(truck_id)
+            continue
+        last_removed = max(r.updated_at for r in rows)
+        if last_approved and last_removed and last_approved > last_removed:
+            addable.append(truck_id)
+    return addable
+
+
 class TruckService:
 
     # ── Truck registry ────────────────────────────────────────────────────────
@@ -435,6 +508,22 @@ class TruckService:
     # ── Truck operations on a specific operation ──────────────────────────────
 
     @staticmethod
+    async def list_addable_trucks(
+        operation_id: UUID,
+        current_user: User,
+        db: AsyncSession,
+    ) -> List[Truck]:
+        """Approved trucks not yet on the operation, ready to be initialised."""
+        await _get_operation_or_404(operation_id, db)
+        ids = await addable_truck_ids(operation_id, db)
+        if not ids:
+            return []
+        result = await db.execute(select(Truck).where(Truck.id.in_(ids)))
+        by_id = {t.id: t for t in result.scalars().all()}
+        # Preserve nomination order rather than whatever the IN returns.
+        return [by_id[i] for i in ids if i in by_id]
+
+    @staticmethod
     async def list_truck_operations(
         operation_id: UUID,
         current_user: User,
@@ -473,17 +562,18 @@ class TruckService:
         if not truck:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found or inactive")
 
-        # Prevent duplicate: same truck can only have one non-cancelled record per operation
-        dup_result = await db.execute(
+        # Prevent duplicate: a truck can only be live on an operation once.
+        # Uses truck_op_is_live so this guard and addable_truck_ids can never
+        # disagree about what "already added" means.
+        existing_result = await db.execute(
             select(TruckOperation).where(
                 and_(
                     TruckOperation.operation_id == operation_id,
                     TruckOperation.truck_id == data.truck_id,
-                    TruckOperation.status != TruckOpStatus.cancelled,
                 )
             )
         )
-        if dup_result.scalar_one_or_none():
+        if any(truck_op_is_live(r) for r in existing_result.scalars().all()):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="This truck is already assigned to this operation",

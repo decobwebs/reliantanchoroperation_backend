@@ -315,6 +315,30 @@ async def set_trucks_required(
 
 # ── Truck Operations on an Operation ──────────────────────────────────────────
 
+@router.get("/operations/{operation_id}/trucks/addable", response_model=StandardResponse)
+async def list_addable_trucks(
+    operation_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Approved trucks not yet on this operation.
+
+    The UI renders this list instead of working out eligibility itself — the
+    rule lives in one place (truck_service.addable_truck_ids) so the offer and
+    the add-guard can never disagree.
+    """
+    trucks = await TruckService.list_addable_trucks(operation_id, current_user, db)
+    items = [
+        {
+            "id": str(t.id),
+            "truck_number": t.truck_number,
+            "capacity_mt": str(t.capacity_mt) if t.capacity_mt is not None else None,
+        }
+        for t in trucks
+    ]
+    return StandardResponse.ok(data=items, message="Addable trucks retrieved")
+
+
 @router.get("/operations/{operation_id}/trucks", response_model=StandardResponse)
 async def list_truck_operations(
     operation_id: UUID,
