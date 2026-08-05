@@ -336,6 +336,17 @@ class TruckOperationOut(BaseModel):
     spillage_mt: Optional[Decimal] = None
     temperature_celsius: Optional[Decimal] = None
     loading_location: Optional[str] = None
+    # Per-truck loading measurement chain (migration 054). gsv/mt_vacuum are
+    # derived on write from gov/vcf/density, but overridable by the BM.
+    loading_received_quantity_litres: Optional[Decimal] = None
+    loading_density: Optional[Decimal] = None
+    loading_temperature: Optional[Decimal] = None
+    loading_vcf: Optional[Decimal] = None
+    loading_gov: Optional[Decimal] = None
+    loading_gsv: Optional[Decimal] = None
+    loading_mt_vacuum: Optional[Decimal] = None
+    loading_quantity_recorded_at: Optional[datetime] = None
+    loading_quantity_description: Optional[str] = None
     discharge_location: Optional[str] = None
     destination_vessel_id: Optional[UUID] = None
     destination_vessel_name: Optional[str] = None

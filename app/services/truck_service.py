@@ -104,7 +104,12 @@ async def _get_truck_operation_or_404(
     await _get_operation_or_404(operation_id, db)
     result = await db.execute(
         select(TruckOperation)
-        .options(selectinload(TruckOperation.truck))
+        # safety_audits is required by TruckOperationOut — without it the
+        # response serialisation raises MissingGreenlet on a lazy load.
+        .options(
+            selectinload(TruckOperation.truck),
+            selectinload(TruckOperation.safety_audits),
+        )
         .where(
             and_(
                 TruckOperation.id == truck_op_id,
