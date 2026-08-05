@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_
+from sqlalchemy import select, func, and_, text
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
@@ -13,13 +13,57 @@ from app.models.user import User
 from app.models.audit import AuditLog, SystemSetting
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse, PaginatedResponse
-from app.schemas.user import UserOut, AdminCreateUserRequest, AdminUpdateUserRequest
+from app.schemas.user import (
+    UserOut, AdminCreateUserRequest, AdminUpdateUserRequest, AdminDeleteUserRequest,
+)
 from app.services.auth_service import AuthService
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
 # All admin routes require bunker_manager role
 AdminUser = Depends(require_roles(UserRole.bunker_manager))
+
+# Cached after first use — the FK graph only changes on migration.
+_USER_FK_COLUMNS: Optional[list[tuple[str, str]]] = None
+
+
+async def _user_fk_columns(db: AsyncSession) -> list[tuple[str, str]]:
+    """Every (table, column) that points at users.id, read from the catalog.
+
+    Derived rather than hand-listed: there are 50+ of them and a hand-written
+    list silently goes stale the first time someone adds a table, which would
+    let a user be deleted while still referenced.
+    """
+    global _USER_FK_COLUMNS
+    if _USER_FK_COLUMNS is None:
+        rows = await db.execute(text("""
+            select tc.table_name, kcu.column_name
+            from information_schema.table_constraints tc
+            join information_schema.key_column_usage kcu
+              on kcu.constraint_name = tc.constraint_name
+             and kcu.constraint_schema = tc.constraint_schema
+            join information_schema.constraint_column_usage ccu
+              on ccu.constraint_name = tc.constraint_name
+             and ccu.constraint_schema = tc.constraint_schema
+            where tc.constraint_type = 'FOREIGN KEY'
+              and ccu.table_name = 'users'
+              and ccu.column_name = 'id'
+              and tc.table_schema = 'public'
+        """))
+        _USER_FK_COLUMNS = [(r.table_name, r.column_name) for r in rows]
+    return _USER_FK_COLUMNS
+
+
+async def _count_user_references(user_id: UUID, db: AsyncSession) -> dict[str, int]:
+    """Non-zero reference counts per table.column for a user."""
+    counts: dict[str, int] = {}
+    for table, column in await _user_fk_columns(db):
+        n = (await db.execute(
+            text(f'select count(*) from "{table}" where "{column}" = :uid'), {"uid": user_id}
+        )).scalar() or 0
+        if n:
+            counts[f"{table}.{column}"] = n
+    return counts
 
 
 @router.get("/users", response_model=PaginatedResponse)
@@ -164,6 +208,101 @@ async def update_user(
     return StandardResponse.ok(
         data=UserOut.model_validate(user).model_dump(),
         message="User updated",
+    )
+
+
+@router.delete("/users/{user_id}", response_model=StandardResponse)
+async def delete_user(
+    user_id: UUID,
+    body: AdminDeleteUserRequest,
+    request: Request,
+    current_user: User = AdminUser,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a user account. Bunker Manager only.
+
+    Fifty-odd tables carry a foreign key to `users` — who created an
+    operation, approved a BDN, recorded a discharge. Dropping the row would
+    either violate those constraints or erase the attribution behind
+    operational history, so the outcome depends on whether the account has
+    been used:
+
+      * no references anywhere -> the row is removed outright
+      * any reference at all   -> the row is retained and deactivated
+
+    Both outcomes delete the Supabase auth identity, so the person can no
+    longer sign in either way. The response says which happened.
+    """
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    if user.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="You cannot delete your own account.",
+        )
+
+    # Same lockout guard the update endpoint applies.
+    if user.role == UserRole.bunker_manager:
+        active_bms = await db.execute(
+            select(func.count()).select_from(User).where(
+                and_(User.role == UserRole.bunker_manager, User.is_active == True)  # noqa: E712
+            )
+        )
+        if (active_bms.scalar_one() or 0) <= 1:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Cannot delete the last active Bunker Manager.",
+            )
+
+    references = await _count_user_references(user_id, db)
+    total_refs = sum(references.values())
+    auth_id = user.auth_id
+    email = user.email
+
+    db.add(AuditLog(
+        user_id=current_user.id,
+        action="DELETE_USER" if total_refs == 0 else "DEACTIVATE_USER",
+        entity_type="user",
+        entity_id=user.id,
+        changes={
+            "email": email,
+            "full_name": user.full_name,
+            "role": user.role.value,
+            "references": references,
+        },
+        reason=body.reason,
+        **get_request_meta(request),
+    ))
+
+    if total_refs == 0:
+        await db.delete(user)
+        await db.flush()
+        await AuthService._delete_supabase_auth_user(auth_id)
+        return StandardResponse.ok(
+            data={"deleted": True, "email": email},
+            message=f"{email} permanently deleted",
+        )
+
+    user.is_active = False
+    user.updated_at = datetime.utcnow()
+    await db.flush()
+    await AuthService._delete_supabase_auth_user(auth_id)
+    where = ", ".join(f"{t} ({n})" for t, n in sorted(references.items(), key=lambda kv: -kv[1]))
+    return StandardResponse.ok(
+        data={
+            "deleted": False,
+            "deactivated": True,
+            "email": email,
+            "references": references,
+        },
+        message=(
+            f"{email} has operational history and cannot be erased without losing it — "
+            f"the account has been deactivated and sign-in revoked instead. "
+            f"Referenced by: {where}"
+        ),
     )
 
 

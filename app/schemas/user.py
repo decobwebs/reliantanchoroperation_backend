@@ -62,3 +62,20 @@ class AdminUpdateUserRequest(BaseModel):
     role: Optional[UserRole] = None
     is_active: Optional[bool] = None
     avatar_url: Optional[str] = None
+
+
+class AdminDeleteUserRequest(BaseModel):
+    """Reason is mandatory — deleting an account is auditable."""
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to delete a user")
+        return v
