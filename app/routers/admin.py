@@ -262,6 +262,10 @@ async def delete_user(
     auth_id = user.auth_id
     email = user.email
 
+    # get_request_meta returns "ip"; the column is "ip_address" — map the keys
+    # explicitly rather than **-splatting, which raises TypeError on the model.
+    meta = get_request_meta(request, current_user)
+
     db.add(AuditLog(
         user_id=current_user.id,
         action="DELETE_USER" if total_refs == 0 else "DEACTIVATE_USER",
@@ -274,7 +278,9 @@ async def delete_user(
             "references": references,
         },
         reason=body.reason,
-        **get_request_meta(request),
+        acted_as_role=current_user.acting_as_role,
+        ip_address=meta["ip"],
+        user_agent=meta["user_agent"],
     ))
 
     if total_refs == 0:
