@@ -18,8 +18,7 @@ class VesselBdnCreate(BaseModel):
     quantity_loaded_litres: Decimal
     quantity_discharged_litres: Decimal
     density: Decimal
-    temperature_before_loading: Decimal
-    temperature_after_loading: Decimal
+    temperature: Decimal
     vcf: Decimal
     discharge_gov: Decimal
     discharge_gsv: Decimal
@@ -73,8 +72,7 @@ class VesselBdnUpdate(BaseModel):
     quantity_loaded_litres: Optional[Decimal] = None
     quantity_discharged_litres: Optional[Decimal] = None
     density: Optional[Decimal] = None
-    temperature_before_loading: Optional[Decimal] = None
-    temperature_after_loading: Optional[Decimal] = None
+    temperature: Optional[Decimal] = None
     vcf: Optional[Decimal] = None
     discharge_gov: Optional[Decimal] = None
     discharge_gsv: Optional[Decimal] = None
@@ -120,8 +118,7 @@ class VesselBdnOut(BaseModel):
     quantity_discharged_litres: Decimal
     variance_litres: Optional[Decimal] = None
     density: Decimal
-    temperature_before_loading: Decimal
-    temperature_after_loading: Decimal
+    temperature: Decimal
     vcf: Decimal
     discharge_gov: Decimal
     discharge_gsv: Decimal

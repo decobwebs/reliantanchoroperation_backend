@@ -28,8 +28,9 @@ from app.schemas.truck import (
     WaiveAuditItemRequest,
     TruckWaiverBulkCreate, TruckWaiverOut, TruckWaybillLinkRequest,
     TruckWaiverUpdate, TruckWaiverDeleteRequest,
+    TruckLoadingQuantityRequest, TruckLoadingQuantityCorrection,
 )
-from app.services.truck_service import TruckService
+from app.services.truck_service import TruckService, TruckLoadingQuantityService
 from app.services.document_service import _upload_to_supabase, MAX_FILE_SIZE_BYTES
 from app.config import settings
 
@@ -747,10 +748,55 @@ async def submit_operation_completion(
     Supervisor submits a completion report for the operation.
     Transitions operation to pending_completion for BM review.
     """
-    from app.services.truck_service import TruckService as TS
+    from app.services.truck_service import TruckService, TruckLoadingQuantityService as TS
     result = await TS.submit_operation_completion(operation_id, body, current_user, db)
     from app.schemas.operation import OperationOut
     return StandardResponse.ok(
         data=OperationOut.model_validate(result).model_dump(),
         message="Completion report submitted — awaiting Bunker Manager review",
+    )
+
+
+@router.post(
+    "/operations/{operation_id}/trucks/{truck_op_id}/loading-quantity",
+    response_model=StandardResponse,
+)
+async def record_truck_loading_quantity(
+    operation_id: UUID, truck_op_id: UUID,
+    body: TruckLoadingQuantityRequest,
+    current_user: User = Depends(require_roles(
+        UserRole.logistics_officer, UserRole.ops_supervisor, UserRole.bunker_manager
+    )),
+    db: AsyncSession = Depends(get_db),
+):
+    """Record what this truck actually received at loading.
+
+    GSV and MT vacuum are derived from GOV/VCF/density, not accepted here.
+    """
+    truck_op = await TruckLoadingQuantityService.record(
+        operation_id, truck_op_id, body, current_user, db
+    )
+    return StandardResponse.ok(
+        data=TruckOperationOut.model_validate(truck_op).model_dump(),
+        message="Loading quantity recorded",
+    )
+
+
+@router.put(
+    "/operations/{operation_id}/trucks/{truck_op_id}/loading-quantity",
+    response_model=StandardResponse,
+)
+async def correct_truck_loading_quantity(
+    operation_id: UUID, truck_op_id: UUID,
+    body: TruckLoadingQuantityCorrection,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Bunker Manager correction — GSV and MT vacuum may be overridden here."""
+    truck_op = await TruckLoadingQuantityService.correct(
+        operation_id, truck_op_id, body, current_user, db
+    )
+    return StandardResponse.ok(
+        data=TruckOperationOut.model_validate(truck_op).model_dump(),
+        message="Loading quantity corrected",
     )

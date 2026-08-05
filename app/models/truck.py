@@ -80,6 +80,21 @@ class TruckOperation(Base):
     # Product
     product_type = Column(String(50), nullable=True)
 
+    # ── Loading measurement chain, per truck ──
+    # The barge loads once so vessel_activities carries one of these; every
+    # truck loads separately, so it lives here. gsv/mt_vacuum are derived on
+    # write (gsv = gov * vcf, mt_vacuum = gsv * density) but stored rather than
+    # computed on read, because the Bunker Manager can correct either figure.
+    loading_received_quantity_litres = Column(Numeric(14, 2), nullable=True)
+    loading_density = Column(Numeric(8, 4), nullable=True)
+    loading_temperature = Column(Numeric(6, 2), nullable=True)
+    loading_vcf = Column(Numeric(8, 4), nullable=True)
+    loading_gov = Column(Numeric(14, 2), nullable=True)
+    loading_gsv = Column(Numeric(14, 2), nullable=True)
+    loading_mt_vacuum = Column(Numeric(12, 3), nullable=True)
+    loading_quantity_recorded_at = Column(DateTime(timezone=True), nullable=True)
+    loading_quantity_description = Column(Text, nullable=True)
+
     # Quantities
     quantity_loaded_mt = Column(Numeric(12, 3), nullable=True)
     quantity_discharged_mt = Column(Numeric(12, 3), nullable=True)
@@ -201,8 +216,7 @@ class TruckBdn(Base):
 
     # Product quality — submitter-only, no system-computed equivalent.
     density = Column(Numeric(8, 4), nullable=False)
-    temperature_before_loading = Column(Numeric(6, 2), nullable=False)
-    temperature_after_loading = Column(Numeric(6, 2), nullable=False)
+    temperature = Column(Numeric(6, 2), nullable=True)
 
     # Delivery quantity/method — submitter-only, no system-computed equivalent.
     vcf = Column(Numeric(8, 4), nullable=False)             # Volume Correction Factor

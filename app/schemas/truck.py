@@ -561,3 +561,68 @@ class VesselDischargeEventOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class TruckLoadingQuantityRequest(BaseModel):
+    """Per-truck loading measurement chain — the truck-flow counterpart of the
+    barge's Loading Received Quantity. Every truck loads separately, so this is
+    recorded per truck rather than once per operation.
+
+    GSV and MT vacuum are NOT accepted here: the system derives them
+    (gsv = gov * vcf, mt_vacuum = gsv * density) so the arithmetic can't be
+    mistyped. The Bunker Manager can override either afterwards via the
+    correction endpoint.
+    """
+    received_quantity_litres: Decimal
+    density: Decimal
+    temperature: Decimal
+    vcf: Decimal
+    gov: Decimal
+    description: Optional[str] = None
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def strip_description(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("received_quantity_litres", "density", "vcf", "gov")
+    @classmethod
+    def positive_values(cls, v: Decimal) -> Decimal:
+        if v <= 0:
+            raise ValueError("Must be greater than zero")
+        return v
+
+
+class TruckLoadingQuantityCorrection(BaseModel):
+    """Bunker Manager correction. Unlike the submit payload above, GSV and MT
+    vacuum ARE settable — the BM is explicitly allowed to overrule the derived
+    figures when the meter ticket disagrees with the arithmetic. A reason is
+    required, as with every other BM correction."""
+    received_quantity_litres: Optional[Decimal] = None
+    density: Optional[Decimal] = None
+    temperature: Optional[Decimal] = None
+    vcf: Optional[Decimal] = None
+    gov: Optional[Decimal] = None
+    gsv: Optional[Decimal] = None
+    mt_vacuum: Optional[Decimal] = None
+    description: Optional[str] = None
+    reason: str
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def strip_reason(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A reason is required to correct a loading quantity")
+        return v
+
+    @field_validator("received_quantity_litres", "density", "vcf", "gov", "gsv", "mt_vacuum")
+    @classmethod
+    def positive_if_given(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is not None and v <= 0:
+            raise ValueError("Must be greater than zero")
+        return v

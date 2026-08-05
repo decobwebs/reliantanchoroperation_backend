@@ -301,8 +301,7 @@ class RecordLoadingReceiptRequest(BaseModel):
     separately (see app/schemas/vessel_activity_leg.py)."""
     received_quantity_litres: Decimal
     density: Decimal
-    temperature_before_loading: Decimal
-    temperature_after_loading: Decimal
+    temperature: Decimal
     vcf: Decimal
     gov: Decimal
     description: Optional[str] = None
@@ -315,7 +314,7 @@ class RecordLoadingReceiptRequest(BaseModel):
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
 
-    @field_validator("received_quantity_litres", "density", "temperature_before_loading", "temperature_after_loading", "vcf", "gov")
+    @field_validator("received_quantity_litres", "density", "temperature", "vcf", "gov")
     @classmethod
     def positive_values(cls, v: Decimal) -> Decimal:
         if v <= 0:
@@ -426,8 +425,7 @@ class VesselActivityOut(BaseModel):
     # ── Loading Received Quantity — one-time, six-stage + legs flow ──
     loading_received_quantity_litres: Optional[Decimal] = None
     loading_density: Optional[Decimal] = None
-    loading_temperature_before_loading: Optional[Decimal] = None
-    loading_temperature_after_loading: Optional[Decimal] = None
+    loading_temperature: Optional[Decimal] = None
     loading_vcf: Optional[Decimal] = None
     loading_gov: Optional[Decimal] = None
     loading_gsv: Optional[Decimal] = None

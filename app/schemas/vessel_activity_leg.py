@@ -61,8 +61,7 @@ class RecordLegHseRequest(BaseModel):
 class RecordLegQuantitiesRequest(BaseModel):
     quantity_discharged_litres: Decimal
     density: Decimal
-    temperature_before_loading: Decimal
-    temperature_after_loading: Decimal
+    temperature: Decimal
     vcf: Decimal
     gov: Decimal
     description: Optional[str] = None
@@ -75,7 +74,7 @@ class RecordLegQuantitiesRequest(BaseModel):
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
 
-    @field_validator("quantity_discharged_litres", "density", "temperature_before_loading", "temperature_after_loading", "vcf", "gov")
+    @field_validator("quantity_discharged_litres", "density", "temperature", "vcf", "gov")
     @classmethod
     def positive_values(cls, v: Decimal) -> Decimal:
         if v <= 0:
@@ -203,8 +202,7 @@ class VesselActivityLegOut(BaseModel):
 
     quantity_discharged_litres: Optional[Decimal] = None
     density: Optional[Decimal] = None
-    temperature_before_loading: Optional[Decimal] = None
-    temperature_after_loading: Optional[Decimal] = None
+    temperature: Optional[Decimal] = None
     vcf: Optional[Decimal] = None
     gov: Optional[Decimal] = None
     gsv: Optional[Decimal] = None

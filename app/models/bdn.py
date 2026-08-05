@@ -83,8 +83,7 @@ class BDN(Base):
     quantity_loaded_litres = Column(Numeric(14, 2), nullable=True)
     quantity_discharged_litres = Column(Numeric(14, 2), nullable=True)
     variance_litres = Column(Numeric(14, 2), nullable=True)
-    temperature_before_loading = Column(Numeric(6, 2), nullable=True)
-    temperature_after_loading = Column(Numeric(6, 2), nullable=True)
+    # One temperature, not a before/after pair (migration 054).
     vcf = Column(Numeric(8, 4), nullable=True)
     # Discharging vessel's own readings — renamed from gov/gsv/mt_vacuum
     # (migration 047) for symmetry with the received_* block below.
@@ -286,8 +285,7 @@ class VesselActivity(Base):
     # independent column sets, no shared-column ambiguity.
     loading_received_quantity_litres = Column(Numeric(14, 2), nullable=True)
     loading_density = Column(Numeric(8, 4), nullable=True)
-    loading_temperature_before_loading = Column(Numeric(6, 2), nullable=True)
-    loading_temperature_after_loading = Column(Numeric(6, 2), nullable=True)
+    loading_temperature = Column(Numeric(6, 2), nullable=True)
     loading_vcf = Column(Numeric(8, 4), nullable=True)
     loading_gov = Column(Numeric(14, 2), nullable=True)
     loading_gsv = Column(Numeric(14, 2), nullable=True)         # computed = gov*vcf
@@ -409,8 +407,7 @@ class VesselActivityLeg(Base):
     # VesselBdn for consistency. gsv/mt_vacuum are system-computed.
     quantity_discharged_litres = Column(Numeric(14, 2), nullable=True)
     density = Column(Numeric(8, 4), nullable=True)
-    temperature_before_loading = Column(Numeric(6, 2), nullable=True)
-    temperature_after_loading = Column(Numeric(6, 2), nullable=True)
+    # One temperature, not a before/after pair (migration 054).
     vcf = Column(Numeric(8, 4), nullable=True)
     gov = Column(Numeric(14, 2), nullable=True)
     gsv = Column(Numeric(14, 2), nullable=True)          # computed = gov*vcf

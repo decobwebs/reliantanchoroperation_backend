@@ -1374,8 +1374,7 @@ class VesselActivityService:
 
         leg.quantity_discharged_litres = data.quantity_discharged_litres
         leg.density = data.density
-        leg.temperature_before_loading = data.temperature_before_loading
-        leg.temperature_after_loading = data.temperature_after_loading
+        leg.temperature = data.temperature
         leg.vcf = data.vcf
         leg.gov = data.gov
         leg.gsv = data.gov * data.vcf
@@ -1534,8 +1533,7 @@ class VesselActivityService:
 
         activity.loading_received_quantity_litres = data.received_quantity_litres
         activity.loading_density = data.density
-        activity.loading_temperature_before_loading = data.temperature_before_loading
-        activity.loading_temperature_after_loading = data.temperature_after_loading
+        activity.loading_temperature = data.temperature
         activity.loading_vcf = data.vcf
         activity.loading_gov = data.gov
         activity.loading_gsv = data.gov * data.vcf

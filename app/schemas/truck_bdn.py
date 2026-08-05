@@ -18,8 +18,7 @@ class TruckBdnCreate(BaseModel):
     quantity_loaded_mt: Decimal
     quantity_discharged_mt: Decimal
     density: Decimal
-    temperature_before_loading: Decimal
-    temperature_after_loading: Decimal
+    temperature: Decimal
     vcf: Decimal
     gov: Decimal
     gsv: Decimal
@@ -67,8 +66,7 @@ class TruckBdnUpdate(BaseModel):
     quantity_loaded_mt: Optional[Decimal] = None
     quantity_discharged_mt: Optional[Decimal] = None
     density: Optional[Decimal] = None
-    temperature_before_loading: Optional[Decimal] = None
-    temperature_after_loading: Optional[Decimal] = None
+    temperature: Optional[Decimal] = None
     vcf: Optional[Decimal] = None
     gov: Optional[Decimal] = None
     gsv: Optional[Decimal] = None
@@ -102,8 +100,7 @@ class TruckBdnOut(BaseModel):
     quantity_discharged_mt: Decimal
     variance_mt: Optional[Decimal] = None
     density: Decimal
-    temperature_before_loading: Decimal
-    temperature_after_loading: Decimal
+    temperature: Decimal
     vcf: Decimal
     gov: Decimal
     gsv: Decimal

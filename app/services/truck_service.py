@@ -25,6 +25,7 @@ from app.schemas.truck import (
     TruckWaybillLinkRequest,
     TruckWaiverUpdate,
     TruckWaiverOut, LinkedTruckSummary,
+    TruckLoadingQuantityRequest, TruckLoadingQuantityCorrection,
 )
 from app.services.notification_service import notify
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
@@ -93,6 +94,31 @@ async def _transition_operation(
         metadata_={},
     )
     db.add(history)
+
+
+async def _get_truck_operation_or_404(
+    operation_id: UUID, truck_op_id: UUID, db: AsyncSession
+) -> TruckOperation:
+    """Fetch a truck's record, scoped to its operation so an id from another
+    operation can't be reached by guessing."""
+    await _get_operation_or_404(operation_id, db)
+    result = await db.execute(
+        select(TruckOperation)
+        .options(selectinload(TruckOperation.truck))
+        .where(
+            and_(
+                TruckOperation.id == truck_op_id,
+                TruckOperation.operation_id == operation_id,
+            )
+        )
+    )
+    truck_op = result.scalar_one_or_none()
+    if not truck_op:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Truck record not found on this operation",
+        )
+    return truck_op
 
 
 def truck_op_is_live(truck_op: TruckOperation) -> bool:
@@ -1921,3 +1947,152 @@ class TruckService:
         await db.flush()
         await db.refresh(operation)
         return operation
+
+
+class TruckLoadingQuantityService:
+    """Per-truck loading measurement chain.
+
+    Mirrors VesselActivityService.record_loading_quantity, which does the same
+    job for the barge — except the barge loads once per run while every truck
+    loads separately, so this hangs off TruckOperation rather than the
+    operation.
+    """
+
+    @staticmethod
+    def _derive(gov: Decimal, vcf: Decimal, density: Decimal) -> tuple[Decimal, Decimal]:
+        """GSV = GOV x VCF, MT vacuum = GSV x density.
+
+        The same two identities the vessel side uses. Derived rather than typed
+        so the arithmetic can't be entered wrongly; the BM can still overrule
+        both in the correction path below.
+        """
+        gsv = gov * vcf
+        return gsv, gsv * density
+
+    @staticmethod
+    async def record(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        data: TruckLoadingQuantityRequest,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        truck_op = await _get_truck_operation_or_404(operation_id, truck_op_id, db)
+        if truck_op.status == TruckOpStatus.cancelled:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This truck has been removed from the operation",
+            )
+
+        gsv, mt_vacuum = TruckLoadingQuantityService._derive(data.gov, data.vcf, data.density)
+
+        truck_op.loading_received_quantity_litres = data.received_quantity_litres
+        truck_op.loading_density = data.density
+        truck_op.loading_temperature = data.temperature
+        truck_op.loading_vcf = data.vcf
+        truck_op.loading_gov = data.gov
+        truck_op.loading_gsv = gsv
+        truck_op.loading_mt_vacuum = mt_vacuum
+        truck_op.loading_quantity_recorded_at = datetime.utcnow()
+        truck_op.loading_quantity_description = data.description
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            action="RECORD_TRUCK_LOADING_QUANTITY",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            operation_id=operation_id,
+            changes={
+                "received_quantity_litres": str(data.received_quantity_litres),
+                "density": str(data.density),
+                "temperature": str(data.temperature),
+                "vcf": str(data.vcf),
+                "gov": str(data.gov),
+                "gsv": str(gsv),
+                "mt_vacuum": str(mt_vacuum),
+            },
+        ))
+        await db.flush()
+        await db.refresh(truck_op)
+        return truck_op
+
+    @staticmethod
+    async def correct(
+        operation_id: UUID,
+        truck_op_id: UUID,
+        data: TruckLoadingQuantityCorrection,
+        current_user: User,
+        db: AsyncSession,
+    ) -> TruckOperation:
+        """Bunker Manager correction.
+
+        GSV and MT vacuum are settable here. If the BM supplies neither but
+        changes an input they are derived from, they are recomputed — otherwise
+        an edited GOV would leave a stale GSV behind it. An explicitly supplied
+        figure always wins over the derivation.
+        """
+        truck_op = await _get_truck_operation_or_404(operation_id, truck_op_id, db)
+        if truck_op.loading_quantity_recorded_at is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="No loading quantity has been recorded for this truck yet",
+            )
+
+        before = {
+            "received_quantity_litres": str(truck_op.loading_received_quantity_litres),
+            "density": str(truck_op.loading_density),
+            "temperature": str(truck_op.loading_temperature),
+            "vcf": str(truck_op.loading_vcf),
+            "gov": str(truck_op.loading_gov),
+            "gsv": str(truck_op.loading_gsv),
+            "mt_vacuum": str(truck_op.loading_mt_vacuum),
+        }
+
+        supplied = data.model_dump(exclude_unset=True, exclude={"reason"})
+        field_map = {
+            "received_quantity_litres": "loading_received_quantity_litres",
+            "density": "loading_density",
+            "temperature": "loading_temperature",
+            "vcf": "loading_vcf",
+            "gov": "loading_gov",
+            "gsv": "loading_gsv",
+            "mt_vacuum": "loading_mt_vacuum",
+            "description": "loading_quantity_description",
+        }
+        for key, column in field_map.items():
+            if key in supplied:
+                setattr(truck_op, column, supplied[key])
+
+        # Recompute only what the BM did not state outright.
+        if {"gov", "vcf", "density"} & supplied.keys():
+            gsv, mt_vacuum = TruckLoadingQuantityService._derive(
+                truck_op.loading_gov, truck_op.loading_vcf, truck_op.loading_density
+            )
+            if "gsv" not in supplied:
+                truck_op.loading_gsv = gsv
+            if "mt_vacuum" not in supplied:
+                truck_op.loading_mt_vacuum = mt_vacuum
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            action="BM_CORRECTED_TRUCK_LOADING_QUANTITY",
+            entity_type="truck_operation",
+            entity_id=truck_op.id,
+            operation_id=operation_id,
+            changes={
+                "from": before,
+                "to": {
+                    "received_quantity_litres": str(truck_op.loading_received_quantity_litres),
+                    "density": str(truck_op.loading_density),
+                    "temperature": str(truck_op.loading_temperature),
+                    "vcf": str(truck_op.loading_vcf),
+                    "gov": str(truck_op.loading_gov),
+                    "gsv": str(truck_op.loading_gsv),
+                    "mt_vacuum": str(truck_op.loading_mt_vacuum),
+                },
+            },
+            reason=data.reason,
+        ))
+        await db.flush()
+        await db.refresh(truck_op)
+        return truck_op
