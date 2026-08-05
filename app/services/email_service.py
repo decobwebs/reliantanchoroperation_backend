@@ -28,9 +28,11 @@ RESEND_API_URL = "https://api.resend.com/emails"
 # Brand colors — mirrors the app's navy/azure theme (globals.css) and the
 # invoice/PFI PDF header (app/utils/invoice_pdf.py) so every client touchpoint
 # — app, PDF, email — reads as one system.
-_NAVY = "#1C2E4C"
-_NAVY_MUTED = "#9FB3CC"
-_AZURE = "#3080C0"
+# Sampled from public/logo-mark.png — the logo contains exactly two colours.
+# These are the same values globals.css uses for --navy-900 / --brand-500.
+_NAVY = "#102447"
+_NAVY_MUTED = "#A2B4D5"
+_AZURE = "#0E79C8"
 _INK = "#1F2937"
 _MUTED = "#5B6472"
 _BORDER = "#E7EAEE"
@@ -38,7 +40,52 @@ _BG = "#F1F4F8"
 
 
 def _logo_url() -> str:
-    return f"{settings.FRONTEND_URL.rstrip('/')}/logo.jpeg"
+    """The anchor mark, cropped and downscaled for email (~16 KB).
+
+    Deliberately not logo-mark.png — that is the full 879 KB lockup, far too
+    heavy for an email header and illegible at 46px once the wordmark is
+    included.
+    """
+    return f"{settings.FRONTEND_URL.rstrip('/')}/logo-email.png"
+
+
+def _detail_rows(pairs: List[tuple]) -> str:
+    """A bordered label/value panel — for the facts a recipient needs to
+    confirm at a glance (which account, which role). Table-based so it holds
+    up in Outlook, which ignores flex/grid entirely."""
+    rows = "".join(
+        f"""
+        <tr>
+          <td style="padding:7px 0;color:{_MUTED};font-size:12.5px;width:38%;
+                     font-family:Helvetica,Arial,sans-serif;vertical-align:top;">{_esc(k)}</td>
+          <td style="padding:7px 0;color:{_INK};font-size:13px;font-weight:600;
+                     font-family:Helvetica,Arial,sans-serif;">{_esc(v)}</td>
+        </tr>"""
+        for k, v in pairs
+    )
+    return f"""
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0"
+             style="background:{_BG};border:1px solid {_BORDER};border-radius:8px;
+                    padding:6px 16px;margin:18px 0 6px;">
+        {rows}
+      </table>"""
+
+
+def _callout(text: str, tone: str = "amber") -> str:
+    """A single tinted line for the one thing that must not be missed —
+    typically a link expiry."""
+    bg, border, ink = {
+        "amber": ("#FEF8E7", "#F6D98A", "#8A6100"),
+        "azure": ("#E0EEF8", "#BEDDF3", "#0B5287"),
+    }.get(tone, ("#FEF8E7", "#F6D98A", "#8A6100"))
+    return f"""
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:18px 0 0;">
+        <tr><td style="background:{bg};border-left:3px solid {border};border-radius:5px;
+                       padding:11px 14px;color:{ink};font-size:12.5px;line-height:1.6;
+                       font-family:Helvetica,Arial,sans-serif;">
+          {text}
+        </td></tr>
+      </table>"""
 
 
 def _wrap_email(
@@ -202,34 +249,74 @@ async def email_account_created(
 ) -> bool:
     """Sent when a Bunker Manager creates a user account. No password is ever
     set by the admin — the recipient chooses their own via this link."""
-    subject = (
-        "Welcome to RAOMS — Set Your Password"
-        if is_new_account
-        else "Your RAOMS Password Reset"
-    )
-    intro = (
-        f"An account has been created for you on the Reliant Anchor Operations "
-        f"Management System (RAOMS), with the role of <strong>{_esc(role_label)}</strong>."
-        if is_new_account
-        else "A password reset was requested for your RAOMS account."
-    )
+    first_name = (recipient_name or "").strip().split(" ")[0] or "there"
+
+    if is_new_account:
+        subject = f"Welcome to Reliant Anchor — set your password ({role_label})"
+        title = "Welcome aboard"
+        preheader = f"Your {role_label} account is ready — set a password to sign in."
+        intro = (
+            "An account has been created for you on the <strong>Reliant Anchor Operations "
+            "Management System</strong>. Set a password below and you're ready to sign in."
+        )
+        details = _detail_rows([
+            ("Name", recipient_name),
+            ("Email", to_email),
+            ("Role", role_label),
+        ])
+        closing = (
+            "<p style=\"margin:16px 0 0;\">Once you're in, you'll find everything for your role "
+            "on your dashboard. If anything looks wrong — including the role above — contact your "
+            "Bunker Manager before signing in.</p>"
+        )
+    else:
+        subject = "Reset your Reliant Anchor password"
+        title = "Reset your password"
+        preheader = "A password reset was requested for your Reliant Anchor account."
+        intro = (
+            "A password reset was requested for your <strong>Reliant Anchor Operations</strong> "
+            "account. Choose a new password using the button below."
+        )
+        details = _detail_rows([("Email", to_email), ("Role", role_label)])
+        closing = (
+            "<p style=\"margin:16px 0 0;\">If you didn't request this, you can ignore this email — "
+            "your password stays unchanged. Tell your Bunker Manager if you weren't expecting it.</p>"
+        )
+
     body = f"""
-      <p style="margin:0 0 14px;">Dear {_esc(recipient_name)},</p>
-      <p style="margin:0 0 14px;">{intro}</p>
-      <p style="margin:0 0 4px;">To activate your account, please set your password using the
-      button below. This link is valid for <strong>1 hour</strong> and can only be used once.</p>
+      <p style="margin:0 0 14px;">Hello {_esc(first_name)},</p>
+      <p style="margin:0 0 4px;">{intro}</p>
+      {details}
+      {_callout("This link expires in <strong>1 hour</strong> and can only be used once. "
+                "If it lapses, ask your Bunker Manager to send a new invite.")}
+      {closing}
     """
-    ok = await send_email(
+
+    # Plain-text alternative: improves deliverability, and is what screen
+    # readers and text-only clients actually get.
+    text_body = (
+        f"Hello {first_name},\n\n"
+        f"{'An account has been created for you on the Reliant Anchor Operations Management System.' if is_new_account else 'A password reset was requested for your Reliant Anchor Operations account.'}\n\n"
+        f"Name:  {recipient_name}\n"
+        f"Email: {to_email}\n"
+        f"Role:  {role_label}\n\n"
+        f"Set your password here (expires in 1 hour, single use):\n{set_password_url}\n\n"
+        f"{'If anything looks wrong, including the role above, contact your Bunker Manager before signing in.' if is_new_account else 'If you did not request this, ignore this email — your password stays unchanged.'}\n\n"
+        f"— Reliant Anchor Logistics Limited\n"
+        f"This is an automated message; please do not reply."
+    )
+
+    return await send_email(
         [to_email], subject,
         _wrap_email(
-            title="Set Your Password" if is_new_account else "Reset Your Password",
+            title=title,
             body_html=body,
-            cta_label="Set Password",
+            cta_label="Set your password" if is_new_account else "Choose a new password",
             cta_url=set_password_url,
-            preheader="Your RAOMS account is ready — set your password to get started.",
+            preheader=preheader,
         ),
+        text_body=text_body,
     )
-    return ok
 
 
 async def email_task_assigned(
