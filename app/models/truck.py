@@ -203,6 +203,9 @@ class TruckBdn(Base):
     status = Column(SAEnum(BdnStatus, name="bdn_status"), default=BdnStatus.pending, nullable=False)
 
     company_name = Column(String(200), nullable=False)  # client being supplied to
+    # Who actually received the product. Trucks in one operation can go to
+    # different destinations, so the document must name one (migration 055).
+    receiving_vessel = Column(String(200), nullable=True)
 
     # Submitted manually by the Ops Supervisor / Logistics Officer — required.
     product_type = Column(String(100), nullable=False)

@@ -15,32 +15,34 @@ class TruckBdnCreate(BaseModel):
     company_name: str
     product_type: str
     discharge_location: str
+    receiving_vessel: str
     quantity_loaded_mt: Decimal
     quantity_discharged_mt: Decimal
     density: Decimal
     temperature: Decimal
     vcf: Decimal
     gov: Decimal
-    gsv: Decimal
-    mt_vacuum: Decimal
+    # gsv and mt_vacuum are NOT accepted — derived as gsv = gov * vcf and
+    # mt_vacuum = gsv * density, matching the vessel side. The BM can still
+    # overrule both through the correction endpoint.
     discharge_commenced_at: datetime
     discharge_completed_at: datetime
     discharge_completion_date: date
     notes: Optional[str] = None
 
-    @field_validator("company_name", "product_type", "discharge_location", "notes", mode="before")
+    @field_validator("company_name", "product_type", "discharge_location", "receiving_vessel", "notes", mode="before")
     @classmethod
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
 
-    @field_validator("company_name", "product_type", "discharge_location")
+    @field_validator("company_name", "product_type", "discharge_location", "receiving_vessel")
     @classmethod
     def required_strings(cls, v: str) -> str:
         if not v:
             raise ValueError("This field is required")
         return v
 
-    @field_validator("quantity_loaded_mt", "quantity_discharged_mt", "density", "gov", "gsv", "mt_vacuum")
+    @field_validator("quantity_loaded_mt", "quantity_discharged_mt", "density", "gov")
     @classmethod
     def positive_values(cls, v: Decimal) -> Decimal:
         if v <= 0:
