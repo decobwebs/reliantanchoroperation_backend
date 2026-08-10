@@ -412,6 +412,14 @@ class AuthService:
         `redirect_to` must be present in Supabase Auth's Redirect URLs allow-list,
         or the generated link will fail (or redirect to an unlisted page) when
         the recipient clicks it.
+
+        `redirect_to` is a TOP-LEVEL field on this endpoint's request body, not
+        nested under `options` — that's the shape the client SDK's convenience
+        methods use, not this raw admin REST endpoint. Nesting it silently
+        drops the value with no error; Supabase falls back to the project's
+        Site URL, and the recipient lands on / instead of `redirect_to`.
+        Confirmed by generating real links and inspecting the returned
+        `action_link`'s own `redirect_to` query param both ways.
         """
         try:
             async with httpx.AsyncClient() as client:
@@ -425,7 +433,7 @@ class AuthService:
                     json={
                         "type": link_type,
                         "email": email,
-                        "options": {"redirect_to": redirect_to},
+                        "redirect_to": redirect_to,
                     },
                     timeout=30.0,
                 )
