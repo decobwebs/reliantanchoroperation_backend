@@ -214,8 +214,13 @@ class VesselActivityService:
             )
 
         # BM adding another vessel after others already finished — keep the
-        # operation's own status honest without a manual fixup step.
-        if op.status in (OperationStatus.pending_completion, OperationStatus.bdn_pending):
+        # operation's own status honest without a manual fixup step. An
+        # operation isn't always discharging to just one vessel, and the
+        # BM may only realise a second run is needed after the first one's
+        # BDN is already approved — bdn_approved -> vessel_operations is
+        # already a valid, BM-permitted transition (state_machine.py), this
+        # just wasn't triggering it.
+        if op.status in (OperationStatus.pending_completion, OperationStatus.bdn_pending, OperationStatus.bdn_approved):
             await _transition_operation(op, OperationStatus.vessel_operations, current_user, db, reason="New vessel activity added")
 
         activity = await VesselActivityService._create_activity_row(
