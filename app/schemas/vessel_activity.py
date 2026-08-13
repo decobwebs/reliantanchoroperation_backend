@@ -1,10 +1,15 @@
+import re
 from datetime import datetime
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, field_validator
 from app.models.enums import VesselStage, AuditResult
+
+# Deliberately permissive — this only catches typos like a missing "@" before a
+# send is queued. Address validity is proven by delivery, not by a regex.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
 
 class VesselActivityCreate(BaseModel):
@@ -71,6 +76,46 @@ class AdvanceStageRequest(BaseModel):
         return v.strip() if v else v
 
 
+class SetCastOffContactsRequest(BaseModel):
+    """The client block captured at Cast Off — who the run is for, and who
+    should hear about it. Editable afterwards by the BM, so this is a plain
+    upsert with no stage gate: recording a detail late must never be harder
+    than recording it on time."""
+    client_name: Optional[str] = None
+    client_vessel_name: Optional[str] = None
+    emails: List[str] = []
+
+    @field_validator("client_name", "client_vessel_name", mode="before")
+    @classmethod
+    def strip_names(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("emails", mode="before")
+    @classmethod
+    def clean_emails(cls, v: Optional[List[str]]) -> List[str]:
+        """Trim, drop blanks, and de-duplicate case-insensitively while keeping
+        the order the BM entered them. These get merged with the Naval Clearance
+        recipients later, so a duplicate here would become a duplicate send."""
+        if not v:
+            return []
+        seen, out = set(), []
+        for raw in v:
+            e = (raw or "").strip()
+            if not e or e.lower() in seen:
+                continue
+            seen.add(e.lower())
+            out.append(e)
+        return out
+
+    @field_validator("emails")
+    @classmethod
+    def valid_emails(cls, v: List[str]) -> List[str]:
+        bad = [e for e in v if not _EMAIL_RE.match(e)]
+        if bad:
+            raise ValueError(f"Not a valid email address: {', '.join(bad)}")
+        return v
+
+
 class AddCommentRequest(BaseModel):
     stage: Optional[VesselStage] = None
     comment: str
@@ -104,6 +149,11 @@ class VesselActivityCommentOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# The three HSE checks per vessel run (migration 059). "pre" maps to the
+# original unprefixed hse_* columns — see VesselActivity's comment for why.
+HsePhase = Literal["pre", "during", "post"]
+
+
 class HseChecklistItem(BaseModel):
     # `section` is stored with each item so a completed checklist stays
     # self-describing — if the template's grouping is later changed, an
@@ -122,6 +172,10 @@ class RecordHseRequest(BaseModel):
     # Required only when overwriting an already-recorded checklist (a BM
     # correction) — enforced in the service, which alone can see prior state.
     reason: Optional[str] = None
+    # Which of the three checks this is (migration 059). Defaults to "pre" so
+    # any caller written before the split keeps hitting the same columns it
+    # always did, rather than silently starting a new empty record.
+    phase: HsePhase = "pre"
 
     @field_validator("notes", mode="before")
     @classmethod
@@ -395,13 +449,32 @@ class VesselActivityOut(BaseModel):
     stage_commence_discharge_at: Optional[datetime] = None
     stage_discharge_completed_at: Optional[datetime] = None
 
-    # ── HSE ──
+    # ── HSE — three checks per run; the unprefixed set is the PRE check ──
     hse_checklist: List[HseChecklistItem] = []
     hse_result: Optional[AuditResult] = None
     hse_conducted_by: Optional[UUID] = None
     hse_conducted_at: Optional[datetime] = None
     hse_notes: Optional[str] = None
     hse_safety_officer: Optional[str] = None
+
+    hse_during_checklist: List[HseChecklistItem] = []
+    hse_during_result: Optional[AuditResult] = None
+    hse_during_conducted_by: Optional[UUID] = None
+    hse_during_conducted_at: Optional[datetime] = None
+    hse_during_notes: Optional[str] = None
+    hse_during_safety_officer: Optional[str] = None
+
+    hse_post_checklist: List[HseChecklistItem] = []
+    hse_post_result: Optional[AuditResult] = None
+    hse_post_conducted_by: Optional[UUID] = None
+    hse_post_conducted_at: Optional[datetime] = None
+    hse_post_notes: Optional[str] = None
+    hse_post_safety_officer: Optional[str] = None
+
+    # ── Cast Off client block ──
+    cast_off_client_name: Optional[str] = None
+    cast_off_client_vessel_name: Optional[str] = None
+    cast_off_client_emails: List[str] = []
 
     # ── Discharge arithmetic — reused by both the stage flow (full_operation)
     # and the commence/complete flow (vessel_only) ──

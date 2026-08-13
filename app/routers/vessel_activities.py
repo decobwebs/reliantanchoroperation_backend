@@ -25,6 +25,7 @@ from app.schemas.vessel_activity import (
     AddCommentRequest,
     VesselActivityCommentOut,
     RecordHseRequest,
+    SetCastOffContactsRequest,
     RecordDischargeQuantitiesRequest,
     VesselActivityCommenceRequest,
     VesselActivityCompleteVesselOpRequest,
@@ -273,9 +274,34 @@ async def record_hse(
     current_user: User = _hse_roles,
     db: AsyncSession = Depends(get_db),
 ):
-    """Non-blocking HSE safety checklist — a failed item is recorded, never enforced."""
+    """Non-blocking HSE safety checklist — a failed item is recorded, never enforced.
+
+    `body.phase` selects which of the three checks this is (pre / during /
+    post); it defaults to "pre", which is the check this endpoint recorded
+    before the split, so older callers are unaffected.
+    """
     activity = await VesselActivityService.record_hse(activity_id, body, current_user, db)
-    return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="HSE checklist recorded")
+    _PHASE_LABEL = {"pre": "Pre-Operation", "during": "During Operation", "post": "Post-Operation"}
+    return StandardResponse.ok(
+        data=VesselActivityOut.model_validate(activity).model_dump(),
+        message=f"{_PHASE_LABEL[body.phase]} HSE checklist recorded",
+    )
+
+
+@router.patch("/vessel-activities/{activity_id}/cast-off-contacts", response_model=StandardResponse)
+async def set_cast_off_contacts(
+    activity_id: UUID,
+    body: SetCastOffContactsRequest,
+    current_user: User = _stage_roles,
+    db: AsyncSession = Depends(get_db),
+):
+    """Client name, client's vessel name, and email recipients for this run.
+
+    Captured at Cast Off and editable afterwards. Recording contacts never
+    sends anything — mail goes out only after the BM approves and then sends.
+    """
+    activity = await VesselActivityService.set_cast_off_contacts(activity_id, body, current_user, db)
+    return StandardResponse.ok(data=VesselActivityOut.model_validate(activity).model_dump(), message="Client contacts saved")
 
 
 @router.post("/vessel-activities/{activity_id}/discharge-quantities", response_model=StandardResponse)

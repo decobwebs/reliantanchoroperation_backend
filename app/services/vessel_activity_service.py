@@ -28,6 +28,7 @@ from app.schemas.vessel_activity import (
     VesselActivityPatchInitialRob,
     AdvanceStageRequest,
     AddCommentRequest,
+    SetCastOffContactsRequest,
     RecordHseRequest,
     RecordDischargeQuantitiesRequest,
     VesselActivityCommenceRequest,
@@ -799,42 +800,120 @@ class VesselActivityService:
         return comments
 
     @staticmethod
-    async def record_hse(activity_id: UUID, data: RecordHseRequest, current_user: User, db: AsyncSession) -> VesselActivity:
-        """Non-blocking safety record — a failed item never blocks progress
-        or any subsequent stage/BDN/completion action."""
+    async def set_cast_off_contacts(
+        activity_id: UUID, data: SetCastOffContactsRequest, current_user: User, db: AsyncSession
+    ) -> VesselActivity:
+        """Upsert the Cast Off client block — client name, their vessel's name,
+        and the email recipients for this run.
+
+        Deliberately ungated by stage or status. The BM asked to capture this at
+        Cast Off, but a detail remembered at Alongside is still worth recording,
+        and a wrong address found after completion still needs correcting.
+        Nothing is sent from here: these recipients only ever reach an email
+        once the BM has approved and then explicitly sent it.
+        """
         activity = await VesselActivityService._get_or_404(activity_id, db)
         VesselActivityService._assert_authorized(activity, current_user)
+
+        before = {
+            "client_name": activity.cast_off_client_name,
+            "client_vessel_name": activity.cast_off_client_vessel_name,
+            "emails": list(activity.cast_off_client_emails or []),
+        }
+
+        activity.cast_off_client_name = data.client_name
+        activity.cast_off_client_vessel_name = data.client_vessel_name
+        activity.cast_off_client_emails = data.emails
+
+        await db.flush()
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=activity.operation_id,
+            action="SET_CAST_OFF_CONTACTS",
+            entity_type="vessel_activity", entity_id=activity.id,
+            changes={"before": before, "after": {
+                "client_name": data.client_name,
+                "client_vessel_name": data.client_vessel_name,
+                "emails": data.emails,
+            }},
+        ))
+        await db.commit()
+        activity = await VesselActivityService._get_or_404(activity.id, db)
+        _attach_vessel_name(activity)
+        return activity
+
+    @staticmethod
+    def _hse_field(phase: str, suffix: str) -> str:
+        """Column name for one field of one HSE phase.
+
+        The three phases live in three column sets on VesselActivity, and "pre"
+        is the ORIGINAL unprefixed set (kept that way by migration 059 so the
+        checklists already recorded needed no data migration).
+
+        Every phase-to-column lookup in this file goes through here, and the
+        result is asserted against the mapped columns before use — writing a
+        name that isn't a real column would NOT raise on a declarative model,
+        it would just set a throwaway Python attribute and silently drop the
+        data. That is precisely how the stage timestamps were lost between
+        migrations 057 and 058; it does not get to happen twice.
+        """
+        name = f"hse_{suffix}" if phase == "pre" else f"hse_{phase}_{suffix}"
+        if name not in VesselActivity.__table__.columns:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Unknown HSE field '{name}' for phase '{phase}'",
+            )
+        return name
+
+    @staticmethod
+    async def record_hse(activity_id: UUID, data: RecordHseRequest, current_user: User, db: AsyncSession) -> VesselActivity:
+        """Non-blocking safety record — a failed item never blocks progress
+        or any subsequent stage/BDN/completion action.
+
+        Records one of three checks (pre / during / post), selected by
+        data.phase. The three are wholly independent: recording the During
+        check neither requires nor alters the Pre check, so a run whose Pre
+        check was never filled in can still record the other two.
+        """
+        activity = await VesselActivityService._get_or_404(activity_id, db)
+        VesselActivityService._assert_authorized(activity, current_user)
+
+        phase = data.phase
+        f = lambda suffix: VesselActivityService._hse_field(phase, suffix)  # noqa: E731
 
         # Overwriting an already-recorded checklist is a correction, not a
         # fresh record: BM-only, reason required, and the previous checklist
         # is preserved in the audit entry so the original is never lost.
-        is_correction = activity.hse_result is not None
+        # Scoped per phase — correcting the During check must not be gated on
+        # whether the Pre check exists.
+        existing_result = getattr(activity, f("result"))
+        is_correction = existing_result is not None
         prior = None
         if is_correction:
             if current_user.role != UserRole.bunker_manager:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct a recorded HSE checklist")
             if not data.reason:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A reason is required to correct a recorded HSE checklist")
+            conducted_at = getattr(activity, f("conducted_at"))
             prior = {
-                "result": activity.hse_result.value if activity.hse_result else None,
-                "checklist": activity.hse_checklist,
-                "notes": activity.hse_notes,
-                "conducted_at": activity.hse_conducted_at.isoformat() if activity.hse_conducted_at else None,
+                "result": existing_result.value if existing_result else None,
+                "checklist": getattr(activity, f("checklist")),
+                "notes": getattr(activity, f("notes")),
+                "conducted_at": conducted_at.isoformat() if conducted_at else None,
             }
 
-        activity.hse_checklist = [item.model_dump() for item in data.checklist]
-        activity.hse_result = data.result
-        activity.hse_conducted_by = current_user.id
-        activity.hse_conducted_at = datetime.utcnow()
-        activity.hse_notes = data.notes
-        activity.hse_safety_officer = data.safety_officer
+        setattr(activity, f("checklist"), [item.model_dump() for item in data.checklist])
+        setattr(activity, f("result"), data.result)
+        setattr(activity, f("conducted_by"), current_user.id)
+        setattr(activity, f("conducted_at"), datetime.utcnow())
+        setattr(activity, f("notes"), data.notes)
+        setattr(activity, f("safety_officer"), data.safety_officer)
 
         await db.flush()
         db.add(AuditLog(
             user_id=current_user.id, operation_id=activity.operation_id,
             action="CORRECT_VESSEL_HSE" if is_correction else "RECORD_VESSEL_HSE",
             entity_type="vessel_activity", entity_id=activity.id,
-            changes={"result": data.result.value, "items": len(data.checklist), "previous": prior},
+            changes={"phase": phase, "result": data.result.value, "items": len(data.checklist), "previous": prior},
             reason=data.reason,
         ))
         await db.commit()

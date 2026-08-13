@@ -238,14 +238,49 @@ class VesselActivity(Base):
     stage_commence_discharge_at = Column(DateTime(timezone=True), nullable=True)
     stage_discharge_completed_at = Column(DateTime(timezone=True), nullable=True)
 
-    # ── HSE checklist — non-blocking record, same {item, result, notes}
-    # shape as TruckSafetyAudit.checklist.
+    # ── HSE checklists — non-blocking records, same {item, result, notes}
+    # shape as TruckSafetyAudit.checklist. THREE per vessel run, one per phase
+    # (migration 059), tied to stages per docs/HSE-CHECKLISTS.md:
+    #
+    #   pre     after Alongside (the hse_check stage)   <- the columns below
+    #   during  at Commence Discharge                   <- hse_during_*
+    #   post    at Discharge Completed                  <- hse_post_*
+    #
+    # The unprefixed set below is the PRE check. It predates the split and was
+    # deliberately left in place so existing recorded checklists needed no data
+    # migration — do not "tidy" it into hse_pre_* without moving that data.
+    # RecordHseRequest.phase selects which set is written; see
+    # VesselActivityService._HSE_PHASE_FIELDS, which is the single place the
+    # phase -> column-name mapping lives.
     hse_checklist = Column(JSONB, default=list, nullable=False)
     hse_result = Column(SAEnum(AuditResult, name="audit_result"), nullable=True)
     hse_conducted_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     hse_conducted_at = Column(DateTime(timezone=True), nullable=True)
     hse_notes = Column(Text, nullable=True)
     hse_safety_officer = Column(String(200), nullable=True)
+
+    hse_during_checklist = Column(JSONB, default=list, nullable=False)
+    hse_during_result = Column(SAEnum(AuditResult, name="audit_result"), nullable=True)
+    hse_during_conducted_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    hse_during_conducted_at = Column(DateTime(timezone=True), nullable=True)
+    hse_during_notes = Column(Text, nullable=True)
+    hse_during_safety_officer = Column(String(200), nullable=True)
+
+    hse_post_checklist = Column(JSONB, default=list, nullable=False)
+    hse_post_result = Column(SAEnum(AuditResult, name="audit_result"), nullable=True)
+    hse_post_conducted_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    hse_post_conducted_at = Column(DateTime(timezone=True), nullable=True)
+    hse_post_notes = Column(Text, nullable=True)
+    hse_post_safety_officer = Column(String(200), nullable=True)
+
+    # ── Cast Off client block — who the run is for and who hears about it.
+    # Captured at Cast Off, editable by the BM afterwards. Emails are a JSON
+    # list, not a comma-joined string, because these recipients are MERGED with
+    # the Naval Clearance recipients (already a list) and de-duplicated before
+    # anything is sent.
+    cast_off_client_name = Column(String(200), nullable=True)
+    cast_off_client_vessel_name = Column(String(200), nullable=True)
+    cast_off_client_emails = Column(JSONB, default=list, nullable=False)
 
     # ── Discharge-completion arithmetic — system calculates gsv/mt_vacuum
     # from the submitted readings, litres-based (spec's BDN convention).
