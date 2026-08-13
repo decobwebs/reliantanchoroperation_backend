@@ -8,11 +8,13 @@ from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
-from app.models.bdn import BDN, VesselActivity, VesselActivityLeg
+from app.models.bdn import BDN, VesselActivity, VesselActivityLeg, RobEntry
 from app.models.operation import Operation, OperationStatusHistory
+from app.models.truck import TruckOperation
+from app.models.vessel import Vessel
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.models.enums import UserRole, BdnStatus, OperationStatus, VesselActivityStatus, VesselStage, VesselLegStage, OperationType
+from app.models.enums import UserRole, BdnStatus, OperationStatus, VesselActivityStatus, VesselStage, VesselLegStage, OperationType, TruckOpStatus, RobEntryType
 from app.schemas.vessel_bdn import VesselBdnCreate, VesselBdnUpdate
 from app.services.notification_service import notify
 from app.services.audit_diff import capture_diff
@@ -124,6 +126,35 @@ class VesselBdnService:
                 detail="A Vessel BDN is already pending or approved for this vessel run",
             )
 
+        # Truck-vs-vessel reconciliation (Full Operation only) — replaces the
+        # retired Start/Receipt/Bunkering/Discharge/Complete ROB-session flow.
+        # truck_discharged_total_mt is computed here, never client-supplied,
+        # same precedent as the system_* snapshot below. vessel_received_total_mt
+        # is the one manual figure and is required for this operation type —
+        # enforced here rather than on the schema, since "required" depends on
+        # the operation's type, which Pydantic can't see at validation time.
+        truck_discharged_total_mt = None
+        vessel_received_total_mt = None
+        truck_variance_mt = None
+        if operation.type == OperationType.full_operation:
+            if data.vessel_received_total_mt is None:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Total Quantity Received by the Vessel is required for a Full Operation Vessel BDN",
+                )
+            truck_total_result = await db.execute(
+                select(func.coalesce(func.sum(TruckOperation.quantity_discharged_mt), 0)).where(
+                    and_(
+                        TruckOperation.operation_id == operation.id,
+                        TruckOperation.status == TruckOpStatus.completed,
+                        TruckOperation.destination_vessel_id == operation.vessel_id,
+                    )
+                )
+            )
+            truck_discharged_total_mt = truck_total_result.scalar() or 0
+            vessel_received_total_mt = data.vessel_received_total_mt
+            truck_variance_mt = truck_discharged_total_mt - vessel_received_total_mt
+
         # Independently compute what the system has on record for THIS vessel
         # run — never used to fill or default anything the submitter enters.
         # System (not user-entered) timestamps are the comparison baseline
@@ -171,6 +202,9 @@ class VesselBdnService:
             received_gov=data.received_gov,
             received_gsv=data.received_gsv,
             received_mt_vacuum=data.received_mt_vacuum,
+            truck_discharged_total_mt=truck_discharged_total_mt,
+            vessel_received_total_mt=vessel_received_total_mt,
+            truck_variance_mt=truck_variance_mt,
             system_product_type=system_product_type,
             system_quantity_loaded_litres=system_quantity_loaded,
             system_quantity_discharged_litres=system_quantity_discharged,
@@ -381,7 +415,26 @@ class VesselBdnService:
             new_discharged = update_data.get("quantity_discharged_litres", bdn.quantity_discharged_litres)
             update_data["variance_litres"] = new_loaded - new_discharged
 
+        # Same for truck_variance_mt when the BM corrects the received figure.
+        if "vessel_received_total_mt" in update_data and bdn.truck_discharged_total_mt is not None:
+            update_data["truck_variance_mt"] = bdn.truck_discharged_total_mt - update_data["vessel_received_total_mt"]
+
+        # An approved BDN's vessel_received_total_mt already credited the
+        # vessel's ROB — reverse that exact credit before applying the
+        # correction, then reapply with the corrected figure, so the ledger
+        # never double-counts or goes stale.
+        rob_needs_reapply = (
+            bdn.status == BdnStatus.approved
+            and "vessel_received_total_mt" in update_data
+            and update_data["vessel_received_total_mt"] != bdn.vessel_received_total_mt
+        )
+        if rob_needs_reapply:
+            await VesselBdnService._reverse_rob_credit(bdn, db)
+
         changes = capture_diff(bdn, update_data)
+
+        if rob_needs_reapply and bdn.vessel_received_total_mt is not None:
+            await VesselBdnService._apply_rob_credit(bdn, current_user, db)
         db.add(AuditLog(
             user_id=current_user.id, operation_id=bdn.operation_id, action="UPDATE_VESSEL_BDN",
             entity_type="vessel_bdn", entity_id=bdn.id, changes=changes, reason=data.reason,
@@ -450,6 +503,58 @@ class VesselBdnService:
         return total, approved
 
     @staticmethod
+    def _rob_source_description(bdn: BDN) -> str:
+        return f"Vessel BDN {bdn.bdn_number}"
+
+    @staticmethod
+    async def _apply_rob_credit(bdn: BDN, current_user: User, db: AsyncSession) -> None:
+        """Writes the RobEntry for this BDN's vessel_received_total_mt and
+        updates the vessel's current ROB. Assumes no prior entry for this
+        BDN exists yet — call _reverse_rob_credit first if one might."""
+        vessel = await db.get(Vessel, bdn.vessel_id)
+        if not vessel:
+            return
+        rob_before = vessel.current_rob_mt or 0
+        rob_after = rob_before + bdn.vessel_received_total_mt
+        vessel.current_rob_mt = rob_after
+        db.add(RobEntry(
+            vessel_id=bdn.vessel_id,
+            operation_id=bdn.operation_id,
+            entry_type=RobEntryType.replenishment,
+            quantity_mt=bdn.vessel_received_total_mt,
+            rob_before_mt=rob_before,
+            rob_after_mt=rob_after,
+            recorded_by=current_user.id,
+            source_description=VesselBdnService._rob_source_description(bdn),
+            notes=f"Vessel BDN {bdn.bdn_number} approved",
+        ))
+        await db.flush()
+
+    @staticmethod
+    async def _reverse_rob_credit(bdn: BDN, db: AsyncSession) -> None:
+        """Delete-and-reinsert reversal, same pattern already used three
+        times in vessel_activity_service.py for BM corrections — finds this
+        BDN's prior RobEntry rows by their exact source_description marker,
+        subtracts their net effect off the vessel's current ROB, deletes
+        them. Caller writes the fresh entry afterward."""
+        vessel = await db.get(Vessel, bdn.vessel_id)
+        if not vessel:
+            return
+        prior_result = await db.execute(
+            select(RobEntry).where(
+                and_(RobEntry.vessel_id == bdn.vessel_id, RobEntry.source_description == VesselBdnService._rob_source_description(bdn))
+            )
+        )
+        prior_entries = list(prior_result.scalars().all())
+        if not prior_entries:
+            return
+        reversed_net = sum((e.quantity_mt for e in prior_entries), type(prior_entries[0].quantity_mt)(0))
+        vessel.current_rob_mt = (vessel.current_rob_mt or 0) - reversed_net
+        for entry in prior_entries:
+            await db.delete(entry)
+        await db.flush()
+
+    @staticmethod
     async def approve_vessel_bdn(bdn_id: UUID, current_user: User, db: AsyncSession) -> tuple[BDN, int, int, bool]:
         """Approves this one BDN, then checks whether EVERY vessel run on the
         operation now has an approved BDN — only then does the operation
@@ -466,6 +571,14 @@ class VesselBdnService:
         await db.flush()
 
         operation = await _get_operation_or_404(bdn.operation_id, db)
+
+        # Full Operation only: approving this BDN is what updates the
+        # vessel's ROB now — replaces what the retired Complete step used to
+        # do. Runs per-approval, independent of whether every vessel run on
+        # the operation is approved yet.
+        if operation.type == OperationType.full_operation and bdn.vessel_received_total_mt is not None:
+            await VesselBdnService._apply_rob_credit(bdn, current_user, db)
+
         total, approved = await VesselBdnService._approval_progress(operation.id, db)
         gate_cleared = total > 0 and approved >= total
 

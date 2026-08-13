@@ -101,6 +101,17 @@ class BDN(Base):
     received_gsv = Column(Numeric(14, 2), nullable=True)
     received_mt_vacuum = Column(Numeric(12, 3), nullable=True)
 
+    # ── Truck-vs-vessel reconciliation (migration 056, Full Operation only) —
+    # replaces the retired Start/Receipt/Bunkering/Discharge/Complete
+    # ROB-session flow. `truck_discharged_total_mt` is server-computed from
+    # TruckOperation records, never client-supplied. `vessel_received_total_mt`
+    # is the one manual entry — independent of the truck figure by design, so
+    # `truck_variance_mt` is a real reconciliation check rather than always
+    # reading zero. Approving this BDN is what updates the vessel's ROB.
+    truck_discharged_total_mt = Column(Numeric(12, 3), nullable=True)
+    vessel_received_total_mt = Column(Numeric(12, 3), nullable=True)
+    truck_variance_mt = Column(Numeric(12, 3), nullable=True)
+
     # ── System-computed snapshot at submission — comparison only ──
     system_product_type = Column(String(100), nullable=True)
     system_discharge_location = Column(Text, nullable=True)

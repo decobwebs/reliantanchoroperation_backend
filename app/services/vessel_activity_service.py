@@ -228,8 +228,26 @@ class VesselActivityService:
         return activity
 
     @staticmethod
+    async def _assert_not_full_operation(activity: "VesselActivity", db: AsyncSession) -> None:
+        """The old Start/Receipt/Bunkering/Discharge/Complete ROB-session flow
+        is retired for full_operation — the Vessel BDN now carries the
+        truck-vs-vessel reconciliation, and approving it is what updates ROB
+        (see VesselBdnService.approve_vessel_bdn). Guarded here, not just
+        removed from the UI: complete() is the one method that used to write
+        the RobEntry directly, and leaving it silently reachable would let a
+        stray call double-credit the vessel now that approval does it too."""
+        op = await db.get(Operation, activity.operation_id)
+        if op and op.type == OperationType.full_operation:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="This flow has been retired for Full Operation — quantities and ROB "
+                       "are now recorded on the Vessel BDN. Submit a Vessel BDN instead.",
+            )
+
+    @staticmethod
     async def start(activity_id: UUID, current_user: User, db: AsyncSession) -> VesselActivity:
         activity = await VesselActivityService._get_or_404(activity_id, db)
+        await VesselActivityService._assert_not_full_operation(activity, db)
 
         if (
             current_user.id != activity.assigned_to
@@ -272,6 +290,7 @@ class VesselActivityService:
         db: AsyncSession,
     ) -> VesselActivity:
         activity = await VesselActivityService._get_or_404(activity_id, db)
+        await VesselActivityService._assert_not_full_operation(activity, db)
         VesselActivityService._assert_active(activity, current_user)
 
         activity.vessel_received_mt = data.vessel_received_mt
@@ -325,6 +344,7 @@ class VesselActivityService:
         db: AsyncSession,
     ) -> VesselActivity:
         activity = await VesselActivityService._get_or_404(activity_id, db)
+        await VesselActivityService._assert_not_full_operation(activity, db)
         VesselActivityService._assert_active(activity, current_user)
 
         if data.bunkering_start_at:
@@ -352,6 +372,7 @@ class VesselActivityService:
         db: AsyncSession,
     ) -> VesselActivity:
         activity = await VesselActivityService._get_or_404(activity_id, db)
+        await VesselActivityService._assert_not_full_operation(activity, db)
         VesselActivityService._assert_active(activity, current_user)
 
         activity.quantity_discharged_mt = data.quantity_discharged_mt
@@ -394,6 +415,7 @@ class VesselActivityService:
         db: AsyncSession,
     ) -> VesselActivity:
         activity = await VesselActivityService._get_or_404(activity_id, db)
+        await VesselActivityService._assert_not_full_operation(activity, db)
         VesselActivityService._assert_active(activity, current_user)
 
         final_rob = activity.final_rob_mt if activity.final_rob_mt is not None else activity.new_rob_mt
