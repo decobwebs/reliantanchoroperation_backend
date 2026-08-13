@@ -68,8 +68,8 @@ _LEG_QUANTITIES_ROB_SOURCE_SUFFIX = " — leg quantities"
 # Stage order — used to validate forward progression (BM may still correct
 # an already-logged stage; this only stops skipping ahead by mistake).
 _STAGE_ORDER = [
-    VesselStage.cast_off, VesselStage.outbound, VesselStage.alongside,
-    VesselStage.hse_check, VesselStage.discharging, VesselStage.discharge_completed,
+    VesselStage.cast_off, VesselStage.approach, VesselStage.alongside,
+    VesselStage.hse_check, VesselStage.commence_discharge, VesselStage.discharge_completed,
 ]
 
 # Delivery-leg stage order — separate 4-entry sequence for receiving-vessel

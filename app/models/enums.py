@@ -194,12 +194,18 @@ class VesselActivityStatus(str, enum.Enum):
 
 class VesselStage(str, enum.Enum):
     """Per-vessel-run stage sequence — Reliant's own barge's physical
-    journey, independent of (and additive to) VesselActivityStatus."""
+    journey, independent of (and additive to) VesselActivityStatus.
+
+    `approach` and `commence_discharge` were named `outbound` and `discharging`
+    until migration 057 renamed both in the database — the crew's own wording.
+    TruckStatus and TruckOpStatus have their own unrelated `discharging`; those
+    are a different enum and were deliberately left alone.
+    """
     cast_off = "cast_off"
-    outbound = "outbound"
+    approach = "approach"
     alongside = "alongside"
     hse_check = "hse_check"
-    discharging = "discharging"
+    commence_discharge = "commence_discharge"
     discharge_completed = "discharge_completed"
 
 
