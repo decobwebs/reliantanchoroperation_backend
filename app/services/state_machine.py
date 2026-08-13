@@ -124,10 +124,10 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     "tasks_assigned->active":           ["bunker_manager"],           # vessel-only direct activation
 
     # Truck feedback loop
-    "awaiting_feedback->feedback_submitted":  ["logistics_officer"],
+    "awaiting_feedback->feedback_submitted":  ["logistics_officer", "bunker_manager"],
     "feedback_submitted->active":             ["bunker_manager"],
     "feedback_submitted->feedback_rejected":  ["bunker_manager"],
-    "feedback_rejected->feedback_submitted":  ["logistics_officer"],
+    "feedback_rejected->feedback_submitted":  ["logistics_officer", "bunker_manager"],
     "feedback_approved->active":              ["bunker_manager"],     # legacy compat
 
     # ── Old compat: BM links PFI after BDN (operations that pre-date redesign)
@@ -156,8 +156,8 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     "bdn_approved->vessel_operations":  ["system", "bunker_manager"],
 
     # ── Truck delivery completion — primary path now (finance/payment no longer gates it) ──
-    "active->pending_completion":       ["logistics_officer", "ops_supervisor"],
-    "payment_confirmed->pending_completion": ["logistics_officer", "ops_supervisor"],   # legacy compat
+    "active->pending_completion":       ["logistics_officer", "ops_supervisor", "bunker_manager"],
+    "payment_confirmed->pending_completion": ["logistics_officer", "ops_supervisor", "bunker_manager"],   # legacy compat
     "pending_completion->active":       ["bunker_manager"],
     "pending_completion->invoiced":     ["finance_manager"],           # legacy compat only
     # BDN gate — shared by truck (Truck BDN, submitted by OS/LO) and
