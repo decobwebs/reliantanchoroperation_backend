@@ -9,10 +9,11 @@ from fastapi import HTTPException, status
 
 from app.models.bdn import BDN, RobEntry
 from app.models.vessel import Vessel
+from app.models.truck import TruckOperation
 from app.models.operation import Operation, OperationStatusHistory
 from app.models.audit import AuditLog
 from app.models.user import User
-from app.models.enums import UserRole, BdnStatus, OperationStatus
+from app.models.enums import UserRole, BdnStatus, OperationStatus, OperationType, TruckOpStatus, RobEntryType
 from app.schemas.bdn import BdnCreate
 from app.services.notification_service import notify
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
@@ -96,6 +97,26 @@ class BdnService:
 
         bdn_number = await generate_bdn_number(db)
 
+        # Trucks-discharged is computed here, never client-supplied — display
+        # only (see BdnOut), same convention as the equivalent field on the
+        # Vessel BDN flow. Full Operation only: a truck_only op has no vessel
+        # deliveries to reconcile against, and vessel_only never routes
+        # product through a truck in the first place.
+        truck_discharged_total_mt = None
+        truck_variance_mt = None
+        if operation.type == OperationType.full_operation:
+            truck_total_result = await db.execute(
+                select(func.coalesce(func.sum(TruckOperation.quantity_discharged_mt), 0)).where(
+                    and_(
+                        TruckOperation.operation_id == operation.id,
+                        TruckOperation.status == TruckOpStatus.completed,
+                        TruckOperation.destination_vessel_id == data.vessel_id,
+                    )
+                )
+            )
+            truck_discharged_total_mt = truck_total_result.scalar() or 0
+            truck_variance_mt = truck_discharged_total_mt - data.quantity_delivered_mt
+
         bdn = BDN(
             bdn_number=bdn_number,
             operation_id=operation_id,
@@ -103,11 +124,15 @@ class BdnService:
             generated_by=current_user.id,
             status=BdnStatus.pending,
             quantity_delivered_mt=data.quantity_delivered_mt,
+            discharge_gov=data.discharge_gov,
+            discharge_gsv=data.discharge_gsv,
             product_type=data.product_type,
             density=data.density,
             temperature=data.temperature,
             delivery_date=data.delivery_date,
             notes=data.notes,
+            truck_discharged_total_mt=truck_discharged_total_mt,
+            truck_variance_mt=truck_variance_mt,
             version=1,
         )
         db.add(bdn)
@@ -201,6 +226,26 @@ class BdnService:
 
         # Transition operation to bdn_approved (no-op if already there — multiple BDN scenario)
         operation = await _get_operation_or_404(bdn.operation_id, db)
+
+        # Credit the vessel's ROB — quantity_delivered_mt is this BDN's one
+        # manual figure of record. Only fires from here forward: this method
+        # requires status == pending on entry, so an already-approved BDN can
+        # never pass through it a second time, and nothing here touches BDNs
+        # approved before this credit existed — no backfill, no risk of
+        # double-counting whatever ROB value they already contributed to.
+        if operation.type == OperationType.full_operation:
+            vessel = await db.get(Vessel, bdn.vessel_id)
+            rob_before = vessel.current_rob_mt or 0
+            rob_after = rob_before + bdn.quantity_delivered_mt
+            vessel.current_rob_mt = rob_after
+            db.add(RobEntry(
+                vessel_id=bdn.vessel_id, operation_id=bdn.operation_id,
+                entry_type=RobEntryType.replenishment, quantity_mt=bdn.quantity_delivered_mt,
+                rob_before_mt=rob_before, rob_after_mt=rob_after, recorded_by=current_user.id,
+                source_description=f"BDN {bdn.bdn_number}",
+                notes=f"BDN {bdn.bdn_number} approved",
+            ))
+
         if operation.status != OperationStatus.bdn_approved:
             await _transition_operation(
                 operation, OperationStatus.bdn_approved, current_user, db,

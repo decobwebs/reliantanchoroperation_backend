@@ -9,6 +9,14 @@ from app.models.enums import BdnStatus
 class BdnCreate(BaseModel):
     vessel_id: UUID
     quantity_delivered_mt: Decimal
+    # GOV/GSV — the vessel's own discharge readings. Written onto the same
+    # discharge_gov/discharge_gsv columns the (unused) Vessel BDN flow already
+    # had, so this is a display convention, not a schema change underneath.
+    # Required, unlike density/temperature below: this BDN is the operative
+    # record for the vessel run, so the three figures the BM asked for — GOV,
+    # GSV, and quantity_delivered_mt as MT — must all be present together.
+    discharge_gov: Decimal
+    discharge_gsv: Decimal
     product_type: Optional[str] = None
     density: Optional[Decimal] = None
     temperature: Optional[Decimal] = None
@@ -20,11 +28,11 @@ class BdnCreate(BaseModel):
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
 
-    @field_validator("quantity_delivered_mt")
+    @field_validator("quantity_delivered_mt", "discharge_gov", "discharge_gsv")
     @classmethod
-    def validate_quantity(cls, v: Decimal) -> Decimal:
+    def validate_positive(cls, v: Decimal) -> Decimal:
         if v <= 0:
-            raise ValueError("quantity_delivered_mt must be positive")
+            raise ValueError("Must be greater than zero")
         return v
 
 
@@ -37,6 +45,8 @@ class BdnOut(BaseModel):
     reviewed_by: Optional[UUID] = None
     status: BdnStatus
     quantity_delivered_mt: Decimal
+    discharge_gov: Optional[Decimal] = None
+    discharge_gsv: Optional[Decimal] = None
     product_type: Optional[str] = None
     density: Optional[Decimal] = None
     temperature: Optional[Decimal] = None
@@ -49,6 +59,11 @@ class BdnOut(BaseModel):
     version: int
     vessel_name: Optional[str] = None
     generated_by_name: Optional[str] = None
+    # Truck-vs-vessel reconciliation — computed server-side at creation,
+    # display only, never entered and never used to derive anything else.
+    # Null on BDNs created before this field existed.
+    truck_discharged_total_mt: Optional[Decimal] = None
+    truck_variance_mt: Optional[Decimal] = None
 
     model_config = {"from_attributes": True}
 
