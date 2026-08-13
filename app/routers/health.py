@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -8,6 +9,13 @@ from app.schemas.common import StandardResponse
 
 router = APIRouter(tags=["Health"])
 
+# Render injects the deployed commit here. Surfaced on /health so "has my push
+# actually gone live yet?" is answerable without the dashboard — which matters
+# when a migration has to be applied the moment a deploy lands, and matters more
+# because Render's pre-deploy has been observed NOT running `alembic upgrade`
+# (migration 057 shipped code without its migration for ~20 minutes).
+_COMMIT = (os.getenv("RENDER_GIT_COMMIT") or "unknown")[:7]
+
 
 @router.get("/health", response_model=StandardResponse)
 async def health_check():
@@ -17,6 +25,7 @@ async def health_check():
             "status": "ok",
             "timestamp": datetime.utcnow().isoformat(),
             "version": "1.0.0",
+            "commit": _COMMIT,
         },
         message="RAOMS API is running",
     )

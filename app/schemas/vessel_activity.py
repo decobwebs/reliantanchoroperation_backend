@@ -389,10 +389,10 @@ class VesselActivityOut(BaseModel):
     # ── Stage flow ──
     stage: Optional[VesselStage] = None
     stage_cast_off_at: Optional[datetime] = None
-    stage_outbound_at: Optional[datetime] = None
+    stage_approach_at: Optional[datetime] = None
     stage_alongside_at: Optional[datetime] = None
     stage_hse_check_at: Optional[datetime] = None
-    stage_discharging_at: Optional[datetime] = None
+    stage_commence_discharge_at: Optional[datetime] = None
     stage_discharge_completed_at: Optional[datetime] = None
 
     # ── HSE ──

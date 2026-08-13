@@ -169,7 +169,7 @@ class VesselBdnService:
             system_product_type = activity.product_type
             system_quantity_loaded = activity.vessel_received_mt
             system_quantity_discharged = activity.quantity_discharged_mt
-            system_commenced_at = activity.stage_discharging_at
+            system_commenced_at = activity.stage_commence_discharge_at
             system_completed_at = activity.stage_discharge_completed_at
 
         bdn_number = await generate_bdn_number(db)

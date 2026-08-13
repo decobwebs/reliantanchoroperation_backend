@@ -232,10 +232,10 @@ class VesselActivity(Base):
     # different (truck -> barge) leg and stay untouched.
     stage = Column(SAEnum(VesselStage, name="vessel_stage"), nullable=True)
     stage_cast_off_at = Column(DateTime(timezone=True), nullable=True)
-    stage_outbound_at = Column(DateTime(timezone=True), nullable=True)
+    stage_approach_at = Column(DateTime(timezone=True), nullable=True)
     stage_alongside_at = Column(DateTime(timezone=True), nullable=True)
     stage_hse_check_at = Column(DateTime(timezone=True), nullable=True)
-    stage_discharging_at = Column(DateTime(timezone=True), nullable=True)
+    stage_commence_discharge_at = Column(DateTime(timezone=True), nullable=True)
     stage_discharge_completed_at = Column(DateTime(timezone=True), nullable=True)
 
     # ── HSE checklist — non-blocking record, same {item, result, notes}
