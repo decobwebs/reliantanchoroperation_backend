@@ -1297,10 +1297,13 @@ class TruckService:
         if not truck_op:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck operation not found")
 
-        if truck_op.status != TruckOpStatus.completed:
+        # The BM can correct any stage of any truck's journey, at any point —
+        # that's the whole point of this endpoint. A cancelled entry is the
+        # one exception: it's void, there's nothing left to correct on it.
+        if truck_op.status == TruckOpStatus.cancelled:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Can only edit discharge records for completed truck operations",
+                detail="Cannot edit a cancelled truck operation",
             )
 
         was_approved = truck_op.discharge_approved is True
