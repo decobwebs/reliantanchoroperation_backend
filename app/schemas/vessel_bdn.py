@@ -23,6 +23,7 @@ class VesselBdnCreate(BaseModel):
     discharge_gov: Decimal
     discharge_gsv: Decimal
     discharge_mt_vacuum: Decimal
+    discharge_commenced_at: datetime
     discharge_completed_at: datetime
     discharge_completion_date: date
     # Receiving vessel's independent readings — optional, since this is new
