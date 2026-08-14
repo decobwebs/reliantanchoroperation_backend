@@ -115,7 +115,7 @@ class BdnService:
                 )
             )
             truck_discharged_total_mt = truck_total_result.scalar() or 0
-            truck_variance_mt = truck_discharged_total_mt - data.quantity_delivered_mt
+            truck_variance_mt = data.discharge_gov - truck_discharged_total_mt
 
         bdn = BDN(
             bdn_number=bdn_number,
