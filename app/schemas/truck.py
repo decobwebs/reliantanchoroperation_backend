@@ -454,14 +454,32 @@ class DischargeApproveRequest(BaseModel):
 
 
 class DischargeEditRequest(BaseModel):
+    """Bunker Manager correction, covering the whole truck journey — not just
+    the discharge figures the endpoint was originally named for. Every field
+    optional and independently applied; this is how a stage that was skipped
+    or wrongly filled in gets fixed after the fact (e.g. a truck that
+    finished discharge with no destination vessel ever picked)."""
     quantity_discharged_mt: Optional[Decimal] = None
     spillage_mt: Optional[Decimal] = None
     temperature_celsius: Optional[Decimal] = None
     destination_vessel_id: Optional[UUID] = None
     destination_vessel_name: Optional[str] = None
     notes: Optional[str] = None
+    # The rest of the journey — every TRUCK_STAGES timestamp plus the fields
+    # recorded alongside each one, previously editable nowhere once logged.
+    departed_parking_at: Optional[datetime] = None
+    arrived_loading_at: Optional[datetime] = None
+    loading_location: Optional[str] = None
+    transit_start_at: Optional[datetime] = None       # "Loading Started"
+    departed_loading_at: Optional[datetime] = None     # "Loading Completed / Departed"
+    quantity_loaded_mt: Optional[Decimal] = None
+    waybill_document_number: Optional[str] = None
+    arrived_discharge_at: Optional[datetime] = None
+    discharge_location: Optional[str] = None
+    discharge_start_at: Optional[datetime] = None
+    discharge_end_at: Optional[datetime] = None
 
-    @field_validator("destination_vessel_name", "notes", mode="before")
+    @field_validator("destination_vessel_name", "notes", "loading_location", "discharge_location", "waybill_document_number", mode="before")
     @classmethod
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v

@@ -1339,6 +1339,19 @@ class TruckService:
         if data.notes is not None:
             truck_op.notes = data.notes
 
+        # The rest of the journey — plain overwrites, one per TRUCK_STAGES
+        # field, none of which had any correction path before this.
+        for field in (
+            "departed_parking_at", "arrived_loading_at", "loading_location",
+            "transit_start_at", "departed_loading_at", "quantity_loaded_mt",
+            "waybill_document_number", "arrived_discharge_at", "discharge_location",
+            "discharge_start_at", "discharge_end_at",
+        ):
+            value = getattr(data, field)
+            if value is not None:
+                changes[field] = str(value)
+                setattr(truck_op, field, value)
+
         truck_op.updated_at = datetime.utcnow()
 
         # If discharge was already approved AND vessel/qty changed on a tracked vessel → write correction
@@ -1416,6 +1429,37 @@ class TruckService:
                         source_description=f"BM quantity correction: {truck_label}",
                         notes=f"BM {current_user.full_name} corrected discharge qty from {float(old_qty):.3f} to {float(new_qty):.3f} L.",
                     ))
+        elif not was_approved and truck_op.destination_vessel_id and new_qty:
+            # This truck finished discharge with no destination vessel ever
+            # picked (nothing to reverse — it never credited anything), and
+            # the BM is only now assigning one. Credit it fresh, same as
+            # end_discharge would have done at the time if a vessel had been
+            # picked there.
+            vessel_result = await db.execute(
+                select(Vessel).where(Vessel.id == truck_op.destination_vessel_id).with_for_update()
+            )
+            vessel = vessel_result.scalar_one_or_none()
+            if vessel:
+                rob_before_assign = vessel.current_rob_mt or 0
+                rob_after_assign = rob_before_assign + new_qty
+                vessel.current_rob_mt = rob_after_assign
+                truck_label = truck_op.truck.truck_number if truck_op.truck else str(truck_op.id)[:8]
+                db.add(RobEntry(
+                    vessel_id=vessel.id,
+                    operation_id=operation_id,
+                    entry_type=RobEntryType.replenishment,
+                    quantity_mt=new_qty,
+                    rob_before_mt=rob_before_assign,
+                    rob_after_mt=rob_after_assign,
+                    recorded_by=current_user.id,
+                    truck_operation_id=truck_op.id,
+                    source_description=f"BM correction — assigned truck delivery: {truck_label}",
+                    notes=f"BM {current_user.full_name} assigned this truck's delivery ({float(new_qty):.3f} L) to a "
+                          f"vessel it was missing.",
+                ))
+                truck_op.discharge_approved = True
+                truck_op.discharge_approved_by = current_user.id
+                truck_op.discharge_approved_at = datetime.utcnow()
 
         db.add(AuditLog(
             user_id=current_user.id,
