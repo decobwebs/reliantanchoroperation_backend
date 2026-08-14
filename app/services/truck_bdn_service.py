@@ -4,7 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, delete, and_, func
 from fastapi import HTTPException, status
 
 from app.models.truck import TruckBdn, TruckOperation
@@ -273,6 +273,28 @@ class TruckBdnService:
         await db.flush()
         await db.refresh(truck_bdn)
         return truck_bdn
+
+    @staticmethod
+    async def delete_truck_bdn(
+        truck_bdn_id: UUID,
+        current_user: User,
+        db: AsyncSession,
+    ) -> None:
+        """Bunker Manager deletes a Truck BDN outright, regardless of status.
+        This flow never touches ROB, so unlike the other two BDN deletes
+        there's nothing to reverse."""
+        truck_bdn = await TruckBdnService.get_truck_bdn(truck_bdn_id, db)
+
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=truck_bdn.operation_id, action="DELETE_TRUCK_BDN",
+            entity_type="truck_bdn", entity_id=truck_bdn.id,
+            changes={"truck_bdn_number": truck_bdn.truck_bdn_number, "status_at_deletion": truck_bdn.status.value},
+        ))
+        await db.execute(delete(AuditLog).where(
+            AuditLog.entity_type == "truck_bdn", AuditLog.entity_id == truck_bdn.id, AuditLog.action != "DELETE_TRUCK_BDN"
+        ))
+        await db.delete(truck_bdn)
+        await db.flush()
 
     @staticmethod
     async def approve_truck_bdn(

@@ -4,7 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, delete, and_, func
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
@@ -632,3 +632,27 @@ class VesselBdnService:
         await db.flush()
         await db.refresh(bdn)
         return bdn
+
+    @staticmethod
+    async def delete_vessel_bdn(bdn_id: UUID, current_user: User, db: AsyncSession) -> None:
+        """Bunker Manager deletes a Vessel BDN outright. If it was approved
+        (full_operation only — that's the only case that ever debited ROB),
+        the debit is reversed first so deleting it never leaves the vessel's
+        ROB permanently short."""
+        bdn = await VesselBdnService.get_vessel_bdn(bdn_id, db)
+        operation = await _get_operation_or_404(bdn.operation_id, db)
+
+        if bdn.status == BdnStatus.approved and operation.type == OperationType.full_operation:
+            await VesselBdnService._reverse_rob_entry(bdn, db)
+
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=bdn.operation_id, action="DELETE_VESSEL_BDN",
+            entity_type="vessel_bdn", entity_id=bdn.id,
+            changes={"bdn_number": bdn.bdn_number, "status_at_deletion": bdn.status.value,
+                     "discharge_mt_vacuum": str(bdn.discharge_mt_vacuum)},
+        ))
+        await db.execute(delete(AuditLog).where(
+            AuditLog.entity_type == "vessel_bdn", AuditLog.entity_id == bdn.id, AuditLog.action != "DELETE_VESSEL_BDN"
+        ))
+        await db.delete(bdn)
+        await db.flush()

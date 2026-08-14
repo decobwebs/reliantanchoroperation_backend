@@ -36,6 +36,41 @@ class BdnCreate(BaseModel):
         return v
 
 
+class BdnUpdate(BaseModel):
+    """Bunker Manager correction — every field optional, applied independently.
+    quantity_delivered_mt is the one that touches ROB on an approved BDN
+    (see BdnService.update_bdn): the old credit is reversed and the new one
+    reapplied so the vessel's ledger never double-counts or goes stale."""
+    quantity_delivered_mt: Optional[Decimal] = None
+    discharge_gov: Optional[Decimal] = None
+    discharge_gsv: Optional[Decimal] = None
+    product_type: Optional[str] = None
+    density: Optional[Decimal] = None
+    temperature: Optional[Decimal] = None
+    delivery_date: Optional[datetime] = None
+    notes: Optional[str] = None
+    reason: str
+
+    @field_validator("product_type", "notes", "reason", mode="before")
+    @classmethod
+    def strip_strings(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+    @field_validator("reason")
+    @classmethod
+    def reason_required(cls, v: str) -> str:
+        if not v or len(v) < 10:
+            raise ValueError("Reason for correction must be at least 10 characters")
+        return v
+
+    @field_validator("quantity_delivered_mt", "discharge_gov", "discharge_gsv")
+    @classmethod
+    def validate_positive(cls, v: Optional[Decimal]) -> Optional[Decimal]:
+        if v is not None and v <= 0:
+            raise ValueError("Must be greater than zero")
+        return v
+
+
 class BdnOut(BaseModel):
     id: UUID
     bdn_number: str

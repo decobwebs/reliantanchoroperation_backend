@@ -3,7 +3,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, delete, and_, func
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
@@ -14,7 +14,7 @@ from app.models.operation import Operation, OperationStatusHistory
 from app.models.audit import AuditLog
 from app.models.user import User
 from app.models.enums import UserRole, BdnStatus, OperationStatus, OperationType, TruckOpStatus, RobEntryType
-from app.schemas.bdn import BdnCreate
+from app.schemas.bdn import BdnCreate, BdnUpdate
 from app.services.notification_service import notify
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.utils.number_generator import generate_bdn_number
@@ -234,17 +234,7 @@ class BdnService:
         # approved before this credit existed — no backfill, no risk of
         # double-counting whatever ROB value they already contributed to.
         if operation.type == OperationType.full_operation:
-            vessel = await db.get(Vessel, bdn.vessel_id)
-            rob_before = vessel.current_rob_mt or 0
-            rob_after = rob_before + bdn.quantity_delivered_mt
-            vessel.current_rob_mt = rob_after
-            db.add(RobEntry(
-                vessel_id=bdn.vessel_id, operation_id=bdn.operation_id,
-                entry_type=RobEntryType.replenishment, quantity_mt=bdn.quantity_delivered_mt,
-                rob_before_mt=rob_before, rob_after_mt=rob_after, recorded_by=current_user.id,
-                source_description=f"BDN {bdn.bdn_number}",
-                notes=f"BDN {bdn.bdn_number} approved",
-            ))
+            await BdnService._apply_rob_credit(bdn, current_user, db)
 
         if operation.status != OperationStatus.bdn_approved:
             await _transition_operation(
@@ -300,6 +290,117 @@ class BdnService:
         await db.flush()
         await db.refresh(bdn)
         return bdn
+
+    @staticmethod
+    async def update_bdn(
+        bdn_id: UUID,
+        data: BdnUpdate,
+        current_user: User,
+        db: AsyncSession,
+    ) -> BDN:
+        """Bunker Manager corrects any field — allowed regardless of status.
+        quantity_delivered_mt is the one that touches ROB: if this BDN is
+        already approved, the old credit is reversed and the corrected
+        figure reapplied, same reverse-then-reapply pattern used for the
+        Vessel BDN flow (see VesselBdnService.update_vessel_bdn)."""
+        bdn = await BdnService.get_bdn(bdn_id, db)
+
+        operation = await _get_operation_or_404(bdn.operation_id, db)
+        update_data = data.model_dump(exclude_unset=True, exclude={"reason"})
+        old_qty = bdn.quantity_delivered_mt
+
+        rob_needs_reapply = (
+            operation.type == OperationType.full_operation
+            and bdn.status == BdnStatus.approved
+            and "quantity_delivered_mt" in update_data
+            and update_data["quantity_delivered_mt"] != old_qty
+        )
+        if rob_needs_reapply:
+            await BdnService._reverse_rob_credit(bdn, db)
+
+        changes: dict = {"edited_by": current_user.full_name}
+        for field, value in update_data.items():
+            changes[field] = {"from": str(getattr(bdn, field)), "to": str(value)}
+            setattr(bdn, field, value)
+
+        # Truck variance recomputes with a corrected GOV, same formula as creation.
+        if "discharge_gov" in update_data and bdn.truck_discharged_total_mt is not None:
+            bdn.truck_variance_mt = bdn.discharge_gov - bdn.truck_discharged_total_mt
+
+        if rob_needs_reapply:
+            await BdnService._apply_rob_credit(bdn, current_user, db)
+
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=bdn.operation_id, action="UPDATE_BDN",
+            entity_type="bdn", entity_id=bdn.id, changes=changes, reason=data.reason,
+        ))
+        await db.flush()
+        await db.refresh(bdn)
+        return bdn
+
+    @staticmethod
+    async def _apply_rob_credit(bdn: BDN, current_user: User, db: AsyncSession) -> None:
+        vessel = await db.get(Vessel, bdn.vessel_id)
+        if not vessel:
+            return
+        rob_before = vessel.current_rob_mt or 0
+        rob_after = rob_before + bdn.quantity_delivered_mt
+        vessel.current_rob_mt = rob_after
+        db.add(RobEntry(
+            vessel_id=bdn.vessel_id, operation_id=bdn.operation_id,
+            entry_type=RobEntryType.replenishment, quantity_mt=bdn.quantity_delivered_mt,
+            rob_before_mt=rob_before, rob_after_mt=rob_after, recorded_by=current_user.id,
+            source_description=f"BDN {bdn.bdn_number}",
+            notes=f"BDN {bdn.bdn_number} approved",
+        ))
+        await db.flush()
+
+    @staticmethod
+    async def _reverse_rob_credit(bdn: BDN, db: AsyncSession) -> None:
+        """Delete-and-reinsert reversal — finds this BDN's prior RobEntry
+        rows by their exact source_description marker, subtracts their net
+        effect off the vessel's current ROB, deletes them. Caller writes the
+        fresh entry afterward if one is still due."""
+        vessel = await db.get(Vessel, bdn.vessel_id)
+        if not vessel:
+            return
+        prior_result = await db.execute(
+            select(RobEntry).where(
+                and_(RobEntry.vessel_id == bdn.vessel_id, RobEntry.source_description == f"BDN {bdn.bdn_number}")
+            )
+        )
+        prior_entries = list(prior_result.scalars().all())
+        if not prior_entries:
+            return
+        reversed_net = sum((e.quantity_mt for e in prior_entries), type(prior_entries[0].quantity_mt)(0))
+        vessel.current_rob_mt = (vessel.current_rob_mt or 0) - reversed_net
+        for entry in prior_entries:
+            await db.delete(entry)
+        await db.flush()
+
+    @staticmethod
+    async def delete_bdn(
+        bdn_id: UUID,
+        current_user: User,
+        db: AsyncSession,
+    ) -> None:
+        """Bunker Manager deletes a BDN outright — for a wrong or test entry
+        that shouldn't just be rejected (rejected still keeps the record).
+        If it was approved, its ROB credit is reversed first so deleting it
+        never leaves a phantom amount on the vessel's ledger."""
+        bdn = await BdnService.get_bdn(bdn_id, db)
+        if bdn.status == BdnStatus.approved:
+            await BdnService._reverse_rob_credit(bdn, db)
+
+        db.add(AuditLog(
+            user_id=current_user.id, operation_id=bdn.operation_id, action="DELETE_BDN",
+            entity_type="bdn", entity_id=bdn.id,
+            changes={"bdn_number": bdn.bdn_number, "status_at_deletion": bdn.status.value,
+                     "quantity_delivered_mt": str(bdn.quantity_delivered_mt)},
+        ))
+        await db.execute(delete(AuditLog).where(AuditLog.entity_type == "bdn", AuditLog.entity_id == bdn.id, AuditLog.action != "DELETE_BDN"))
+        await db.delete(bdn)
+        await db.flush()
 
     @staticmethod
     async def reject_bdn(

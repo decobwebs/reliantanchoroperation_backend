@@ -8,7 +8,7 @@ from app.dependencies import require_roles
 from app.models.user import User
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse, PaginatedResponse
-from app.schemas.bdn import BdnCreate, BdnOut, BdnApproveRequest, BdnRejectRequest
+from app.schemas.bdn import BdnCreate, BdnUpdate, BdnOut, BdnApproveRequest, BdnRejectRequest
 from app.services.bdn_service import BdnService
 
 router = APIRouter(tags=["BDNs"])
@@ -64,6 +64,33 @@ async def get_bdn(
         data=BdnOut.model_validate(bdn).model_dump(),
         message="BDN retrieved",
     )
+
+
+@router.put("/bdns/{bdn_id}", response_model=StandardResponse)
+async def update_bdn(
+    bdn_id: UUID,
+    body: BdnUpdate,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Correct any field on a BDN, regardless of status. Bunker Manager only."""
+    bdn = await BdnService.update_bdn(bdn_id, body, current_user, db)
+    return StandardResponse.ok(
+        data=BdnOut.model_validate(bdn).model_dump(),
+        message=f"BDN {bdn.bdn_number} updated",
+    )
+
+
+@router.delete("/bdns/{bdn_id}", response_model=StandardResponse)
+async def delete_bdn(
+    bdn_id: UUID,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a BDN outright. Reverses its ROB credit first if it was
+    approved. Bunker Manager only."""
+    await BdnService.delete_bdn(bdn_id, current_user, db)
+    return StandardResponse.ok(data=None, message="BDN deleted")
 
 
 @router.post("/bdns/{bdn_id}/approve", response_model=StandardResponse)

@@ -81,6 +81,17 @@ async def update_truck_bdn(
     )
 
 
+@router.delete("/truck-bdns/{truck_bdn_id}", response_model=StandardResponse)
+async def delete_truck_bdn(
+    truck_bdn_id: UUID,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a Truck BDN outright, regardless of status. Bunker Manager only."""
+    await TruckBdnService.delete_truck_bdn(truck_bdn_id, current_user, db)
+    return StandardResponse.ok(data=None, message="Truck BDN deleted")
+
+
 @router.post("/truck-bdns/{truck_bdn_id}/approve", response_model=StandardResponse)
 async def approve_truck_bdn(
     truck_bdn_id: UUID,

@@ -91,6 +91,18 @@ async def update_vessel_bdn(
     return StandardResponse.ok(data=data, message="Vessel BDN updated")
 
 
+@router.delete("/vessel-bdns/{bdn_id}", response_model=StandardResponse)
+async def delete_vessel_bdn(
+    bdn_id: UUID,
+    current_user: User = _bm_only,
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a Vessel BDN outright. Reverses its ROB debit first if it was
+    approved. Bunker Manager only."""
+    await VesselBdnService.delete_vessel_bdn(bdn_id, current_user, db)
+    return StandardResponse.ok(data=None, message="Vessel BDN deleted")
+
+
 @router.post("/vessel-bdns/{bdn_id}/approve", response_model=StandardResponse)
 async def approve_vessel_bdn(
     bdn_id: UUID,
