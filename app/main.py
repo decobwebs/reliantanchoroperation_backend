@@ -92,9 +92,11 @@ app.add_middleware(RequestIDMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
-    # Only honor the localhost regex in development — in production the explicit
-    # origin allow-list is authoritative (avoids trusting any localhost origin).
-    allow_origin_regex=settings.CORS_ORIGIN_REGEX if settings.is_development else None,
+    # Dev: any localhost port. Prod: any subdomain of this app's own domain —
+    # narrow enough to never trust an arbitrary origin, wide enough that a
+    # CORS_ORIGINS list missing "www." (or gaining a new subdomain later)
+    # doesn't take the whole app down the way it just did.
+    allow_origin_regex=settings.CORS_ORIGIN_REGEX if settings.is_development else settings.PRODUCTION_CORS_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

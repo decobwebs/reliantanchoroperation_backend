@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: str = "http://localhost:3000,http://localhost:3001,http://localhost:5173"
     CORS_ORIGIN_REGEX: str = r"http://(localhost|127\.0\.0\.1):\d+"
+    # Production fallback, always active (unlike CORS_ORIGIN_REGEX above,
+    # which is dev-only) — scoped strictly to this app's own domain and any
+    # subdomain of it over https, so a CORS_ORIGINS list that's missing the
+    # "www." variant (or any future subdomain) doesn't silently break every
+    # API call from that address, the way it just did in production.
+    PRODUCTION_CORS_ORIGIN_REGEX: str = r"https://([a-z0-9-]+\.)?reliantbunkerops\.com"
 
     # Frontend base URL — used to build links inside emails (set-password, etc.)
     # and must be present in Supabase Auth's Redirect URLs allow-list.
