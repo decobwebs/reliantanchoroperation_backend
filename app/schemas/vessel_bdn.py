@@ -15,8 +15,6 @@ class VesselBdnCreate(BaseModel):
     product_type: str
     discharge_location: str
     receiving_vessel: str
-    quantity_loaded_litres: Decimal
-    quantity_discharged_litres: Decimal
     density: Decimal
     temperature: Decimal
     vcf: Decimal
@@ -25,7 +23,6 @@ class VesselBdnCreate(BaseModel):
     discharge_mt_vacuum: Decimal
     discharge_commenced_at: datetime
     discharge_completed_at: datetime
-    discharge_completion_date: date
     # Receiving vessel's independent readings — optional, since this is new
     # data in-flight operations at rollout won't have. If any one of the
     # three is given, all three should be for a meaningful comparison, but
@@ -53,7 +50,7 @@ class VesselBdnCreate(BaseModel):
             raise ValueError("This field is required")
         return v
 
-    @field_validator("quantity_loaded_litres", "quantity_discharged_litres", "density", "discharge_gov", "discharge_gsv", "discharge_mt_vacuum", "vcf")
+    @field_validator("density", "discharge_gov", "discharge_gsv", "discharge_mt_vacuum", "vcf")
     @classmethod
     def positive_values(cls, v: Decimal) -> Decimal:
         if v <= 0:

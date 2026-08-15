@@ -162,15 +162,16 @@ class VesselBdnService:
             generated_by=current_user.id,
             status=BdnStatus.pending,
             # Legacy required columns — kept populated for backward compat.
-            quantity_delivered_mt=data.quantity_discharged_litres,
+            # quantity_delivered_mt is NOT NULL and used to carry the
+            # submitted discharged-litres figure; that field is no longer
+            # collected, so MTvac backs it instead — the same figure that
+            # drives this BDN's ROB debit, so the two can never disagree.
+            quantity_delivered_mt=data.discharge_mt_vacuum,
             delivery_date=data.discharge_completed_at,
             company_name=data.company_name,
             product_type=data.product_type,
             discharge_location=data.discharge_location,
             receiving_vessel=data.receiving_vessel,
-            quantity_loaded_litres=data.quantity_loaded_litres,
-            quantity_discharged_litres=data.quantity_discharged_litres,
-            variance_litres=data.quantity_loaded_litres - data.quantity_discharged_litres,
             density=data.density,
             temperature=data.temperature,
             vcf=data.vcf,
@@ -179,7 +180,9 @@ class VesselBdnService:
             discharge_mt_vacuum=data.discharge_mt_vacuum,
             discharge_commenced_at=data.discharge_commenced_at,
             discharge_completed_at=data.discharge_completed_at,
-            discharge_completion_date=data.discharge_completion_date,
+            # Derived, not asked for — the separate date field was dropped
+            # from the form as a duplicate of the completed-at timestamp.
+            discharge_completion_date=data.discharge_completed_at.date(),
             received_gov=data.received_gov,
             received_gsv=data.received_gsv,
             received_mt_vacuum=data.received_mt_vacuum,
@@ -209,13 +212,13 @@ class VesselBdnService:
                 priority="high" if recipient.role == UserRole.bunker_manager else "normal",
                 operation_id=operation.id, action_url=f"/operations/{operation.id}",
                 channels=["in_app", "whatsapp"], wa_template="bdn_submitted",
-                wa_kwargs={"operation_number": operation.operation_number, "bdn_number": bdn_number, "quantity": str(data.quantity_discharged_litres)},
+                wa_kwargs={"operation_number": operation.operation_number, "bdn_number": bdn_number, "quantity": str(data.discharge_mt_vacuum)},
             )
             try:
                 await email_vessel_bdn_submitted(
                     to_email=recipient.email, recipient_name=recipient.full_name,
                     operation_number=operation.operation_number, vessel_bdn_number=bdn_number,
-                    quantity_loaded=str(data.quantity_loaded_litres), quantity_discharged=str(data.quantity_discharged_litres),
+                    quantity_loaded=str(data.discharge_gov), quantity_discharged=str(data.discharge_mt_vacuum),
                 )
             except Exception as exc:
                 logger.warning("create_vessel_bdn: email failed for %s: %s", recipient.email, exc)
@@ -225,8 +228,9 @@ class VesselBdnService:
             entity_type="vessel_bdn", entity_id=bdn.id,
             changes={
                 "bdn_number": bdn_number, "vessel_activity_id": str(vessel_activity_id),
-                "quantity_loaded_litres": str(data.quantity_loaded_litres),
-                "quantity_discharged_litres": str(data.quantity_discharged_litres),
+                "discharge_gov": str(data.discharge_gov),
+                "discharge_gsv": str(data.discharge_gsv),
+                "discharge_mt_vacuum": str(data.discharge_mt_vacuum),
                 "system_quantity_loaded_litres": str(system_quantity_loaded) if system_quantity_loaded is not None else None,
                 "system_quantity_discharged_litres": str(system_quantity_discharged) if system_quantity_discharged is not None else None,
             },
@@ -293,15 +297,15 @@ class VesselBdnService:
             generated_by=current_user.id,
             status=BdnStatus.pending,
             # Legacy required columns — kept populated for backward compat.
-            quantity_delivered_mt=data.quantity_discharged_litres,
+            # MTvac backs the NOT NULL quantity_delivered_mt now that the
+            # discharged-litres field is no longer collected — same figure
+            # this BDN's ROB debit uses, so they can never disagree.
+            quantity_delivered_mt=data.discharge_mt_vacuum,
             delivery_date=data.discharge_completed_at,
             company_name=data.company_name,
             product_type=data.product_type,
             discharge_location=data.discharge_location,
             receiving_vessel=data.receiving_vessel,
-            quantity_loaded_litres=data.quantity_loaded_litres,
-            quantity_discharged_litres=data.quantity_discharged_litres,
-            variance_litres=data.quantity_loaded_litres - data.quantity_discharged_litres,
             density=data.density,
             temperature=data.temperature,
             vcf=data.vcf,
@@ -310,7 +314,8 @@ class VesselBdnService:
             discharge_mt_vacuum=data.discharge_mt_vacuum,
             discharge_commenced_at=data.discharge_commenced_at,
             discharge_completed_at=data.discharge_completed_at,
-            discharge_completion_date=data.discharge_completion_date,
+            # Derived, not asked for — see create_vessel_bdn above.
+            discharge_completion_date=data.discharge_completed_at.date(),
             received_gov=data.received_gov,
             received_gsv=data.received_gsv,
             received_mt_vacuum=data.received_mt_vacuum,
@@ -339,13 +344,13 @@ class VesselBdnService:
                 priority="high" if recipient.role == UserRole.bunker_manager else "normal",
                 operation_id=operation.id, action_url=f"/operations/{operation.id}",
                 channels=["in_app", "whatsapp"], wa_template="bdn_submitted",
-                wa_kwargs={"operation_number": operation.operation_number, "bdn_number": bdn_number, "quantity": str(data.quantity_discharged_litres)},
+                wa_kwargs={"operation_number": operation.operation_number, "bdn_number": bdn_number, "quantity": str(data.discharge_mt_vacuum)},
             )
             try:
                 await email_vessel_bdn_submitted(
                     to_email=recipient.email, recipient_name=recipient.full_name,
                     operation_number=operation.operation_number, vessel_bdn_number=bdn_number,
-                    quantity_loaded=str(data.quantity_loaded_litres), quantity_discharged=str(data.quantity_discharged_litres),
+                    quantity_loaded=str(data.discharge_gov), quantity_discharged=str(data.discharge_mt_vacuum),
                 )
             except Exception as exc:
                 logger.warning("create_vessel_bdn_for_leg: email failed for %s: %s", recipient.email, exc)
@@ -355,8 +360,9 @@ class VesselBdnService:
             entity_type="vessel_bdn", entity_id=bdn.id,
             changes={
                 "bdn_number": bdn_number, "vessel_leg_id": str(leg_id),
-                "quantity_loaded_litres": str(data.quantity_loaded_litres),
-                "quantity_discharged_litres": str(data.quantity_discharged_litres),
+                "discharge_gov": str(data.discharge_gov),
+                "discharge_gsv": str(data.discharge_gsv),
+                "discharge_mt_vacuum": str(data.discharge_mt_vacuum),
                 "system_quantity_loaded_litres": str(system_quantity_loaded) if system_quantity_loaded is not None else None,
                 "system_quantity_discharged_litres": str(system_quantity_discharged) if system_quantity_discharged is not None else None,
             },

@@ -191,11 +191,17 @@ class RecordHseRequest(BaseModel):
 
 
 class RecordDischargeQuantitiesRequest(BaseModel):
+    """Every figure is entered by hand, GSV and MTvac included — the BM's
+    explicit instruction. The system used to derive those two from
+    gov x vcf x density; it no longer does, so what's recorded is exactly
+    what was read off the vessel."""
     gov: Decimal
     vcf: Decimal
     density: Decimal
+    gsv: Decimal
+    mt_vacuum: Decimal
 
-    @field_validator("gov", "vcf", "density")
+    @field_validator("gov", "vcf", "density", "gsv", "mt_vacuum")
     @classmethod
     def positive_values(cls, v: Decimal) -> Decimal:
         if v <= 0:

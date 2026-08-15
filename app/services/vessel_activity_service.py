@@ -213,7 +213,7 @@ class VesselActivityService:
         if not assignee or assignee.role != UserRole.cargo_superintendent:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Assigned user must be a Marine Manager",
+                detail="Assigned user must be a Cargo Superintendent",
             )
 
         # BM adding another vessel after others already finished — keep the
@@ -488,11 +488,11 @@ class VesselActivityService:
                 type_="vessel_activity_completed",
                 title=f"Vessel Activity Completed — {activity.activity_number}",
                 message=(
-                    f"Marine Manager has completed vessel activity {activity.activity_number} "
+                    f"Cargo Superintendent has completed vessel activity {activity.activity_number} "
                     f"for operation {op_number} aboard {vessel_name}. "
                     f"Final ROB: {float(final_rob):.3f} L. Ready for BDN and reconciliation."
                     if final_rob is not None else
-                    f"Marine Manager has completed vessel activity {activity.activity_number} "
+                    f"Cargo Superintendent has completed vessel activity {activity.activity_number} "
                     f"for operation {op_number} aboard {vessel_name}. Review and proceed."
                 ),
                 priority="high",
@@ -1289,15 +1289,17 @@ class VesselActivityService:
 
     @staticmethod
     async def record_discharge_quantities(activity_id: UUID, data: RecordDischargeQuantitiesRequest, current_user: User, db: AsyncSession) -> VesselActivity:
-        """Supplements record_discharge — the system calculates GSV/MTvac
-        from the submitted readings; nobody does this arithmetic by hand."""
+        """Supplements record_discharge. Every figure is stored exactly as
+        submitted — GSV and MTvac are entered by hand now, not derived from
+        gov x vcf x density the way they used to be (BM's instruction: the
+        system shouldn't compute them)."""
         activity = await VesselActivityService._get_or_404(activity_id, db)
         VesselActivityService._assert_authorized(activity, current_user)
 
         activity.gov = data.gov
         activity.vcf = data.vcf
-        activity.gsv = data.gov * data.vcf
-        activity.mt_vacuum = activity.gsv * data.density
+        activity.gsv = data.gsv
+        activity.mt_vacuum = data.mt_vacuum
         activity.density = data.density
 
         await db.flush()
