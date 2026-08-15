@@ -32,8 +32,11 @@ class ClientNotificationLog(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=False)
-    naval_clearance_vessel_id = Column(UUID(as_uuid=True), ForeignKey("naval_clearance_vessels.id"), nullable=False)
-    client_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    # Nullable — a Cast Off recipient has no NavalClearanceVessel/User behind
+    # it, just a raw email/name the BM typed in (see PendingClientNotification
+    # below, which fans out into rows here once actually sent).
+    naval_clearance_vessel_id = Column(UUID(as_uuid=True), ForeignKey("naval_clearance_vessels.id"), nullable=True)
+    client_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
     # Denormalized — survive the recipient's profile changing later.
     recipient_email = Column(String(255), nullable=False)
     recipient_name = Column(String(150), nullable=False)
@@ -48,6 +51,41 @@ class ClientNotificationLog(Base):
     operation = relationship("Operation", foreign_keys=[operation_id])
     client = relationship("User", foreign_keys=[client_id])
     sender = relationship("User", foreign_keys=[sent_by])
+
+
+class PendingClientNotification(Base):
+    """A recipient queued for a client notification, gated behind explicit
+    BM approval before it can be sent. status moves pending_approval ->
+    approved -> sent; only "sent" ever writes a ClientNotificationLog row
+    (via sent_log_id), which is what keeps that table's own meaning —
+    "this was actually sent" — intact. Two recipient sources: Naval
+    Clearance vessels (naval_clearance_vessel_id/client_id set) and Cast
+    Off client emails (both null, just a raw email/name)."""
+    __tablename__ = "pending_client_notifications"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=False)
+    naval_clearance_vessel_id = Column(UUID(as_uuid=True), ForeignKey("naval_clearance_vessels.id"), nullable=True)
+    client_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    source = Column(String(20), nullable=False)  # "naval_clearance" | "cast_off"
+    recipient_email = Column(String(255), nullable=False)
+    recipient_name = Column(String(150), nullable=True)
+    notification_type = Column(String(30), nullable=False)
+    stage = Column(String(30), nullable=True)
+    subject = Column(String(255), nullable=False)
+    body_snapshot = Column(Text, nullable=False)
+    status = Column(String(20), default="pending_approval", nullable=False)
+    requested_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    approved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    approved_at = Column(DateTime(timezone=True), nullable=True)
+    sent_log_id = Column(UUID(as_uuid=True), ForeignKey("client_notification_logs.id"), nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    operation = relationship("Operation", foreign_keys=[operation_id])
+    client = relationship("User", foreign_keys=[client_id])
+    requester = relationship("User", foreign_keys=[requested_by])
+    approver = relationship("User", foreign_keys=[approved_by])
+    sent_log = relationship("ClientNotificationLog", foreign_keys=[sent_log_id])
 
 
 class OperationNotification(Base):

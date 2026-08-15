@@ -17,7 +17,7 @@ from app.models.licence import (
     Ppdl, PpdlProduct, Bfl, NavalClearance, NavalClearanceDrawdown,
     NavalClearanceLoadingLocation, NavalClearanceVessel,
 )
-from app.models.notification_log import VesselEta, ClientNotificationLog, OperationNotification, OperationNotificationRecipient
+from app.models.notification_log import VesselEta, ClientNotificationLog, PendingClientNotification, OperationNotification, OperationNotificationRecipient
 
 __all__ = [
     "UserRole", "OperationType", "OperationStatus", "TaskType", "TaskStatus",
@@ -33,5 +33,5 @@ __all__ = [
     "AuditLog", "DelegationAssignment", "ClientMilestone", "SystemSetting",
     "Ppdl", "PpdlProduct", "Bfl", "NavalClearance", "NavalClearanceDrawdown",
     "NavalClearanceLoadingLocation", "NavalClearanceVessel",
-    "VesselEta", "ClientNotificationLog", "OperationNotification", "OperationNotificationRecipient",
+    "VesselEta", "ClientNotificationLog", "PendingClientNotification", "OperationNotification", "OperationNotificationRecipient",
 ]
