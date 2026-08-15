@@ -26,15 +26,17 @@ async def _get_operation_or_404(operation_id: UUID, db: AsyncSession) -> Operati
 
 
 async def _get_clearance_vessels(operation: Operation, db: AsyncSession) -> List[NavalClearanceVessel]:
-    """Every client-vessel reachable through the operation's linked
-    clearance — empty if none linked, consistent with the link being
-    optional and never a gate."""
-    if not operation.naval_clearance_id:
+    """Every client-vessel reachable through any of the operation's linked
+    clearances — empty if none linked, consistent with the link being
+    optional and never a gate. Pools across all linked clearances, not just
+    one, now that an operation can hold more than one."""
+    clearance_ids = [link.naval_clearance_id for link in operation.naval_clearances]
+    if not clearance_ids:
         return []
     result = await db.execute(
         select(NavalClearanceVessel)
         .options(selectinload(NavalClearanceVessel.client))
-        .where(NavalClearanceVessel.naval_clearance_id == operation.naval_clearance_id)
+        .where(NavalClearanceVessel.naval_clearance_id.in_(clearance_ids))
     )
     return list(result.scalars().all())
 

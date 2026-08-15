@@ -87,6 +87,11 @@ class Operation(Base):
     # having to remember selectinload() at each one (async sessions can't
     # lazy-load on demand).
     products = relationship("OperationProduct", back_populates="operation", cascade="all, delete-orphan", lazy="selectin")
+    # Supersedes naval_clearance_id/naval_clearance above (left in place,
+    # unused going forward) — an operation can now hold any number of
+    # clearances, added and removed independently. Same always-on selectin
+    # reasoning as products.
+    naval_clearances = relationship("OperationNavalClearance", back_populates="operation", cascade="all, delete-orphan", lazy="selectin")
     payments = relationship("Payment", back_populates="operation")
     invoices = relationship("Invoice", back_populates="operation")
     vouchers = relationship("Voucher", back_populates="operation")
@@ -109,6 +114,21 @@ class OperationProduct(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
     operation = relationship("Operation", back_populates="products")
+
+
+class OperationNavalClearance(Base):
+    """One Naval Clearance linked to an operation — any number, added and
+    removed independently. Supersedes Operation.naval_clearance_id (left in
+    place, unused going forward, per the additive-only migration policy)."""
+    __tablename__ = "operation_naval_clearances"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id", ondelete="CASCADE"), nullable=False)
+    naval_clearance_id = Column(UUID(as_uuid=True), ForeignKey("naval_clearances.id"), nullable=False)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+
+    operation = relationship("Operation", back_populates="naval_clearances")
+    naval_clearance = relationship("NavalClearance", foreign_keys=[naval_clearance_id])
 
 
 class OperationStatusHistory(Base):

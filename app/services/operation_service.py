@@ -9,7 +9,7 @@ from sqlalchemy import select, func, and_, or_
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
-from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, OperationProduct
+from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, OperationProduct, OperationNavalClearance
 from app.models.bdn import VesselActivity, BDN, RobEntry, TerminalLoadingReceipt
 from app.models.vessel import Vessel
 from app.models.truck import TruckOperation
@@ -263,6 +263,11 @@ class OperationService:
                 .selectinload(NavalClearance.drawdowns)
                 .selectinload(NavalClearanceDrawdown.bfl)
                 .selectinload(Bfl.ppdl),
+                selectinload(Operation.naval_clearances)
+                .selectinload(OperationNavalClearance.naval_clearance)
+                .selectinload(NavalClearance.drawdowns)
+                .selectinload(NavalClearanceDrawdown.bfl)
+                .selectinload(Bfl.ppdl),
             )
             .where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None)))
         )
@@ -271,11 +276,14 @@ class OperationService:
         if not operation:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
         OperationService._check_visibility(operation, current_user)
-        if operation.naval_clearance:
-            # Lightweight, display-only enrichment — only what
-            # OperationNavalClearanceSummary needs (no .vessels eager-load
-            # here, so avoid touching that relationship).
-            nc = operation.naval_clearance
+        # Lightweight, display-only enrichment — only what
+        # OperationNavalClearanceSummary needs (no .vessels eager-load here,
+        # so avoid touching that relationship). Repeated per linked
+        # clearance now instead of once for the single legacy FK.
+        for link in operation.naval_clearances:
+            nc = link.naval_clearance
+            if not nc:
+                continue
             nc.is_valid = NavalClearanceService.is_valid_for_operations(nc)
             nc.ppdl_number = next((d.bfl.ppdl.ppdl_number for d in nc.drawdowns if d.bfl and d.bfl.ppdl), None)
             nc.bfl_numbers = sorted({d.bfl.bfl_number for d in nc.drawdowns if d.bfl})
@@ -774,9 +782,11 @@ class OperationService:
 
     @staticmethod
     async def link_naval_clearance(operation_id: UUID, naval_clearance_id: UUID, current_user: User, db: AsyncSession) -> Operation:
-        """Optional, at any time — never a gate. Nothing about PPDL/BFL/
-        products/clients is copied onto the operation; they're always
-        resolved live through the FK when the operation is read."""
+        """Optional, at any time — never a gate. Additive: an operation can
+        hold any number of clearances, each linked independently. Nothing
+        about PPDL/BFL/products/clients is copied onto the operation;
+        they're always resolved live through the FK when the operation is
+        read."""
         from app.services.licence_service import _get_naval_clearance_or_404
 
         result = await db.execute(select(Operation).where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None))))
@@ -785,7 +795,14 @@ class OperationService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
         nc = await _get_naval_clearance_or_404(naval_clearance_id, db)
 
-        operation.naval_clearance_id = nc.id
+        existing = await db.execute(select(OperationNavalClearance).where(and_(
+            OperationNavalClearance.operation_id == operation_id,
+            OperationNavalClearance.naval_clearance_id == naval_clearance_id,
+        )))
+        if existing.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="This Naval Clearance is already linked to this operation")
+
+        db.add(OperationNavalClearance(operation_id=operation.id, naval_clearance_id=nc.id))
         operation.updated_at = datetime.utcnow()
         db.add(AuditLog(
             user_id=current_user.id, operation_id=operation.id, action="LINK_NAVAL_CLEARANCE",
@@ -796,21 +813,28 @@ class OperationService:
         return await OperationService.get_operation(operation_id, current_user, db)
 
     @staticmethod
-    async def unlink_naval_clearance(operation_id: UUID, reason: str, current_user: User, db: AsyncSession) -> Operation:
+    async def unlink_naval_clearance(operation_id: UUID, naval_clearance_id: UUID, reason: str, current_user: User, db: AsyncSession) -> Operation:
+        """Removes one specific clearance from the operation — the others,
+        if any, are untouched."""
         result = await db.execute(select(Operation).where(and_(Operation.id == operation_id, Operation.deleted_at.is_(None))))
         operation = result.scalar_one_or_none()
         if not operation:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
-        if not operation.naval_clearance_id:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="No Naval Clearance is linked to this operation")
 
-        previous_id = operation.naval_clearance_id
-        operation.naval_clearance_id = None
+        link_result = await db.execute(select(OperationNavalClearance).where(and_(
+            OperationNavalClearance.operation_id == operation_id,
+            OperationNavalClearance.naval_clearance_id == naval_clearance_id,
+        )))
+        link = link_result.scalar_one_or_none()
+        if not link:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This Naval Clearance is not linked to this operation")
+
+        await db.delete(link)
         operation.updated_at = datetime.utcnow()
         db.add(AuditLog(
             user_id=current_user.id, operation_id=operation.id, action="UNLINK_NAVAL_CLEARANCE",
             entity_type="operation", entity_id=operation.id,
-            changes={"naval_clearance_id": {"from": str(previous_id), "to": None}}, reason=reason,
+            changes={"naval_clearance_id": {"from": str(naval_clearance_id), "to": None}}, reason=reason,
         ))
         await db.flush()
         return await OperationService.get_operation(operation_id, current_user, db)

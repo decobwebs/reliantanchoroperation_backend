@@ -99,6 +99,7 @@ class LinkNavalClearanceRequest(BaseModel):
 
 
 class UnlinkNavalClearanceRequest(BaseModel):
+    naval_clearance_id: UUID
     reason: str
 
     @field_validator("reason", mode="before")
@@ -232,6 +233,9 @@ class OperationOut(BaseModel):
     vessel_id: Optional[UUID] = None
     naval_clearance_id: Optional[UUID] = None
     naval_clearance: Optional[OperationNavalClearanceSummary] = None
+    # Supersedes naval_clearance_id/naval_clearance above (kept, unused
+    # going forward) — an operation can hold any number of clearances now.
+    naval_clearances: List[OperationNavalClearanceSummary] = []
     color: Optional[str] = None
     trucks_required: Optional[int] = None
     version: int = 1
@@ -242,6 +246,16 @@ class OperationOut(BaseModel):
     deleted_at: Optional[datetime] = None
 
     model_config = {"from_attributes": True}
+
+    @field_validator("naval_clearances", mode="before")
+    @classmethod
+    def unwrap_naval_clearance_links(cls, v: Any) -> Any:
+        """v is Operation.naval_clearances — a list of OperationNavalClearance
+        join rows. Each summary is validated off the actual NavalClearance
+        each row points to, not the join row itself."""
+        if not v:
+            return []
+        return [link.naval_clearance for link in v if getattr(link, "naval_clearance", None)]
 
 
 class OperationTotalsOut(BaseModel):

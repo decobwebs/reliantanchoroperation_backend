@@ -118,7 +118,8 @@ async def link_naval_clearance(
     db: AsyncSession = Depends(get_db),
 ):
     """Attach a Naval Clearance to an operation — optional, at any time,
-    never a gate on operational progress."""
+    never a gate on operational progress. Additive: an operation can hold
+    any number of clearances, call this once per clearance to link."""
     operation = await OperationService.link_naval_clearance(operation_id, body.naval_clearance_id, current_user, db)
     return StandardResponse.ok(data=OperationOut.model_validate(operation).model_dump(), message="Naval Clearance linked")
 
@@ -130,7 +131,9 @@ async def unlink_naval_clearance(
     current_user: User = Depends(require_roles(UserRole.bunker_manager)),
     db: AsyncSession = Depends(get_db),
 ):
-    operation = await OperationService.unlink_naval_clearance(operation_id, body.reason, current_user, db)
+    """Removes one specific clearance from the operation — any others linked
+    stay untouched."""
+    operation = await OperationService.unlink_naval_clearance(operation_id, body.naval_clearance_id, body.reason, current_user, db)
     return StandardResponse.ok(data=OperationOut.model_validate(operation).model_dump(), message="Naval Clearance unlinked")
 
 
