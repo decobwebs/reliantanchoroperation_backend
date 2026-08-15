@@ -119,8 +119,12 @@ class VesselBdnOut(BaseModel):
     product_type: str
     discharge_location: str
     receiving_vessel: str
-    quantity_loaded_litres: Decimal
-    quantity_discharged_litres: Decimal
+    # No longer collected on submission — nullable on every row created since
+    # the form dropped them. Required here until now, which meant a freshly
+    # created BDN failed to serialize and rolled its own transaction back
+    # AFTER the submitted-email had already gone out.
+    quantity_loaded_litres: Optional[Decimal] = None
+    quantity_discharged_litres: Optional[Decimal] = None
     variance_litres: Optional[Decimal] = None
     density: Decimal
     temperature: Decimal
@@ -132,7 +136,10 @@ class VesselBdnOut(BaseModel):
     # backward compat with rows created before this change.
     discharge_commenced_at: Optional[datetime] = None
     discharge_completed_at: datetime
-    discharge_completion_date: date
+    # Derived from discharge_completed_at rather than entered, since the
+    # separate date field was dropped from the form — optional here so an
+    # older row that never had it can still be read back.
+    discharge_completion_date: Optional[date] = None
     received_gov: Optional[Decimal] = None
     received_gsv: Optional[Decimal] = None
     received_mt_vacuum: Optional[Decimal] = None
