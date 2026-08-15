@@ -23,17 +23,30 @@ class Base(DeclarativeBase):
 
 
 # asyncpg with PgBouncer session pooler requires statement_cache_size=0.
-# Supabase's session-mode pooler caps this project at 15 total connections
-# — pool_size + max_overflow used to add up to exactly that ceiling per
-# worker process, leaving zero headroom for a second worker, a migration
-# run, or any other tool connecting at the same time (this is what caused
-# a live EMAXCONNSESSION outage). Sized down with headroom instead.
+#
+# CONNECTION BUDGET — Supabase's session-mode pooler caps this project at 15
+# total connections, and the limit is per-PROJECT, not per-process. Render
+# runs uvicorn with --workers 2, and each worker gets its own independent
+# pool, so the real ceiling is:
+#
+#     workers x (pool_size + max_overflow)  <=  15, with headroom
+#
+# The previous 3+5 was sized as though there were one worker: 2 x 8 = 16,
+# one over the cap. Under load both workers filled, the 16th connection was
+# refused with EMAXCONNSESSION, and requests died with an unhandled 500 —
+# which strips CORS headers off the response, so the browser reported it as
+# a CORS failure and sent debugging in entirely the wrong direction.
+#
+# 2+3 => 2 x 5 = 10, leaving 5 spare for the pre-deploy `alembic upgrade
+# head`, the /health/deep check, and any ad-hoc tooling connecting at the
+# same time. Raising these numbers without re-checking the worker count and
+# the pooler cap will reproduce the outage.
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=settings.is_development,
     pool_pre_ping=True,
-    pool_size=3,
-    max_overflow=5,
+    pool_size=2,
+    max_overflow=3,
     pool_timeout=10,
     connect_args={"statement_cache_size": 0},
 )

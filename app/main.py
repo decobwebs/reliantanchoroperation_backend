@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 import logging
+import re
 import socket
 import sys
 
@@ -154,6 +155,34 @@ async def dns_exception_handler(request: Request, exc: socket.gaierror):
     )
 
 
+def _cors_headers_for(request: Request) -> dict:
+    """CORS headers for an error response.
+
+    Starlette runs the catch-all Exception handler in ServerErrorMiddleware,
+    which sits OUTSIDE CORSMiddleware — so a crashed request's 500 never gets
+    CORS headers attached. The browser then reports a genuine server error as
+    "blocked by CORS policy: No 'Access-Control-Allow-Origin' header", hiding
+    the real cause completely. (This burned a full debugging session chasing
+    a CORS misconfiguration that never existed; the actual fault was the DB
+    connection pool exhausting.) Echo the headers back manually so a 500
+    reads as a 500.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return {}
+    allowed = origin in settings.cors_origins_list or (
+        not settings.is_development
+        and re.fullmatch(settings.PRODUCTION_CORS_ORIGIN_REGEX, origin) is not None
+    )
+    if not allowed:
+        return {}
+    return {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Credentials": "true",
+        "Vary": "Origin",
+    }
+
+
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled exception: %s", str(exc))
@@ -165,6 +194,7 @@ async def generic_exception_handler(request: Request, exc: Exception):
             "message": "Internal server error",
             "errors": [str(exc)] if settings.is_development else ["An unexpected error occurred"],
         },
+        headers=_cors_headers_for(request),
     )
 
 
