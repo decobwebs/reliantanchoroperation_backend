@@ -2,6 +2,7 @@
 Vessel Activity service — manages marine supervisor oversight sessions.
 Lifecycle: pending → active → completed (or cancelled)
 """
+import logging
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
@@ -54,6 +55,8 @@ from app.schemas.vessel_activity_leg import (
 from app.services.audit_diff import capture_diff
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.utils.number_generator import generate_vessel_activity_number
+
+logger = logging.getLogger("raoms.vessel_activity")
 
 # Marker distinguishing the new commence/complete flow's RobEntry rows from
 # the old complete()'s, so a quantities correction can find and reverse
@@ -737,6 +740,14 @@ class VesselActivityService:
             )
 
         await db.commit()
+
+        # Client stage notification — fires automatically on every stage the
+        # run reaches, to whatever emails were captured at Cast Off. Runs
+        # AFTER the commit above and swallows its own errors on purpose: the
+        # stage is already recorded and must never be rolled back or 500 just
+        # because an email failed to go out.
+        await VesselActivityService._notify_clients_of_stage(activity, data.stage, current_user, db)
+
         # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
         # refresh reloads the comments collection (picking up the row just
         # added) but without cascading the nested .recorder eager-load, so
@@ -745,6 +756,84 @@ class VesselActivityService:
         activity = await VesselActivityService._get_or_404(activity.id, db)
         _attach_vessel_name(activity)
         return activity
+
+    # Stage labels as the client should read them — deliberately the same
+    # wording the BM sees in the tracker, not the raw enum values.
+    _STAGE_LABELS = {
+        VesselStage.cast_off: "Cast Off",
+        VesselStage.approach: "Approach",
+        VesselStage.alongside: "Alongside",
+        VesselStage.hse_check: "Pre HSE Check",
+        VesselStage.commence_discharge: "Commence Discharge",
+        VesselStage.discharge_completed: "Discharge Completed",
+    }
+
+    @staticmethod
+    async def _notify_clients_of_stage(
+        activity: VesselActivity, stage: VesselStage, current_user: User, db: AsyncSession,
+    ) -> None:
+        """Emails this run's Cast Off client contacts that the vessel has
+        reached `stage`. Sends immediately — no queue, no approval — per the
+        BM's explicit choice for stage updates. The queue/approve/send flow
+        in ClientNotificationService still exists for ad-hoc messages the BM
+        composes by hand; this is the automatic channel alongside it.
+
+        Never raises. A failure here is logged and dropped: the stage is
+        already committed, and losing an email must not cost the BM the
+        stage record or surface as a 500 on a successful action.
+        """
+        try:
+            emails = list(activity.cast_off_client_emails or [])
+            if not emails:
+                return
+
+            from app.models.notification_log import ClientNotificationLog
+            from app.services.email_service import email_client_notification
+
+            operation = await db.get(Operation, activity.operation_id)
+            if not operation:
+                return
+
+            label = VesselActivityService._STAGE_LABELS.get(stage, stage.value.replace("_", " ").title())
+            vessel_name = activity.cast_off_client_vessel_name or getattr(activity, "vessel_name", None) or "your vessel"
+            recipient_name = activity.cast_off_client_name or None
+
+            subject = f"{label} — {vessel_name} ({operation.operation_number})"
+            body = (
+                f"Your vessel <strong>{vessel_name}</strong> has reached "
+                f"<strong>{label}</strong> on operation {operation.operation_number}."
+            )
+
+            for email in emails:
+                if not email:
+                    continue
+                await email_client_notification(
+                    to_email=email,
+                    recipient_name=recipient_name or email,
+                    subject=subject,
+                    body_html=body,
+                )
+                db.add(ClientNotificationLog(
+                    operation_id=operation.id,
+                    naval_clearance_vessel_id=None,
+                    client_id=None,
+                    recipient_email=email,
+                    recipient_name=recipient_name or email,
+                    notification_type="stage_update",
+                    stage=stage.value,
+                    subject=subject,
+                    body_snapshot=body,
+                    sent_by=current_user.id,
+                    thread_key=str(operation.id),
+                ))
+            await db.commit()
+        except Exception:
+            logger.exception(
+                "Automatic stage notification failed for activity %s stage %s — "
+                "stage itself is already committed and unaffected",
+                activity.id, getattr(stage, "value", stage),
+            )
+            await db.rollback()
 
     @staticmethod
     async def _maybe_auto_complete_operation(
