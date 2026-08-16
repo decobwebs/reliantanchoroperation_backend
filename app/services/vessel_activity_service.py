@@ -231,9 +231,15 @@ class VesselActivityService:
         )
 
         await db.commit()
-        await db.refresh(activity, attribute_names=["comments"])
-        activity.vessel_name = vessel.vessel_name  # type: ignore[attr-defined]
-        activity.vessel_current_rob_mt = vessel.current_rob_mt  # type: ignore[attr-defined]
+        # Re-fetch through _get_or_404 rather than refreshing `comments` alone:
+        # VesselActivityOut also serializes `updates` and `legs`, and the
+        # commit above expires every attribute, so Pydantic reading either one
+        # triggers a lazy-load that can't run in this async context
+        # (MissingGreenlet). _get_or_404 eager-loads all four collections and
+        # runs _attach_vessel_name, which sets vessel_name and
+        # vessel_current_rob_mt itself — same pattern every other mutating
+        # method here already uses.
+        activity = await VesselActivityService._get_or_404(activity.id, db)
         return activity
 
     @staticmethod
