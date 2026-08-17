@@ -232,7 +232,7 @@ class OperationService:
 
         operation.updated_at = datetime.utcnow()
         await db.flush()
-        await db.refresh(operation, attribute_names=["products"])
+        await db.refresh(operation, attribute_names=["products", "naval_clearances"])
         return operation
 
     @staticmethod
@@ -402,7 +402,7 @@ class OperationService:
             user_agent=request_meta.get("user_agent") if request_meta else None,
         ))
         await db.flush()
-        await db.refresh(operation, attribute_names=["products"])
+        await db.refresh(operation, attribute_names=["products", "naval_clearances"])
         return operation
 
     @staticmethod
@@ -487,7 +487,7 @@ class OperationService:
             )
 
         await db.flush()
-        await db.refresh(operation, attribute_names=["products"])
+        await db.refresh(operation, attribute_names=["products", "naval_clearances"])
         return operation
 
     @staticmethod
@@ -577,7 +577,7 @@ class OperationService:
         )
 
         await db.flush()
-        await db.refresh(operation, attribute_names=["products"])
+        await db.refresh(operation, attribute_names=["products", "naval_clearances"])
         return operation
 
     @staticmethod
@@ -714,7 +714,7 @@ class OperationService:
         ))
 
         await db.flush()
-        await db.refresh(new_op, attribute_names=["products"])
+        await db.refresh(new_op, attribute_names=["products", "naval_clearances"])
         return new_op
 
     @staticmethod
@@ -737,7 +737,7 @@ class OperationService:
         operation.updated_at = datetime.utcnow()
         db.add(AuditLog(user_id=current_user.id, operation_id=operation.id, action="PAUSE_OPERATION", entity_type="operation", entity_id=operation.id, changes={"reason": reason}, ip_address=request_meta.get("ip") if request_meta else None, user_agent=request_meta.get("user_agent") if request_meta else None))
         await db.flush()
-        await db.refresh(operation, attribute_names=["products"])
+        await db.refresh(operation, attribute_names=["products", "naval_clearances"])
         return operation
 
     @staticmethod
@@ -757,7 +757,7 @@ class OperationService:
         operation.updated_at = datetime.utcnow()
         db.add(AuditLog(user_id=current_user.id, operation_id=operation.id, action="RESUME_OPERATION", entity_type="operation", entity_id=operation.id, changes={"reason": reason}, ip_address=request_meta.get("ip") if request_meta else None, user_agent=request_meta.get("user_agent") if request_meta else None))
         await db.flush()
-        await db.refresh(operation, attribute_names=["products"])
+        await db.refresh(operation, attribute_names=["products", "naval_clearances"])
         return operation
 
     @staticmethod
