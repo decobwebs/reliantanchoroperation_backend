@@ -64,10 +64,14 @@ async def list_operations(
 async def create_operation(
     body: CreateOperationRequest,
     request: Request,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.ops_supervisor)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a new operation. Only bunker_managers can create operations."""
+    """Create a new operation — Bunker Manager or Ops Supervisor.
+
+    Creation ONLY for the Ops Supervisor: every other operation-level action
+    on this router (edit, link/unlink clearance, transition, close, pause,
+    resume, reopen, delete) stays bunker_manager-only, deliberately."""
     meta = get_request_meta(request, current_user)
     operation = await OperationService.create_operation(body, current_user, db, meta)
 

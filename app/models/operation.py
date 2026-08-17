@@ -128,7 +128,13 @@ class OperationNavalClearance(Base):
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
 
     operation = relationship("Operation", back_populates="naval_clearances")
-    naval_clearance = relationship("NavalClearance", foreign_keys=[naval_clearance_id])
+    # selectin, not the default lazy: OperationOut's naval_clearances validator
+    # reads link.naval_clearance on every serialization. Operation.naval_clearances
+    # being selectin only loads the JOIN rows — without eager loading here too,
+    # each row's clearance lazy-loads and 500s the whole operations list with
+    # MissingGreenlet. get_operation eager-loads this chain explicitly, which is
+    # why the detail page worked while the list was down.
+    naval_clearance = relationship("NavalClearance", foreign_keys=[naval_clearance_id], lazy="selectin")
 
 
 class OperationStatusHistory(Base):

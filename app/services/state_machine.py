@@ -118,10 +118,14 @@ VESSEL_ONLY_TRANSITIONS: Dict[str, List[str]] = {
 # ── Transition permission map ──────────────────────────────────────────────────
 
 TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
-    # Creation & assignment
-    "draft->tasks_assigned":            ["bunker_manager"],
-    "tasks_assigned->awaiting_feedback":["bunker_manager", "system"],
-    "tasks_assigned->active":           ["bunker_manager"],           # vessel-only direct activation
+    # Creation & assignment. ops_supervisor is permitted on these three only
+    # because create_operation walks them itself as part of a single create
+    # (draft -> tasks_assigned -> awaiting_feedback, or -> active for
+    # vessel-only). Without them an OS-created operation would 422 halfway
+    # through creation. The OS gains no other transition anywhere below.
+    "draft->tasks_assigned":            ["bunker_manager", "ops_supervisor"],
+    "tasks_assigned->awaiting_feedback":["bunker_manager", "ops_supervisor", "system"],
+    "tasks_assigned->active":           ["bunker_manager", "ops_supervisor"],   # vessel-only direct activation
 
     # Truck feedback loop
     "awaiting_feedback->feedback_submitted":  ["logistics_officer", "bunker_manager"],
