@@ -48,6 +48,30 @@ async def _get_vessel_activity_leg_or_404(leg_id: UUID, db: AsyncSession) -> Ves
     return leg
 
 
+async def _send_submitted_emails(
+    recipients: List[tuple], operation_number: str, bdn_number: str,
+    quantity_loaded: str, quantity_discharged: str, caller: str,
+) -> None:
+    """Sends the BDN-submitted email to each (email, full_name) pair.
+
+    Called AFTER the caller has committed, never before. get_db() only commits
+    once the route returns, so an email sent mid-transaction is already gone if
+    anything downstream fails — which is how BDN-000027 reached the BM as
+    "submitted" while its row was rolled away. An email can be resent; a
+    silently vanished BDN cannot be recovered. Each send is isolated so one bad
+    address can't stop the rest.
+    """
+    for email, full_name in recipients:
+        try:
+            await email_vessel_bdn_submitted(
+                to_email=email, recipient_name=full_name,
+                operation_number=operation_number, vessel_bdn_number=bdn_number,
+                quantity_loaded=quantity_loaded, quantity_discharged=quantity_discharged,
+            )
+        except Exception as exc:
+            logger.warning("%s: email failed for %s: %s", caller, email, exc)
+
+
 async def _transition_operation(
     operation: Operation, to_status: OperationStatus, current_user: User, db: AsyncSession, reason: str = "",
 ) -> None:
@@ -200,10 +224,13 @@ class VesselBdnService:
         if operation.status != OperationStatus.bdn_pending:
             await _transition_operation(operation, OperationStatus.bdn_pending, current_user, db, reason="Vessel BDN submitted")
 
-        # Notify + email Bunker Manager (needs to approve) and Finance Manager (heads-up).
+        # Notify Bunker Manager (needs to approve) and Finance Manager (heads-up).
+        # notify() writes in-app rows so it belongs inside the transaction; the
+        # email does NOT — recipients are collected here and mailed after commit.
         recipients_result = await db.execute(
             select(User).where(User.role.in_([UserRole.bunker_manager, UserRole.finance_manager]))
         )
+        email_recipients: List[tuple] = []
         for recipient in recipients_result.scalars().all():
             await notify(
                 db=db, user_id=recipient.id, type_="bdn_ready",
@@ -214,14 +241,7 @@ class VesselBdnService:
                 channels=["in_app", "whatsapp"], wa_template="bdn_submitted",
                 wa_kwargs={"operation_number": operation.operation_number, "bdn_number": bdn_number, "quantity": str(data.discharge_mt_vacuum)},
             )
-            try:
-                await email_vessel_bdn_submitted(
-                    to_email=recipient.email, recipient_name=recipient.full_name,
-                    operation_number=operation.operation_number, vessel_bdn_number=bdn_number,
-                    quantity_loaded=str(data.discharge_gov), quantity_discharged=str(data.discharge_mt_vacuum),
-                )
-            except Exception as exc:
-                logger.warning("create_vessel_bdn: email failed for %s: %s", recipient.email, exc)
+            email_recipients.append((recipient.email, recipient.full_name))
 
         db.add(AuditLog(
             user_id=current_user.id, operation_id=operation.id, action="CREATE_VESSEL_BDN",
@@ -239,6 +259,14 @@ class VesselBdnService:
         await db.flush()
         await db.refresh(bdn)
         bdn._generated_by_name = current_user.full_name
+
+        # Durable before any email leaves the building. get_db()'s own commit
+        # after this becomes a harmless no-op.
+        await db.commit()
+        await _send_submitted_emails(
+            email_recipients, operation.operation_number, bdn_number,
+            str(data.discharge_gov), str(data.discharge_mt_vacuum), "create_vessel_bdn",
+        )
         return bdn
 
     @staticmethod
@@ -335,6 +363,7 @@ class VesselBdnService:
         recipients_result = await db.execute(
             select(User).where(User.role.in_([UserRole.bunker_manager, UserRole.finance_manager]))
         )
+        email_recipients: List[tuple] = []
         for recipient in recipients_result.scalars().all():
             await notify(
                 db=db, user_id=recipient.id, type_="bdn_ready",
@@ -346,14 +375,7 @@ class VesselBdnService:
                 channels=["in_app", "whatsapp"], wa_template="bdn_submitted",
                 wa_kwargs={"operation_number": operation.operation_number, "bdn_number": bdn_number, "quantity": str(data.discharge_mt_vacuum)},
             )
-            try:
-                await email_vessel_bdn_submitted(
-                    to_email=recipient.email, recipient_name=recipient.full_name,
-                    operation_number=operation.operation_number, vessel_bdn_number=bdn_number,
-                    quantity_loaded=str(data.discharge_gov), quantity_discharged=str(data.discharge_mt_vacuum),
-                )
-            except Exception as exc:
-                logger.warning("create_vessel_bdn_for_leg: email failed for %s: %s", recipient.email, exc)
+            email_recipients.append((recipient.email, recipient.full_name))
 
         db.add(AuditLog(
             user_id=current_user.id, operation_id=operation.id, action="CREATE_VESSEL_BDN",
@@ -371,6 +393,13 @@ class VesselBdnService:
         await db.flush()
         await db.refresh(bdn)
         bdn._generated_by_name = current_user.full_name
+
+        # Durable before any email leaves the building — see create_vessel_bdn.
+        await db.commit()
+        await _send_submitted_emails(
+            email_recipients, operation.operation_number, bdn_number,
+            str(data.discharge_gov), str(data.discharge_mt_vacuum), "create_vessel_bdn_for_leg",
+        )
         return bdn
 
     @staticmethod
