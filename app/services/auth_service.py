@@ -7,7 +7,7 @@ import httpx
 from jose import jwt, jwk, JWTError
 from jose.utils import base64url_decode
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, func
 from fastapi import HTTPException, status
 
 from app.config import settings
@@ -204,6 +204,41 @@ class AuthService:
             pass  # best-effort; must not mask the original error
 
     @staticmethod
+    async def _create_supabase_auth_user(email: str, password: str, full_name: str) -> uuid.UUID:
+        """Creates the Supabase Auth identity and returns its id.
+
+        Extracted so reactivation can mint a fresh identity the same way
+        registration does — a deactivated account has had its old auth
+        identity deleted, so it needs a new one, not a reused one.
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{AuthService.SUPABASE_AUTH_URL}/admin/users",
+                    headers={
+                        "apikey": settings.SUPABASE_SERVICE_KEY,
+                        "Authorization": f"Bearer {settings.SUPABASE_SERVICE_KEY}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "email": email,
+                        "password": password,
+                        "email_confirm": True,
+                        "user_metadata": {"full_name": full_name},
+                    },
+                    timeout=60.0,
+                )
+        except httpx.RequestError as exc:
+            raise _service_unavailable(exc, "Supabase Auth") from exc
+
+        if response.status_code not in (200, 201):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=_error_detail(response, "Registration failed"),
+            )
+        return uuid.UUID(response.json()["id"])
+
+    @staticmethod
     async def register(email: str, password: str, full_name: str, phone: Optional[str], role: UserRole, db: AsyncSession, address: Optional[str] = None) -> Dict[str, Any]:
         """Register a new user via Supabase Auth and sync to local DB."""
         try:
@@ -290,10 +325,37 @@ class AuthService:
         without losing the created account.
         """
         random_password = secrets.token_urlsafe(32)
-        user = await AuthService.register(
-            email=email, password=random_password,
-            full_name=full_name, phone=phone, role=role, db=db, address=address,
+
+        # A previously deactivated account still holds this email. delete_user
+        # deactivates rather than erases anyone carrying operational history
+        # (so attribution on their past operations/BDNs survives), which meant
+        # the email stayed permanently unusable and recreating the person hit
+        # "A user with this email already exists" with no way forward.
+        # Reactivate that row in place instead: the history stays attached, the
+        # BM's newly typed details win, and a fresh auth identity is minted
+        # because the old one was deleted at deactivation.
+        existing_result = await db.execute(
+            select(User).where(func.lower(User.email) == email.lower())
         )
+        existing = existing_result.scalar_one_or_none()
+        if existing is not None and not existing.is_active:
+            existing.auth_id = await AuthService._create_supabase_auth_user(
+                email, random_password, full_name,
+            )
+            existing.full_name = full_name
+            existing.role = role
+            existing.phone = phone
+            existing.address = address
+            existing.is_active = True
+            existing.updated_at = datetime.utcnow()
+            await db.flush()
+            await db.refresh(existing)
+            user = existing
+        else:
+            user = await AuthService.register(
+                email=email, password=random_password,
+                full_name=full_name, phone=phone, role=role, db=db, address=address,
+            )
 
         email_sent = False
         try:
@@ -312,6 +374,24 @@ class AuthService:
             logger.warning("admin_create_user: invite email failed for %s: %s", email, exc)
 
         return user, email_sent
+
+    @staticmethod
+    async def resend_set_password_link(user: User) -> bool:
+        """Re-sends the choose-your-password email to an existing user.
+
+        Same link and template the invite uses, so a recipient who lost or
+        let the original expire gets an identical, working one rather than
+        the BM having to delete and recreate the account.
+        """
+        redirect_to = f"{settings.FRONTEND_URL.rstrip('/')}/set-password"
+        link = await AuthService.generate_action_link(user.email, "recovery", redirect_to)
+        return await email_account_created(
+            to_email=user.email,
+            recipient_name=user.full_name,
+            role_label=user.role.value.replace("_", " ").title(),
+            set_password_url=link,
+            is_new_account=False,
+        )
 
     @staticmethod
     async def login(email: str, password: str) -> Dict[str, Any]:

@@ -312,6 +312,55 @@ async def delete_user(
     )
 
 
+@router.post("/users/{user_id}/resend-invite", response_model=StandardResponse)
+async def resend_set_password_link(
+    user_id: UUID,
+    request: Request,
+    current_user: User = AdminUser,
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-send the choose-your-password email. Bunker Manager only.
+
+    For the person who never received the original, lost it, or let it
+    expire — previously the only remedy was deleting and recreating the
+    account, which is destructive and (for anyone with operational history)
+    not even possible.
+    """
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="This account is deactivated — reactivate it before sending a password link.",
+        )
+
+    sent = await AuthService.resend_set_password_link(user)
+
+    meta = get_request_meta(request, current_user)
+    db.add(AuditLog(
+        user_id=current_user.id,
+        action="RESEND_SET_PASSWORD_LINK",
+        entity_type="user",
+        entity_id=user.id,
+        changes={"email": user.email, "delivered": sent},
+        acted_as_role=current_user.acting_as_role,
+        ip_address=meta["ip"],
+        user_agent=meta["user_agent"],
+    ))
+    await db.flush()
+
+    return StandardResponse.ok(
+        data={"email_sent": sent, "email": user.email},
+        message=(
+            f"Password link sent to {user.email}"
+            if sent else
+            f"Could not send to {user.email} — check the email service and try again."
+        ),
+    )
+
+
 @router.get("/audit-logs", response_model=PaginatedResponse)
 async def list_audit_logs(
     page: int = Query(1, ge=1),
