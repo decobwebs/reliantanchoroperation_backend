@@ -3,7 +3,10 @@ from datetime import datetime
 from uuid import UUID
 from decimal import Decimal
 from pydantic import BaseModel, field_validator, model_validator
-from app.models.enums import TruckStatus, TruckOpStatus, FeedbackStatus, AuditResult, AuditPhase, TruckWaiverStatus
+from app.models.enums import (
+    TruckStatus, TruckOpStatus, FeedbackStatus, AuditResult, AuditPhase, TruckWaiverStatus,
+    TruckIssueSeverity, TruckIssueStatus,
+)
 
 
 # ── Truck Registry ─────────────────────────────────────────────────────────────
@@ -107,12 +110,67 @@ class TruckStatsOut(BaseModel):
     total_variance_mt: Decimal
     total_spillage_mt: Decimal
     efficiency_pct: Optional[float] = None
+    open_issues: int = 0
+
+
+class TruckIssueCreate(BaseModel):
+    title: str
+    severity: TruckIssueSeverity = TruckIssueSeverity.medium
+    description: Optional[str] = None
+    operation_id: Optional[UUID] = None
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def strip_title(cls, v: str) -> str:
+        return v.strip() if v else v
+
+    @field_validator("title")
+    @classmethod
+    def title_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("A short summary of the issue is required")
+        return v
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def strip_description(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+
+class TruckIssueResolveRequest(BaseModel):
+    resolution_notes: Optional[str] = None
+
+    @field_validator("resolution_notes", mode="before")
+    @classmethod
+    def strip_notes(cls, v: Optional[str]) -> Optional[str]:
+        return v.strip() if v else v
+
+
+class TruckIssueOut(BaseModel):
+    id: UUID
+    truck_id: UUID
+    operation_id: Optional[UUID] = None
+    operation_number: Optional[str] = None
+    reported_by: UUID
+    reported_by_name: Optional[str] = None
+    severity: TruckIssueSeverity
+    status: TruckIssueStatus
+    title: str
+    description: Optional[str] = None
+    resolved_by: Optional[UUID] = None
+    resolved_by_name: Optional[str] = None
+    resolved_at: Optional[datetime] = None
+    resolution_notes: Optional[str] = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
 
 
 class TruckProfileOut(BaseModel):
     truck: TruckOut
     stats: TruckStatsOut
     history: List[TruckOperationHistoryOut]
+    issues: List[TruckIssueOut] = []
 
 
 # ── Safety Audit ──────────────────────────────────────────────────────────────

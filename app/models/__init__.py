@@ -7,7 +7,7 @@ from app.models.enums import (
 from app.models.user import User
 from app.models.vessel import Vessel
 from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, TruckFeedback, OperationProduct, OperationNavalClearance
-from app.models.truck import Truck, TruckOperation, TruckSafetyAudit, TruckBdn
+from app.models.truck import Truck, TruckOperation, TruckSafetyAudit, TruckBdn, TruckIssue
 from app.models.bdn import RobEntry, BDN, TerminalLoadingReceipt
 from app.models.finance import PFI, Payment, Invoice, PfiAllocation
 from app.models.document import Document

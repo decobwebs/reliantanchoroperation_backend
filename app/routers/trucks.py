@@ -4,11 +4,11 @@ import mimetypes
 from datetime import datetime
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Query, UploadFile, File, status, HTTPException
+from fastapi import APIRouter, Depends, Query, Request, UploadFile, File, status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, require_roles, get_request_meta
 from app.models.user import User
 from app.models.enums import UserRole, TruckWaiverStatus
 from app.schemas.common import StandardResponse
@@ -29,6 +29,7 @@ from app.schemas.truck import (
     TruckWaiverBulkCreate, TruckWaiverOut, TruckWaybillLinkRequest,
     TruckWaiverUpdate, TruckWaiverDeleteRequest,
     TruckLoadingQuantityRequest, TruckLoadingQuantityCorrection,
+    TruckIssueCreate, TruckIssueResolveRequest,
 )
 from app.services.truck_service import TruckService, TruckLoadingQuantityService
 from app.services.document_service import _upload_to_supabase, MAX_FILE_SIZE_BYTES
@@ -174,9 +175,68 @@ async def get_truck_profile(
             "truck": truck_out,
             "stats": profile["stats"],
             "history": profile["history"],
+            "issues": profile["issues"],
         },
         message="Truck profile retrieved",
     )
+
+
+# ── Truck issues ───────────────────────────────────────────────────────────────
+# Problems noticed on a truck, kept on the truck's own record so its whole
+# history is visible from the profile. Anyone working the truck can report one
+# (LO/OS/BM); the BM closes them out.
+
+@router.post(
+    "/trucks/{truck_id}/issues",
+    response_model=StandardResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def report_truck_issue(
+    truck_id: UUID,
+    body: TruckIssueCreate,
+    request: Request,
+    current_user: User = Depends(
+        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor)
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Report a problem with a truck — optionally tied to the operation it happened on."""
+    meta = get_request_meta(request, current_user)
+    issue = await TruckService.create_truck_issue(truck_id, body, current_user, db, meta)
+    return StandardResponse.ok(data=issue, message="Issue reported")
+
+
+@router.get(
+    "/trucks/{truck_id}/issues",
+    response_model=StandardResponse,
+)
+async def list_truck_issues(
+    truck_id: UUID,
+    current_user: User = Depends(
+        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor)
+    ),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every issue ever reported against this truck, newest first."""
+    issues = await TruckService.list_truck_issues(truck_id, db)
+    return StandardResponse.ok(data=issues, message="Truck issues retrieved")
+
+
+@router.post(
+    "/truck-issues/{issue_id}/resolve",
+    response_model=StandardResponse,
+)
+async def resolve_truck_issue(
+    issue_id: UUID,
+    body: TruckIssueResolveRequest,
+    request: Request,
+    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    db: AsyncSession = Depends(get_db),
+):
+    """Close out a reported issue. Bunker Manager only — the record stays either way."""
+    meta = get_request_meta(request, current_user)
+    issue = await TruckService.resolve_truck_issue(issue_id, body, current_user, db, meta)
+    return StandardResponse.ok(data=issue, message="Issue resolved")
 
 
 @router.put(

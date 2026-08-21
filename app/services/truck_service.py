@@ -8,14 +8,15 @@ from sqlalchemy import select, and_, func
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
-from app.models.truck import Truck, TruckOperation, TruckSafetyAudit
+from app.models.truck import Truck, TruckOperation, TruckSafetyAudit, TruckIssue
 from app.models.operation import Operation, TaskAssignment, TruckFeedback
 from app.models.audit import AuditLog
 from app.models.user import User
 from app.models.bdn import RobEntry
 from app.models.vessel import Vessel
 from app.models.enums import (
-    UserRole, TruckStatus, TruckOpStatus, FeedbackStatus, OperationStatus, RobEntryType
+    UserRole, TruckStatus, TruckOpStatus, FeedbackStatus, OperationStatus, RobEntryType,
+    TruckIssueStatus,
 )
 from app.schemas.truck import (
     TruckCreate, TruckUpdate,
@@ -26,6 +27,7 @@ from app.schemas.truck import (
     TruckWaiverUpdate,
     TruckWaiverOut, LinkedTruckSummary,
     TruckLoadingQuantityRequest, TruckLoadingQuantityCorrection,
+    TruckIssueCreate, TruckIssueResolveRequest,
 )
 from app.services.notification_service import notify
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
@@ -1845,7 +1847,149 @@ class TruckService:
                 "events": top.events or [],
             })
 
-        return {"truck": truck, "stats": stats, "history": history}
+        issues = await TruckService._load_issues(truck_id, db)
+        stats["open_issues"] = sum(1 for i in issues if i["status"] == "open")
+
+        return {"truck": truck, "stats": stats, "history": history, "issues": issues}
+
+    # ── Truck issues ───────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _issue_out(issue: TruckIssue) -> Dict[str, Any]:
+        """Requires .reporter/.resolver/.operation eager-loaded."""
+        return {
+            "id": str(issue.id),
+            "truck_id": str(issue.truck_id),
+            "operation_id": str(issue.operation_id) if issue.operation_id else None,
+            "operation_number": issue.operation.operation_number if issue.operation else None,
+            "reported_by": str(issue.reported_by),
+            "reported_by_name": issue.reporter.full_name if issue.reporter else None,
+            "severity": issue.severity.value,
+            "status": issue.status.value,
+            "title": issue.title,
+            "description": issue.description,
+            "resolved_by": str(issue.resolved_by) if issue.resolved_by else None,
+            "resolved_by_name": issue.resolver.full_name if issue.resolver else None,
+            "resolved_at": issue.resolved_at.isoformat() if issue.resolved_at else None,
+            "resolution_notes": issue.resolution_notes,
+            "created_at": issue.created_at.isoformat(),
+        }
+
+    @staticmethod
+    async def _load_issues(truck_id: UUID, db: AsyncSession) -> List[Dict[str, Any]]:
+        result = await db.execute(
+            select(TruckIssue)
+            .options(
+                selectinload(TruckIssue.reporter),
+                selectinload(TruckIssue.resolver),
+                selectinload(TruckIssue.operation),
+            )
+            .where(TruckIssue.truck_id == truck_id)
+            .order_by(TruckIssue.created_at.desc())
+        )
+        return [TruckService._issue_out(i) for i in result.scalars().all()]
+
+    @staticmethod
+    async def create_truck_issue(
+        truck_id: UUID,
+        data: TruckIssueCreate,
+        current_user: User,
+        db: AsyncSession,
+        request_meta: Optional[dict] = None,
+    ) -> Dict[str, Any]:
+        truck_result = await db.execute(select(Truck).where(Truck.id == truck_id))
+        truck = truck_result.scalar_one_or_none()
+        if not truck:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found")
+
+        operation_id = None
+        if data.operation_id:
+            operation = await _get_operation_or_404(data.operation_id, db)
+            operation_id = operation.id
+
+        issue = TruckIssue(
+            truck_id=truck.id,
+            operation_id=operation_id,
+            reported_by=current_user.id,
+            severity=data.severity,
+            title=data.title,
+            description=data.description,
+        )
+        db.add(issue)
+        await db.flush()
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=operation_id,
+            action="REPORT_TRUCK_ISSUE",
+            entity_type="truck_issue",
+            entity_id=issue.id,
+            changes={
+                "truck_number": truck.truck_number,
+                "severity": data.severity.value,
+                "title": data.title,
+            },
+            ip_address=request_meta.get("ip") if request_meta else None,
+            user_agent=request_meta.get("user_agent") if request_meta else None,
+        ))
+        await db.flush()
+        await db.refresh(issue, attribute_names=["reporter", "resolver", "operation"])
+        return TruckService._issue_out(issue)
+
+    @staticmethod
+    async def list_truck_issues(truck_id: UUID, db: AsyncSession) -> List[Dict[str, Any]]:
+        truck_result = await db.execute(select(Truck).where(Truck.id == truck_id))
+        if not truck_result.scalar_one_or_none():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found")
+        return await TruckService._load_issues(truck_id, db)
+
+    @staticmethod
+    async def resolve_truck_issue(
+        issue_id: UUID,
+        data: TruckIssueResolveRequest,
+        current_user: User,
+        db: AsyncSession,
+        request_meta: Optional[dict] = None,
+    ) -> Dict[str, Any]:
+        result = await db.execute(
+            select(TruckIssue)
+            .options(
+                selectinload(TruckIssue.reporter),
+                selectinload(TruckIssue.resolver),
+                selectinload(TruckIssue.operation),
+                selectinload(TruckIssue.truck),
+            )
+            .where(TruckIssue.id == issue_id)
+        )
+        issue = result.scalar_one_or_none()
+        if not issue:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Issue not found")
+        if issue.status == TruckIssueStatus.resolved:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Issue is already resolved")
+
+        issue.status = TruckIssueStatus.resolved
+        issue.resolved_by = current_user.id
+        issue.resolved_at = datetime.utcnow()
+        issue.resolution_notes = data.resolution_notes
+        issue.updated_at = datetime.utcnow()
+
+        db.add(AuditLog(
+            user_id=current_user.id,
+            operation_id=issue.operation_id,
+            action="RESOLVE_TRUCK_ISSUE",
+            entity_type="truck_issue",
+            entity_id=issue.id,
+            changes={
+                "truck_number": issue.truck.truck_number if issue.truck else None,
+                "title": issue.title,
+                "resolution_notes": data.resolution_notes,
+            },
+            ip_address=request_meta.get("ip") if request_meta else None,
+            user_agent=request_meta.get("user_agent") if request_meta else None,
+        ))
+        await db.flush()
+        await db.refresh(issue, attribute_names=["resolver"])
+        return TruckService._issue_out(issue)
 
     # ── Truck telemetry milestone methods ──────────────────────────────────────
 

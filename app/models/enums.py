@@ -110,6 +110,17 @@ class AuditPhase(str, enum.Enum):
     post = "post"
 
 
+class TruckIssueSeverity(str, enum.Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+class TruckIssueStatus(str, enum.Enum):
+    open = "open"
+    resolved = "resolved"
+
+
 class TruckStatus(str, enum.Enum):
     available = "available"
     assigned = "assigned"

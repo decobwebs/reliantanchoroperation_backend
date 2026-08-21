@@ -8,7 +8,8 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from app.database import Base
 from app.models.enums import (
-    TruckStatus, TruckOpStatus, AuditResult, TruckWaiverStatus, AuditPhase, BdnStatus
+    TruckStatus, TruckOpStatus, AuditResult, TruckWaiverStatus, AuditPhase, BdnStatus,
+    TruckIssueSeverity, TruckIssueStatus,
 )
 
 
@@ -40,6 +41,34 @@ class Truck(Base):
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     truck_operations = relationship("TruckOperation", back_populates="truck")
+    issues = relationship("TruckIssue", back_populates="truck", order_by="TruckIssue.created_at.desc()")
+
+
+class TruckIssue(Base):
+    """A problem reported against a truck — mechanical fault, leak, document
+    trouble, anything worth keeping on record. Lives on the truck (not the
+    truck_operation) so the full issue history shows on the truck's profile;
+    an operation can still be referenced when the problem arose during one."""
+    __tablename__ = "truck_issues"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    truck_id = Column(UUID(as_uuid=True), ForeignKey("trucks.id"), nullable=False)
+    operation_id = Column(UUID(as_uuid=True), ForeignKey("operations.id"), nullable=True)
+    reported_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    severity = Column(SAEnum(TruckIssueSeverity, name="truck_issue_severity"), default=TruckIssueSeverity.medium, nullable=False)
+    status = Column(SAEnum(TruckIssueStatus, name="truck_issue_status"), default=TruckIssueStatus.open, nullable=False)
+    title = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    resolved_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=True)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+    resolution_notes = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    truck = relationship("Truck", back_populates="issues")
+    operation = relationship("Operation")
+    reporter = relationship("User", foreign_keys=[reported_by])
+    resolver = relationship("User", foreign_keys=[resolved_by])
 
 
 class TruckWaiver(Base):
