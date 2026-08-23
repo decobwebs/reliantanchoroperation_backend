@@ -94,6 +94,18 @@ class BdnOut(BaseModel):
     version: int
     vessel_name: Optional[str] = None
     generated_by_name: Optional[str] = None
+    # Operational context for the global BDN register — a BDN number alone
+    # tells the BM nothing about which job it belongs to.
+    operation_number: Optional[str] = None
+    operation_type: Optional[str] = None
+    operation_status: Optional[str] = None
+    # Distinguishes the two kinds sharing this table: a Vessel Received
+    # Quantity carries a vessel_activity_id/company_name, a loading BDN does not.
+    company_name: Optional[str] = None
+    receiving_vessel: Optional[str] = None
+    vessel_activity_id: Optional[UUID] = None
+    discharge_mt_vacuum: Optional[Decimal] = None
+    vcf: Optional[Decimal] = None
     # Truck-vs-vessel reconciliation — computed server-side at creation,
     # display only, never entered and never used to derive anything else.
     # Null on BDNs created before this field existed.

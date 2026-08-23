@@ -398,24 +398,69 @@ async def email_payment_confirmed(
     )
 
 
+def _figures_table(rows: list) -> str:
+    """Renders (label, value) pairs as an email-safe table.
+
+    A row whose value is empty is dropped entirely rather than printed as a
+    dash — the BM's instruction for the on-screen readouts applies equally
+    here ("just leave it blank, we know exactly what it is").
+
+    Units belong in the value the caller passes, not here: the vessel side is
+    MT(vac) and litres are a truck unit, so nothing is appended blindly the
+    way a hardcoded " L" used to be.
+    """
+    cells = []
+    for label, value in rows:
+        if value is None or str(value).strip() == "":
+            continue
+        cells.append(
+            f'<tr>'
+            f'<td style="color:{_MUTED};font-size:13px;padding:2px 0;">{_esc(label)}</td>'
+            f'<td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(value)}</td>'
+            f'</tr>'
+        )
+    if not cells:
+        return ""
+    return (
+        '<table role="presentation" cellpadding="0" cellspacing="0" '
+        'style="margin:0 0 14px;width:100%;">' + "".join(cells) + "</table>"
+    )
+
+
 async def email_bdn_approved(
     to_email: str,
     recipient_name: str,
     operation_number: str,
     bdn_number: str,
-    quantity: str,
+    quantity: str = "",
+    *,
+    gov: str = "", gsv: str = "", mt_vacuum: str = "",
+    density: str = "", temperature: str = "", vcf: str = "",
+    unit: str = "MT(vac)",
+    vessel_name: str = "", company_name: str = "", receiving_vessel: str = "",
 ) -> bool:
+    """Approval notice. `quantity` is the headline figure in `unit` — MT(vac)
+    for anything vessel-side, litres only for a truck BDN."""
     subject = f"BDN Approved — {bdn_number}"
+    figures = _figures_table([
+        ("BDN Number", bdn_number),
+        ("Operation", operation_number),
+        ("Vessel", vessel_name),
+        ("Client", company_name),
+        ("Receiving Vessel", receiving_vessel),
+        ("GOV", gov),
+        ("GSV", gsv),
+        ("MT(vac)", mt_vacuum),
+        ("Density", density),
+        ("Temperature", f"{temperature}°" if temperature else ""),
+        ("VCF", vcf),
+        ("Quantity Delivered", f"{quantity} {unit}" if quantity else ""),
+    ])
     body = f"""
       <p style="margin:0 0 14px;">Dear {_esc(recipient_name)},</p>
       <p style="margin:0 0 14px;">Bunker Delivery Note <strong>{_esc(bdn_number)}</strong> for
       operation <strong>{_esc(operation_number)}</strong> has been approved.</p>
-      <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 14px;">
-        <tr>
-          <td style="color:{_MUTED};font-size:13px;padding-right:10px;">Quantity Delivered</td>
-          <td style="color:{_INK};font-size:13px;font-weight:600;">{_esc(quantity)} L</td>
-        </tr>
-      </table>
+      {figures}
     """
     return await send_email(
         [to_email], subject,
@@ -428,28 +473,35 @@ async def email_truck_bdn_submitted(
     recipient_name: str,
     operation_number: str,
     truck_bdn_number: str,
-    quantity_loaded: str,
-    quantity_discharged: str,
+    quantity_loaded: str = "",
+    quantity_discharged: str = "",
+    *,
+    gov: str = "", gsv: str = "", mt_vacuum: str = "",
+    density: str = "", temperature: str = "", vcf: str = "",
+    truck_number: str = "",
 ) -> bool:
+    """Truck BDN — the one place litres stay, per the BM: everything is
+    MT(vac) from the moment it is on the vessel, "except on truck, that is
+    just litres"."""
     subject = f"Truck BDN Ready for Review — {truck_bdn_number}"
+    figures = _figures_table([
+        ("Truck BDN Number", truck_bdn_number),
+        ("Operation", operation_number),
+        ("Truck", truck_number),
+        ("Quantity Loaded", f"{quantity_loaded} L" if quantity_loaded else ""),
+        ("Quantity Discharged", f"{quantity_discharged} L" if quantity_discharged else ""),
+        ("GOV", gov),
+        ("GSV", gsv),
+        ("MT(vac)", mt_vacuum),
+        ("Density", density),
+        ("Temperature", f"{temperature}°" if temperature else ""),
+        ("VCF", vcf),
+    ])
     body = f"""
       <p style="margin:0 0 14px;">Dear {_esc(recipient_name)},</p>
       <p style="margin:0 0 14px;">A Truck Bunker Delivery Note has been submitted for
       operation <strong>{_esc(operation_number)}</strong>:</p>
-      <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 14px;width:100%;">
-        <tr>
-          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Truck BDN Number</td>
-          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(truck_bdn_number)}</td>
-        </tr>
-        <tr>
-          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Quantity Loaded</td>
-          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(quantity_loaded)} L</td>
-        </tr>
-        <tr>
-          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Quantity Discharged</td>
-          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(quantity_discharged)} L</td>
-        </tr>
-      </table>
+      {figures}
     """
     return await send_email(
         [to_email], subject,
@@ -462,28 +514,38 @@ async def email_vessel_bdn_submitted(
     recipient_name: str,
     operation_number: str,
     vessel_bdn_number: str,
-    quantity_loaded: str,
-    quantity_discharged: str,
+    *,
+    gov: str = "", gsv: str = "", mt_vacuum: str = "",
+    density: str = "", temperature: str = "", vcf: str = "",
+    vessel_name: str = "", company_name: str = "", receiving_vessel: str = "",
 ) -> bool:
+    """Vessel-side figures only — GOV/GSV/MT(vac) plus the quality readings.
+
+    The old signature took quantity_loaded/quantity_discharged and printed
+    both with " L". Those two fields were dropped from the submission form,
+    after which callers were passing GOV and MT(vac) into them, so the email
+    displayed correct numbers under wrong labels. Named figures now, so a
+    value cannot land under the wrong heading.
+    """
     subject = f"Vessel BDN Ready for Review — {vessel_bdn_number}"
+    figures = _figures_table([
+        ("Vessel BDN Number", vessel_bdn_number),
+        ("Operation", operation_number),
+        ("Vessel", vessel_name),
+        ("Client", company_name),
+        ("Receiving Vessel", receiving_vessel),
+        ("GOV", gov),
+        ("GSV", gsv),
+        ("MT(vac)", mt_vacuum),
+        ("Density", density),
+        ("Temperature", f"{temperature}°" if temperature else ""),
+        ("VCF", vcf),
+    ])
     body = f"""
       <p style="margin:0 0 14px;">Dear {_esc(recipient_name)},</p>
       <p style="margin:0 0 14px;">A Vessel Bunker Delivery Note has been submitted for
       operation <strong>{_esc(operation_number)}</strong>:</p>
-      <table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 0 14px;width:100%;">
-        <tr>
-          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Vessel BDN Number</td>
-          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(vessel_bdn_number)}</td>
-        </tr>
-        <tr>
-          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Quantity Loaded</td>
-          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(quantity_loaded)} L</td>
-        </tr>
-        <tr>
-          <td style="color:{_MUTED};font-size:13px;padding:2px 0;">Quantity Discharged</td>
-          <td style="color:{_INK};font-size:13px;font-weight:600;text-align:right;">{_esc(quantity_discharged)} L</td>
-        </tr>
-      </table>
+      {figures}
     """
     return await send_email(
         [to_email], subject,

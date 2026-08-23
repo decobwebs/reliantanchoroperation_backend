@@ -18,7 +18,7 @@ from app.schemas.vessel_bdn import VesselBdnCreate, VesselBdnUpdate
 from app.services.notification_service import notify
 from app.services.audit_diff import capture_diff
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
-from app.services.email_service import email_vessel_bdn_submitted
+from app.services.email_service import email_vessel_bdn_submitted, email_bdn_approved
 from app.utils.number_generator import generate_bdn_number
 
 logger = logging.getLogger("raoms.vessel_bdn")
@@ -48,9 +48,20 @@ async def _get_vessel_activity_leg_or_404(leg_id: UUID, db: AsyncSession) -> Ves
     return leg
 
 
+def _num(v, dp: int) -> str:
+    """Figure formatted for an email row, or blank when absent — the email
+    templates drop blank rows rather than printing a placeholder."""
+    if v is None:
+        return ""
+    try:
+        return f"{float(v):,.{dp}f}"
+    except (TypeError, ValueError):
+        return ""
+
+
 async def _send_submitted_emails(
     recipients: List[tuple], operation_number: str, bdn_number: str,
-    quantity_loaded: str, quantity_discharged: str, caller: str,
+    figures: dict, caller: str,
 ) -> None:
     """Sends the BDN-submitted email to each (email, full_name) pair.
 
@@ -66,7 +77,7 @@ async def _send_submitted_emails(
             await email_vessel_bdn_submitted(
                 to_email=email, recipient_name=full_name,
                 operation_number=operation_number, vessel_bdn_number=bdn_number,
-                quantity_loaded=quantity_loaded, quantity_discharged=quantity_discharged,
+                **figures,
             )
         except Exception as exc:
             logger.warning("%s: email failed for %s: %s", caller, email, exc)
@@ -265,7 +276,17 @@ class VesselBdnService:
         await db.commit()
         await _send_submitted_emails(
             email_recipients, operation.operation_number, bdn_number,
-            str(data.discharge_gov), str(data.discharge_mt_vacuum), "create_vessel_bdn",
+            {
+                "gov": _num(data.discharge_gov, 2),
+                "gsv": _num(data.discharge_gsv, 2),
+                "mt_vacuum": _num(data.discharge_mt_vacuum, 3),
+                "density": _num(data.density, 4),
+                "temperature": _num(data.temperature, 1),
+                "vcf": _num(data.vcf, 4),
+                "company_name": data.company_name,
+                "receiving_vessel": data.receiving_vessel,
+            },
+            "create_vessel_bdn",
         )
         return bdn
 
@@ -398,7 +419,17 @@ class VesselBdnService:
         await db.commit()
         await _send_submitted_emails(
             email_recipients, operation.operation_number, bdn_number,
-            str(data.discharge_gov), str(data.discharge_mt_vacuum), "create_vessel_bdn_for_leg",
+            {
+                "gov": _num(data.discharge_gov, 2),
+                "gsv": _num(data.discharge_gsv, 2),
+                "mt_vacuum": _num(data.discharge_mt_vacuum, 3),
+                "density": _num(data.density, 4),
+                "temperature": _num(data.temperature, 1),
+                "vcf": _num(data.vcf, 4),
+                "company_name": data.company_name,
+                "receiving_vessel": data.receiving_vessel,
+            },
+            "create_vessel_bdn_for_leg",
         )
         return bdn
 
@@ -629,8 +660,34 @@ class VesselBdnService:
             changes={"status": {"from": "pending", "to": "approved"}, "approved_runs": f"{approved}/{total}"},
         ))
 
+        # Approval reached nobody by email before this — only an in-app row and
+        # a WhatsApp call skipped while Twilio is unconfigured.
+        _to = []
+        _sub = await db.get(User, bdn.generated_by)
+        if _sub:
+            _to.append((_sub.email, _sub.full_name))
+        _fms = (await db.execute(select(User).where(User.role == UserRole.finance_manager))).scalars().all()
+        _to += [(u.email, u.full_name) for u in _fms]
+
         await db.flush()
         await db.refresh(bdn)
+
+        await db.commit()
+        for _email, _name in _to:
+            try:
+                await email_bdn_approved(
+                    to_email=_email, recipient_name=_name,
+                    operation_number=operation.operation_number, bdn_number=bdn.bdn_number,
+                    quantity=_num(bdn.discharge_mt_vacuum, 3),
+                    gov=_num(bdn.discharge_gov, 2), gsv=_num(bdn.discharge_gsv, 2),
+                    mt_vacuum=_num(bdn.discharge_mt_vacuum, 3),
+                    density=_num(bdn.density, 4), temperature=_num(bdn.temperature, 1),
+                    vcf=_num(bdn.vcf, 4),
+                    company_name=bdn.company_name or "", receiving_vessel=bdn.receiving_vessel or "",
+                )
+            except Exception:
+                pass  # already committed; a mail failure must not undo approval
+
         return bdn, total, approved, gate_cleared
 
     @staticmethod

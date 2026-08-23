@@ -16,8 +16,19 @@ from app.models.user import User
 from app.models.enums import UserRole, BdnStatus, OperationStatus, OperationType, TruckOpStatus, RobEntryType
 from app.schemas.bdn import BdnCreate, BdnUpdate
 from app.services.notification_service import notify
+from app.services.email_service import email_bdn_approved, email_vessel_bdn_submitted
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.utils.number_generator import generate_bdn_number
+
+
+def _num(v, dp: int) -> str:
+    """Figure formatted for an email row, blank when absent."""
+    if v is None:
+        return ""
+    try:
+        return f"{float(v):,.{dp}f}"
+    except (TypeError, ValueError):
+        return ""
 
 
 async def _get_operation_or_404(operation_id: UUID, db: AsyncSession) -> Operation:
@@ -169,6 +180,12 @@ class BdnService:
                 },
             )
 
+        # Collected for after the commit — a submitted-email must never go out
+        # ahead of the row it describes (see vessel_bdn_service for the incident
+        # that established this). This BDN type previously sent no email at all,
+        # unlike the vessel and truck ones.
+        _submit_emails = [(u.email, u.full_name) for u in bm_users]
+
         audit = AuditLog(
             user_id=current_user.id,
             operation_id=operation_id,
@@ -189,6 +206,24 @@ class BdnService:
         # Attach computed fields
         bdn._vessel_name = vessel.vessel_name
         bdn._generated_by_name = current_user.full_name
+
+        # Durable before any email leaves the building.
+        await db.commit()
+        for _email, _name in _submit_emails:
+            try:
+                await email_vessel_bdn_submitted(
+                    to_email=_email, recipient_name=_name,
+                    operation_number=operation.operation_number,
+                    vessel_bdn_number=bdn_number,
+                    gov=_num(data.discharge_gov, 2),
+                    gsv=_num(data.discharge_gsv, 2),
+                    mt_vacuum=_num(data.quantity_delivered_mt, 3),
+                    density=_num(data.density, 4),
+                    temperature=_num(data.temperature, 1),
+                    vessel_name=vessel.vessel_name,
+                )
+            except Exception:
+                pass  # never let a mail failure undo a saved BDN
 
         return bdn
 
@@ -277,6 +312,16 @@ class BdnService:
             },
         )
 
+        # Approval previously reached nobody by email — only an in-app row and
+        # a WhatsApp call that is skipped entirely while Twilio is unconfigured,
+        # so the submitter had no way to learn the outcome without logging in.
+        _approve_to = []
+        _submitter = await db.get(User, bdn.generated_by)
+        if _submitter:
+            _approve_to.append((_submitter.email, _submitter.full_name))
+        for _fm in fm_users:
+            _approve_to.append((_fm.email, _fm.full_name))
+
         audit = AuditLog(
             user_id=current_user.id,
             operation_id=bdn.operation_id,
@@ -289,6 +334,24 @@ class BdnService:
 
         await db.flush()
         await db.refresh(bdn)
+
+        await db.commit()
+        for _email, _name in _approve_to:
+            try:
+                await email_bdn_approved(
+                    to_email=_email, recipient_name=_name,
+                    operation_number=operation.operation_number,
+                    bdn_number=bdn.bdn_number,
+                    quantity=_num(bdn.quantity_delivered_mt, 3),
+                    gov=_num(bdn.discharge_gov, 2),
+                    gsv=_num(bdn.discharge_gsv, 2),
+                    mt_vacuum=_num(bdn.quantity_delivered_mt, 3),
+                    density=_num(bdn.density, 4),
+                    temperature=_num(bdn.temperature, 1),
+                )
+            except Exception:
+                pass  # approval already committed; mail failure must not undo it
+
         return bdn
 
     @staticmethod
@@ -483,11 +546,31 @@ class BdnService:
         offset = (page - 1) * per_page
         stmt = (
             select(BDN)
+            .options(
+                selectinload(BDN.operation),
+                selectinload(BDN.vessel),
+                selectinload(BDN.generator),
+            )
             .order_by(BDN.created_at.desc())
             .offset(offset)
             .limit(per_page)
         )
         result = await db.execute(stmt)
         bdns = list(result.scalars().all())
+
+        # Transient display fields — the register lists BDNs from every
+        # operation, so each row has to say which job it belongs to.
+        for b in bdns:
+            # Set the plain names BdnOut actually reads. The rest of this
+            # service assigns _vessel_name/_generated_by_name, but BdnOut
+            # declares vessel_name/generated_by_name with no alias, so those
+            # underscore attributes never reach the response — which is why
+            # vessel name has always come back blank.
+            b.vessel_name = b.vessel.vessel_name if b.vessel else None
+            b.generated_by_name = b.generator.full_name if b.generator else None
+            if b.operation:
+                b.operation_number = b.operation.operation_number
+                b.operation_type = b.operation.type.value if b.operation.type else None
+                b.operation_status = b.operation.status.value if b.operation.status else None
 
         return bdns, total

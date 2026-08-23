@@ -16,8 +16,19 @@ from app.schemas.truck_bdn import TruckBdnCreate, TruckBdnUpdate
 from app.services.notification_service import notify
 from app.services.audit_diff import capture_diff
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
-from app.services.email_service import email_truck_bdn_submitted
+from app.services.email_service import email_truck_bdn_submitted, email_bdn_approved
 from app.utils.number_generator import generate_truck_bdn_number
+
+def _num(v, dp: int) -> str:
+    """Figure formatted for an email row, blank when absent — the templates
+    drop blank rows rather than printing a placeholder."""
+    if v is None:
+        return ""
+    try:
+        return f"{float(v):,.{dp}f}"
+    except (TypeError, ValueError):
+        return ""
+
 
 logger = logging.getLogger("raoms.truck_bdn")
 
@@ -204,8 +215,15 @@ class TruckBdnService:
                     recipient_name=recipient.full_name,
                     operation_number=operation.operation_number,
                     truck_bdn_number=truck_bdn_number,
-                    quantity_loaded=str(data.quantity_loaded_mt),
-                    quantity_discharged=str(data.quantity_discharged_mt),
+                    # Litres stay here — a truck BDN is the one place they belong.
+                    quantity_loaded=_num(data.quantity_loaded_mt, 3),
+                    quantity_discharged=_num(data.quantity_discharged_mt, 3),
+                    gov=_num(data.gov, 2),
+                    gsv=_num(truck_bdn.gsv, 2),
+                    mt_vacuum=_num(truck_bdn.mt_vacuum, 3),
+                    density=_num(data.density, 4),
+                    temperature=_num(data.temperature, 1),
+                    vcf=_num(data.vcf, 4),
                 )
             except Exception as exc:
                 logger.warning("create_truck_bdn: email failed for %s: %s", recipient.email, exc)
@@ -362,8 +380,33 @@ class TruckBdnService:
             changes={"status": {"from": "pending", "to": "approved"}},
         ))
 
+        _to = []
+        _sub = await db.get(User, truck_bdn.generated_by)
+        if _sub:
+            _to.append((_sub.email, _sub.full_name))
+        _fms = (await db.execute(select(User).where(User.role == UserRole.finance_manager))).scalars().all()
+        _to += [(u.email, u.full_name) for u in _fms]
+
         await db.flush()
         await db.refresh(truck_bdn)
+
+        await db.commit()
+        for _email, _name in _to:
+            try:
+                await email_bdn_approved(
+                    to_email=_email, recipient_name=_name,
+                    operation_number=operation.operation_number,
+                    bdn_number=truck_bdn.truck_bdn_number,
+                    # Truck BDN keeps litres — the one place they belong.
+                    quantity=_num(truck_bdn.quantity_discharged_mt, 3), unit="L",
+                    gov=_num(truck_bdn.gov, 2), gsv=_num(truck_bdn.gsv, 2),
+                    mt_vacuum=_num(truck_bdn.mt_vacuum, 3),
+                    density=_num(truck_bdn.density, 4), temperature=_num(truck_bdn.temperature, 1),
+                    vcf=_num(truck_bdn.vcf, 4),
+                )
+            except Exception:
+                pass
+
         return truck_bdn
 
     @staticmethod
