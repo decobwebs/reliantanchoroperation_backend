@@ -453,7 +453,12 @@ class VesselActivityLeg(Base):
     # VesselBdn for consistency. gsv/mt_vacuum are system-computed.
     quantity_discharged_litres = Column(Numeric(14, 2), nullable=True)
     density = Column(Numeric(8, 4), nullable=True)
-    # One temperature, not a before/after pair (migration 054).
+    # One temperature, not a before/after pair (migration 054). The column
+    # exists in the database but its mapping was dropped during that edit,
+    # leaving record_leg_quantities' `leg.temperature = ...` setting a plain
+    # Python attribute that never persisted — every submitted leg temperature
+    # was silently discarded. No migration needed; the column is already there.
+    temperature = Column(Numeric(6, 2), nullable=True)
     vcf = Column(Numeric(8, 4), nullable=True)
     gov = Column(Numeric(14, 2), nullable=True)
     gsv = Column(Numeric(14, 2), nullable=True)          # computed = gov*vcf
