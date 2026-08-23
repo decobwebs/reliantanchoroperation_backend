@@ -598,6 +598,23 @@ class VesselActivityService:
             entity_id=activity.id,
             changes={"activity_number": activity.activity_number},
         ))
+
+        # Cancelling a run changes the denominator of the "every run needs an
+        # approved Vessel BDN" completion gate. That gate was only ever
+        # re-evaluated when a BDN was approved, so cancelling the one run that
+        # was holding an operation back left it stuck at bdn_pending with
+        # nothing left to approve — no way forward from the UI at all.
+        # Re-check it here, on the same rule approve_vessel_bdn uses.
+        from app.services.vessel_bdn_service import VesselBdnService
+        operation = await db.get(Operation, activity.operation_id)
+        if operation is not None and operation.status == OperationStatus.bdn_pending:
+            total, approved = await VesselBdnService._approval_progress(operation.id, db)
+            if total > 0 and approved >= total:
+                await _transition_operation(
+                    operation, OperationStatus.bdn_approved, current_user, db,
+                    reason="All remaining vessel runs approved after a run was cancelled",
+                )
+
         await db.commit()
         # Re-fetch through _get_or_404 rather than a bare refresh() — a plain
         # refresh reloads the comments collection but without cascading the
