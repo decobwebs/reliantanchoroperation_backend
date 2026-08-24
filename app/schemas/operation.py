@@ -127,6 +127,15 @@ class SetOperationColorRequest(BaseModel):
 
 
 class UpdateOperationRequest(BaseModel):
+    # Type decides which pipeline the operation follows, so it is only
+    # accepted while the operation is still in draft — enforced in the
+    # service, which alone can see the current status. Switching it later
+    # would leave an operation sitting in a status its new pipeline has no
+    # route out of.
+    type: Optional[OperationType] = None
+    # Full replacement of the product lines when supplied; omitted leaves
+    # them untouched. Same shape Create uses.
+    products: Optional[List[OperationProductCreate]] = None
     client_id: Optional[UUID] = None
     actual_volume_mt: Optional[Decimal] = None
     loading_location: Optional[str] = None

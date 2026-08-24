@@ -5,7 +5,7 @@ from uuid import UUID
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, or_
+from sqlalchemy import select, func, and_, or_, delete
 from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
@@ -390,7 +390,52 @@ class OperationService:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Operation not found")
 
         update_data = data.model_dump(exclude_unset=True, exclude={"reason"})
+
+        # Type is pipeline-defining: each operation type has its own valid
+        # status graph (state_machine.py). Switching after work has started
+        # would leave the operation sitting in a status the new pipeline has
+        # no route out of — the same dead end that stranded RA-2026-0070 —
+        # so it is only accepted while still in draft.
+        if "type" in update_data and update_data["type"] != operation.type:
+            if operation.status != OperationStatus.draft:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=(
+                        "Operation type can only be changed while the operation is still in "
+                        f"Draft — this one is '{operation.status.value}'."
+                    ),
+                )
+
+        # Products are child rows, not a scalar, so capture_diff can't apply
+        # them. Supplied = full replacement; omitted = left alone.
+        new_products = update_data.pop("products", None)
+
         changes = capture_diff(operation, update_data)
+
+        if new_products is not None:
+            if not new_products:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="An operation must keep at least one product",
+                )
+            before = sorted(f"{p.product_type}:{p.quantity_mt}" for p in operation.products)
+            await db.execute(
+                delete(OperationProduct).where(OperationProduct.operation_id == operation.id)
+            )
+            for prod in new_products:
+                ptype = prod["product_type"]
+                db.add(OperationProduct(
+                    operation_id=operation.id,
+                    product_type=ptype.value if hasattr(ptype, "value") else ptype,
+                    quantity_mt=prod["quantity_mt"],
+                ))
+            after = sorted(
+                f"{(p['product_type'].value if hasattr(p['product_type'], 'value') else p['product_type'])}"
+                f":{p['quantity_mt']}"
+                for p in new_products
+            )
+            if before != after:
+                changes["products"] = {"from": ", ".join(before), "to": ", ".join(after)}
 
         operation.updated_at = datetime.utcnow()
         db.add(AuditLog(
