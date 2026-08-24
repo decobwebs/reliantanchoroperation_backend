@@ -432,15 +432,21 @@ async def email_bdn_approved(
     recipient_name: str,
     operation_number: str,
     bdn_number: str,
-    quantity: str = "",
     *,
     gov: str = "", gsv: str = "", mt_vacuum: str = "",
     density: str = "", temperature: str = "", vcf: str = "",
-    unit: str = "MT(vac)",
+    quantity_litres: str = "",
     vessel_name: str = "", company_name: str = "", receiving_vessel: str = "",
 ) -> bool:
-    """Approval notice. `quantity` is the headline figure in `unit` — MT(vac)
-    for anything vessel-side, litres only for a truck BDN."""
+    """Approval notice.
+
+    There used to be a "Quantity Delivered" row carrying the same number the
+    MT(vac) row already showed, in the same unit — the vessel side has no
+    second figure to report. It is gone. `quantity_litres` exists only for a
+    truck BDN, where litres are a genuinely different reading from MT(vac),
+    and prints under the same "Quantity Discharged" heading the truck
+    submission email uses.
+    """
     subject = f"BDN Approved — {bdn_number}"
     figures = _figures_table([
         ("BDN Number", bdn_number),
@@ -448,13 +454,13 @@ async def email_bdn_approved(
         ("Vessel", vessel_name),
         ("Client", company_name),
         ("Receiving Vessel", receiving_vessel),
+        ("Quantity Discharged", f"{quantity_litres} L" if quantity_litres else ""),
         ("GOV", gov),
         ("GSV", gsv),
         ("MT(vac)", mt_vacuum),
         ("Density", density),
         ("Temperature", f"{temperature}°" if temperature else ""),
         ("VCF", vcf),
-        ("Quantity Delivered", f"{quantity} {unit}" if quantity else ""),
     ])
     body = f"""
       <p style="margin:0 0 14px;">Dear {_esc(recipient_name)},</p>

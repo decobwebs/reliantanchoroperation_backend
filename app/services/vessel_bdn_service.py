@@ -678,7 +678,6 @@ class VesselBdnService:
                 await email_bdn_approved(
                     to_email=_email, recipient_name=_name,
                     operation_number=operation.operation_number, bdn_number=bdn.bdn_number,
-                    quantity=_num(bdn.discharge_mt_vacuum, 3),
                     gov=_num(bdn.discharge_gov, 2), gsv=_num(bdn.discharge_gsv, 2),
                     mt_vacuum=_num(bdn.discharge_mt_vacuum, 3),
                     density=_num(bdn.density, 4), temperature=_num(bdn.temperature, 1),

@@ -397,8 +397,9 @@ class TruckBdnService:
                     to_email=_email, recipient_name=_name,
                     operation_number=operation.operation_number,
                     bdn_number=truck_bdn.truck_bdn_number,
-                    # Truck BDN keeps litres — the one place they belong.
-                    quantity=_num(truck_bdn.quantity_discharged_mt, 3), unit="L",
+                    # Truck BDN keeps litres — the one place they belong, and
+                    # the one BDN where the figure is not a repeat of MT(vac).
+                    quantity_litres=_num(truck_bdn.quantity_discharged_mt, 3),
                     gov=_num(truck_bdn.gov, 2), gsv=_num(truck_bdn.gsv, 2),
                     mt_vacuum=_num(truck_bdn.mt_vacuum, 3),
                     density=_num(truck_bdn.density, 4), temperature=_num(truck_bdn.temperature, 1),

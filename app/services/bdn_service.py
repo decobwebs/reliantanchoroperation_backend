@@ -342,7 +342,6 @@ class BdnService:
                     to_email=_email, recipient_name=_name,
                     operation_number=operation.operation_number,
                     bdn_number=bdn.bdn_number,
-                    quantity=_num(bdn.quantity_delivered_mt, 3),
                     gov=_num(bdn.discharge_gov, 2),
                     gsv=_num(bdn.discharge_gsv, 2),
                     mt_vacuum=_num(bdn.quantity_delivered_mt, 3),
