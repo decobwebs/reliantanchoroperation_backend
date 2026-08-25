@@ -18,6 +18,32 @@ class UserRole(str, enum.Enum):
     marine_operator = "marine_operator"
 
 
+# What each role is called on screen and in email. The stored values never
+# change — renaming a role is a labelling decision, and rewriting a database
+# enum would break every existing row that references it. Anything shown to a
+# person must read through here rather than deriving a name from the value
+# (`role.value.replace("_", " ").title()`), which would print the old wording.
+ROLE_LABELS: dict = {
+    UserRole.bunker_manager: "Bunker Manager",
+    UserRole.ops_supervisor: "Ops Supervisor",
+    UserRole.logistics_officer: "Truck Operation",
+    UserRole.cargo_superintendent: "Marine Operations",
+    UserRole.finance_manager: "Finance Manager",
+    UserRole.client: "Client",
+    UserRole.marine_operator: "Marine Operator",
+}
+
+
+def role_label(role) -> str:
+    """Display name for a role, accepting either the enum or its raw value."""
+    if isinstance(role, str):
+        try:
+            role = UserRole(role)
+        except ValueError:
+            return role.replace("_", " ").title()
+    return ROLE_LABELS.get(role, role.value.replace("_", " ").title())
+
+
 class OperationType(str, enum.Enum):
     truck_only = "truck_only"
     vessel_only = "vessel_only"
@@ -82,8 +108,22 @@ class ProductType(str, enum.Enum):
 class TaskType(str, enum.Enum):
     truck_logistics = "truck_logistics"
     vessel_operations = "vessel_operations"
+    # Retired — no longer offered when assigning work. It never behaved any
+    # differently from vessel_operations (every check that named one named
+    # the other), so the two were interchangeable in practice. The value
+    # stays because live task assignments already carry it and would fail to
+    # load if the enum lost it; dropping it from the database is not an
+    # option and is not needed.
     marine_discharge = "marine_discharge"
     finance_processing = "finance_processing"
+
+
+# Task types the UI still offers when assigning work. Retired values are
+# excluded here but remain valid in TaskType so historical rows keep loading.
+ASSIGNABLE_TASK_TYPES = (
+    TaskType.truck_logistics,
+    TaskType.vessel_operations,
+)
 
 
 class TaskStatus(str, enum.Enum):

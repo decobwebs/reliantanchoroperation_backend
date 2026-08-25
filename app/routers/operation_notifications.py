@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import require_roles
+from app.dependencies import require_roles, require_operation_manager
 from app.models.user import User
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse
@@ -15,12 +15,12 @@ from app.services.operation_notification_service import OperationNotificationSer
 
 router = APIRouter(tags=["Operation Notifications"])
 
-_bm_only = Depends(require_roles(UserRole.bunker_manager))
+_op_manager = Depends(require_operation_manager())
 
 
 @router.get("/operation-notifications/staff", response_model=StandardResponse)
 async def list_eligible_staff(
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Every active non-client user — the recipient picker's source list."""
@@ -34,7 +34,7 @@ async def list_eligible_staff(
 async def send_operation_notification(
     operation_id: UUID,
     body: SendOperationNotificationRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Only the Bunker Manager sends General notifications — a wholly
@@ -52,7 +52,7 @@ async def send_operation_notification(
 @router.get("/operations/{operation_id}/notifications", response_model=StandardResponse)
 async def get_operation_notification_log(
     operation_id: UUID,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     logs = await OperationNotificationService.get_notification_log(operation_id, db)

@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import require_roles
+from app.dependencies import require_roles, require_operation_manager
+from app.permissions import OPERATION_MANAGER_ROLES
 from app.models.user import User
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse
@@ -51,9 +52,11 @@ from app.services.vessel_activity_service import VesselActivityService
 
 router = APIRouter(tags=["Vessel Activities"])
 
-_bm_only = Depends(require_roles(UserRole.bunker_manager))
+_op_manager = Depends(require_operation_manager())
 _marine_only = Depends(require_roles(UserRole.cargo_superintendent))
-_bm_marine = Depends(require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent))
+# Marine's own actions, plus anyone with operation-manager authority over
+# them — the BM, and now the Ops Supervisor.
+_bm_marine = Depends(require_roles(*OPERATION_MANAGER_ROLES, UserRole.cargo_superintendent))
 # Stage progression: spec assigns this to "Marine / Ops Supervisor".
 _stage_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent, UserRole.ops_supervisor))
 # HSE: no dedicated Safety Officer role exists yet — folds into Ops
@@ -71,7 +74,7 @@ _hse_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.ops_supervi
 async def create_vessel_activity(
     operation_id: UUID,
     body: VesselActivityCreate,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Assign a Marine Supervisor to oversee vessel bunkering/discharge. Bunker Manager only."""
@@ -201,7 +204,7 @@ async def complete_vessel_activity(
 async def patch_initial_rob(
     activity_id: UUID,
     body: VesselActivityPatchInitialRob,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Edit the pre-operation Initial ROB. Bunker Manager only. Action is audit-logged."""
@@ -215,7 +218,7 @@ async def patch_initial_rob(
 @router.post("/vessel-activities/{activity_id}/cancel", response_model=StandardResponse)
 async def cancel_vessel_activity(
     activity_id: UUID,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Cancel a vessel activity. Bunker Manager only."""
@@ -396,7 +399,7 @@ async def record_vessel_operation_quantities(
 async def correct_vessel_operation_timing(
     activity_id: UUID,
     body: VesselActivityCorrectTimingRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Correct any of the four commence/complete (Loading Commenced/
@@ -426,7 +429,7 @@ async def record_loading_receipt(
 async def add_vessel_activity_leg(
     activity_id: UUID,
     body: VesselActivityLegCreate,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Register a new receiving vessel. Bunker Manager only — the master
@@ -493,7 +496,7 @@ async def record_leg_quantities(
 async def correct_leg_timing(
     leg_id: UUID,
     body: CorrectLegTimingRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Correct any of the eight leg stage timings. Bunker Manager only, reason required."""
@@ -505,7 +508,7 @@ async def correct_leg_timing(
 async def cancel_leg(
     leg_id: UUID,
     body: CancelLegRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Cancel a receiving-vessel leg. Bunker Manager only, reason required."""
@@ -524,7 +527,7 @@ async def edit_vessel_activity_update(
     reason: str = Form(...),
     content: Optional[str] = Form(None),
     image: Optional[UploadFile] = File(None),
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Correct a posted update's text and/or replace its image."""
@@ -543,7 +546,7 @@ async def edit_vessel_activity_update(
 async def edit_vessel_activity_comment(
     comment_id: UUID,
     body: EditVesselActivityCommentRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Correct a posted comment."""
@@ -569,7 +572,7 @@ async def set_leg_adhoc_client(
 async def edit_vessel_activity_leg(
     leg_id: UUID,
     body: EditVesselActivityLegRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Correct a receiving vessel's name, IMO number or ETA."""
@@ -581,7 +584,7 @@ async def edit_vessel_activity_leg(
 async def uncancel_vessel_activity_leg(
     leg_id: UUID,
     body: UncancelRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Restore a cancelled receiving vessel. Re-derives the completion gate."""
@@ -593,7 +596,7 @@ async def uncancel_vessel_activity_leg(
 async def uncancel_vessel_activity(
     activity_id: UUID,
     body: UncancelRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Restore a cancelled vessel activity to the point it had reached."""

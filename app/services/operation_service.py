@@ -292,7 +292,12 @@ class OperationService:
 
     @staticmethod
     def _check_visibility(operation: Operation, user: User) -> None:
-        if user.role in (UserRole.bunker_manager, UserRole.finance_manager):
+        # Ops Supervisor sits with the BM here: they hold the BM's authority
+        # over every operation, so they are never gated on being assigned to
+        # one. This is what "automatically on every operation" means in
+        # practice — it covers operations created before the rule existed,
+        # which a task-assignment approach never would.
+        if user.role in (UserRole.bunker_manager, UserRole.finance_manager, UserRole.ops_supervisor):
             return
         if user.role == UserRole.client:
             if operation.client_id != user.id:
@@ -312,8 +317,8 @@ class OperationService:
         conditions = [Operation.deleted_at.is_(None)]
         if current_user.role == UserRole.client:
             conditions.append(Operation.client_id == current_user.id)
-        elif current_user.role in (UserRole.bunker_manager, UserRole.finance_manager):
-            pass  # see all operations
+        elif current_user.role in (UserRole.bunker_manager, UserRole.finance_manager, UserRole.ops_supervisor):
+            pass  # see all operations — Ops Supervisor included, see _check_visibility
         elif current_user.role in (UserRole.cargo_superintendent, UserRole.marine_operator):
             # Cargo Superintendents see operations via vessel activity assignments
             # (not tasks). Marine Operators aren't operation-scoped via tasks or
@@ -327,7 +332,8 @@ class OperationService:
             assigned_op_ids = list({row[0] for row in task_result.fetchall()} | {row[0] for row in va_result.fetchall()})
             conditions.append(Operation.id.in_(assigned_op_ids))
         else:
-            # task-scoped roles: logistics_officer, ops_supervisor
+            # task-scoped roles: logistics_officer (ops_supervisor moved to the
+            # see-all branch above when it gained operation-manager authority)
             assigned_op_ids_stmt = select(TaskAssignment.operation_id).where(TaskAssignment.assigned_to == current_user.id)
             assigned_result = await db.execute(assigned_op_ids_stmt)
             assigned_op_ids = [row[0] for row in assigned_result.fetchall()]

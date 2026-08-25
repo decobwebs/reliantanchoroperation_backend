@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import require_roles
+from app.dependencies import require_roles, require_operation_manager
 from app.models.user import User
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse
@@ -15,7 +15,12 @@ router = APIRouter(tags=["Vessel BDNs"])
 
 _submit_roles = Depends(require_roles(UserRole.ops_supervisor, UserRole.cargo_superintendent))
 _review_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent, UserRole.ops_supervisor, UserRole.finance_manager))
+# Approving or rejecting stays with the Bunker Manager alone: the Ops
+# Supervisor is one of the roles that submits these, and must not sign
+# off their own figures. Correcting and deleting are operation-manager
+# actions like any other edit.
 _bm_only = Depends(require_roles(UserRole.bunker_manager))
+_op_manager = Depends(require_operation_manager())
 
 
 @router.post(
@@ -82,7 +87,7 @@ async def list_vessel_bdns(
 async def update_vessel_bdn(
     bdn_id: UUID,
     body: VesselBdnUpdate,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     bdn = await VesselBdnService.update_vessel_bdn(bdn_id, body, current_user, db)
@@ -94,7 +99,7 @@ async def update_vessel_bdn(
 @router.delete("/vessel-bdns/{bdn_id}", response_model=StandardResponse)
 async def delete_vessel_bdn(
     bdn_id: UUID,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a Vessel BDN outright. Reverses its ROB debit first if it was

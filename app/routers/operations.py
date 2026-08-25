@@ -6,7 +6,7 @@ from fastapi import APIRouter, Body, Depends, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_roles, get_request_meta
+from app.dependencies import get_current_user, require_roles, get_request_meta, require_operation_manager
 from app.models.user import User
 from app.models.enums import UserRole, OperationStatus, OperationType
 from app.schemas.common import StandardResponse, PaginatedResponse
@@ -101,7 +101,7 @@ async def update_operation(
     operation_id: UUID,
     body: UpdateOperationRequest,
     request: Request,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Update an operation's editable fields. Only bunker_managers."""
@@ -118,7 +118,7 @@ async def update_operation(
 async def link_naval_clearance(
     operation_id: UUID,
     body: LinkNavalClearanceRequest,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Attach a Naval Clearance to an operation — optional, at any time,
@@ -132,7 +132,7 @@ async def link_naval_clearance(
 async def unlink_naval_clearance(
     operation_id: UUID,
     body: UnlinkNavalClearanceRequest,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Removes one specific clearance from the operation — any others linked
@@ -145,7 +145,7 @@ async def unlink_naval_clearance(
 async def set_operation_color(
     operation_id: UUID,
     body: SetOperationColorRequest,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Cosmetic only — no reason required."""
@@ -181,7 +181,7 @@ async def close_operation(
     operation_id: UUID,
     body: CloseOperationRequest,
     request: Request,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Close an operation — transitions to completed, optionally capturing
@@ -210,7 +210,7 @@ async def pause_operation(
     operation_id: UUID,
     body: PauseRequest,
     request: Request,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Pause an active operation."""
@@ -230,7 +230,7 @@ async def resume_operation(
     operation_id: UUID,
     request: Request,
     body: ResumeRequest = Body(default=ResumeRequest()),
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Resume a paused operation."""
@@ -274,7 +274,7 @@ async def get_operation_timeline(
 async def delete_operation(
     operation_id: UUID,
     request: Request,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Soft-delete an operation. Only permitted for draft operations."""
@@ -289,7 +289,7 @@ async def reopen_operation(
     operation_id: UUID,
     body: ReopenRequest,
     request: Request,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a new revision of a completed/archived/cancelled operation. BM only."""
@@ -374,7 +374,7 @@ async def list_vessel_discharge_events(
 @router.get("/{operation_id}/audit-log", response_model=StandardResponse)
 async def get_operation_audit_log(
     operation_id: UUID,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Return the full audit trail for an operation. Bunker Manager only."""

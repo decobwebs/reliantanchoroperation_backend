@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 from app.models.operation import Operation, TaskAssignment
 from app.models.audit import AuditLog
 from app.models.user import User
+from app.permissions import is_operation_manager
 from app.models.enums import UserRole, TaskStatus, OperationStatus
 from app.schemas.task import TaskAssignmentCreate, TaskAssignmentUpdate
 from app.services.notification_service import notify
@@ -144,8 +145,8 @@ class TaskService:
 
         conditions = [TaskAssignment.operation_id == operation_id]
 
-        # Non-BM users only see their own tasks
-        if current_user.role != UserRole.bunker_manager:
+        # Everyone but an operation manager sees only their own tasks
+        if not is_operation_manager(current_user):
             conditions.append(TaskAssignment.assigned_to == current_user.id)
 
         stmt = (
@@ -180,9 +181,9 @@ class TaskService:
         if not task:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Task not found")
 
-        # Only assignee or BM can update
+        # Only the assignee or an operation manager can update
         if (
-            current_user.role != UserRole.bunker_manager
+            not is_operation_manager(current_user)
             and task.assigned_to != current_user.id
         ):
             raise HTTPException(

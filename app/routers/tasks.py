@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_roles
+from app.dependencies import get_current_user, require_roles, require_operation_manager
 from app.models.user import User
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse
@@ -34,7 +34,7 @@ async def list_tasks(
 async def create_task(
     operation_id: UUID,
     body: TaskAssignmentCreate,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Create a task assignment for an operation. Bunker Manager only."""
@@ -63,7 +63,7 @@ async def update_task(
 @router.delete("/tasks/{task_id}", response_model=StandardResponse)
 async def cancel_task(
     task_id: UUID,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Cancel a task. Bunker Manager only."""

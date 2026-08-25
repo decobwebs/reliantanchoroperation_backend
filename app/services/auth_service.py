@@ -12,7 +12,7 @@ from fastapi import HTTPException, status
 
 from app.config import settings
 from app.models.user import User
-from app.models.enums import UserRole
+from app.models.enums import UserRole, role_label
 from app.services.email_service import email_account_created
 
 logger = logging.getLogger("raoms.auth")
@@ -364,7 +364,7 @@ class AuthService:
             email_sent = await email_account_created(
                 to_email=email,
                 recipient_name=full_name,
-                role_label=role.value.replace("_", " ").title(),
+                role_label=role_label(role),
                 set_password_url=link,
                 is_new_account=True,
             )
@@ -388,7 +388,7 @@ class AuthService:
         return await email_account_created(
             to_email=user.email,
             recipient_name=user.full_name,
-            role_label=user.role.value.replace("_", " ").title(),
+            role_label=role_label(user.role),
             set_password_url=link,
             is_new_account=False,
         )
@@ -550,7 +550,7 @@ class AuthService:
             await email_account_created(
                 to_email=email,
                 recipient_name=user.full_name,
-                role_label=user.role.value.replace("_", " ").title(),
+                role_label=role_label(user.role),
                 set_password_url=link,
                 is_new_account=False,
             )

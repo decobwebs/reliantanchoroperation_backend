@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.models.user import User
 from app.models.enums import UserRole
+from app.permissions import OPERATION_MANAGER_ROLES
 from app.services.auth_service import AuthService
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -72,6 +73,16 @@ def require_roles(*roles: UserRole, allow_acting_as: bool = True):
             )
         return current_user
     return _check
+
+
+def require_operation_manager(allow_acting_as: bool = True):
+    """Gate for a Bunker-Manager-level action **on an operation**.
+
+    Accepts the Ops Supervisor alongside the BM. Use this in place of
+    `require_roles(UserRole.bunker_manager)` on operation-scoped routes only —
+    see app/permissions.py for what that boundary covers and what it excludes.
+    """
+    return require_roles(*OPERATION_MANAGER_ROLES, allow_acting_as=allow_acting_as)
 
 
 def get_request_meta(request: Request, current_user: Optional[User] = None) -> dict:

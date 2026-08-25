@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import require_roles
+from app.dependencies import require_roles, require_operation_manager
 from app.models.user import User
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse, PaginatedResponse
@@ -70,7 +70,7 @@ async def get_bdn(
 async def update_bdn(
     bdn_id: UUID,
     body: BdnUpdate,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Correct any field on a BDN, regardless of status. Bunker Manager only."""
@@ -84,7 +84,7 @@ async def update_bdn(
 @router.delete("/bdns/{bdn_id}", response_model=StandardResponse)
 async def delete_bdn(
     bdn_id: UUID,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a BDN outright. Reverses its ROB credit first if it was

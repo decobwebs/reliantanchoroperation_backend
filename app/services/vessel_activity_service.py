@@ -19,6 +19,7 @@ from app.models.vessel import Vessel
 from app.models.operation import Operation, OperationStatusHistory
 from app.models.audit import AuditLog
 from app.models.user import User
+from app.permissions import is_operation_manager
 from app.models.enums import VesselActivityStatus, RobEntryType, UserRole, VesselStage, VesselLegStage, OperationStatus, OperationType, BdnStatus
 from app.schemas.vessel_activity import (
     VesselActivityCreate,
@@ -213,7 +214,7 @@ class VesselActivityService:
         if not assignee or assignee.role != UserRole.cargo_superintendent:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Assigned user must be a Cargo Superintendent",
+                detail="Assigned user must be Marine Operations",
             )
 
         # BM adding another vessel after others already finished — keep the
@@ -266,7 +267,7 @@ class VesselActivityService:
 
         if (
             current_user.id != activity.assigned_to
-            and current_user.role != UserRole.bunker_manager
+            and not is_operation_manager(current_user)
         ):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised")
 
@@ -494,11 +495,11 @@ class VesselActivityService:
                 type_="vessel_activity_completed",
                 title=f"Vessel Activity Completed — {activity.activity_number}",
                 message=(
-                    f"Cargo Superintendent has completed vessel activity {activity.activity_number} "
+                    f"Marine Operations has completed vessel activity {activity.activity_number} "
                     f"for operation {op_number} aboard {vessel_name}. "
                     f"Final ROB: {float(final_rob):.3f} L. Ready for BDN and reconciliation."
                     if final_rob is not None else
-                    f"Cargo Superintendent has completed vessel activity {activity.activity_number} "
+                    f"Marine Operations has completed vessel activity {activity.activity_number} "
                     f"for operation {op_number} aboard {vessel_name}. Review and proceed."
                 ),
                 priority="high",
@@ -548,8 +549,8 @@ class VesselActivityService:
         current_user: User,
         db: AsyncSession,
     ) -> VesselActivity:
-        if current_user.role != UserRole.bunker_manager:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only Bunker Manager can edit Initial ROB")
+        if not is_operation_manager(current_user):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager or Ops Supervisor can edit Initial ROB")
 
         # Deliberately NOT blocked once the activity is completed — correcting
         # a figure after the fact is exactly what this is for. Every change is
@@ -695,7 +696,7 @@ class VesselActivityService:
     def _assert_active(activity: VesselActivity, current_user: User) -> None:
         if (
             current_user.id != activity.assigned_to
-            and current_user.role != UserRole.bunker_manager
+            and not is_operation_manager(current_user)
         ):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorised")
         if activity.status != VesselActivityStatus.active:
@@ -1006,8 +1007,8 @@ class VesselActivityService:
         is_correction = existing_result is not None
         prior = None
         if is_correction:
-            if current_user.role != UserRole.bunker_manager:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct a recorded HSE checklist")
+            if not is_operation_manager(current_user):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager or Ops Supervisor can correct a recorded HSE checklist")
             if not data.reason:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A reason is required to correct a recorded HSE checklist")
             conducted_at = getattr(activity, f("conducted_at"))
@@ -1198,8 +1199,8 @@ class VesselActivityService:
 
         is_correction = activity.discharged_quantity_litres is not None
         if is_correction:
-            if current_user.role != UserRole.bunker_manager:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct recorded quantities")
+            if not is_operation_manager(current_user):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager or Ops Supervisor can correct recorded quantities")
             if not data.reason:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A reason is required to correct recorded quantities")
 
@@ -1276,8 +1277,8 @@ class VesselActivityService:
 
     @staticmethod
     async def correct_timing(activity_id: UUID, data: VesselActivityCorrectTimingRequest, current_user: User, db: AsyncSession) -> VesselActivity:
-        if current_user.role != UserRole.bunker_manager:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct vessel-operation timings")
+        if not is_operation_manager(current_user):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager or Ops Supervisor can correct vessel-operation timings")
 
         activity = await VesselActivityService._get_or_404(activity_id, db)
         await VesselActivityService._assert_vessel_only(activity, db)
@@ -1368,8 +1369,8 @@ class VesselActivityService:
         # action, unlike commence/updates/complete/quantities which say
         # "MM or OS." No gate on Loading Completed: registering a receiving
         # vessel is bookkeeping, not a physical stage.
-        if current_user.role != UserRole.bunker_manager:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can add a receiving vessel")
+        if not is_operation_manager(current_user):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager or Ops Supervisor can add a receiving vessel")
 
         leg = VesselActivityLeg(
             vessel_activity_id=activity.id,
@@ -1527,8 +1528,8 @@ class VesselActivityService:
         is_correction = leg.hse_result is not None
         prior = None
         if is_correction:
-            if current_user.role != UserRole.bunker_manager:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct a recorded HSE checklist")
+            if not is_operation_manager(current_user):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager or Ops Supervisor can correct a recorded HSE checklist")
             if not data.reason:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A reason is required to correct a recorded HSE checklist")
             prior = {
@@ -1569,8 +1570,8 @@ class VesselActivityService:
 
         is_correction = leg.quantity_discharged_litres is not None
         if is_correction:
-            if current_user.role != UserRole.bunker_manager:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct recorded quantities")
+            if not is_operation_manager(current_user):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager or Ops Supervisor can correct recorded quantities")
             if not data.reason:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A reason is required to correct recorded quantities")
 
@@ -1635,8 +1636,8 @@ class VesselActivityService:
 
     @staticmethod
     async def correct_leg_timing(leg_id: UUID, data: CorrectLegTimingRequest, current_user: User, db: AsyncSession) -> VesselActivityLeg:
-        if current_user.role != UserRole.bunker_manager:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct a leg timing")
+        if not is_operation_manager(current_user):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager or Ops Supervisor can correct a leg timing")
 
         leg = await VesselActivityService._get_leg_or_404(leg_id, db)
         activity = await VesselActivityService._get_or_404(leg.vessel_activity_id, db)
@@ -1689,8 +1690,8 @@ class VesselActivityService:
 
     @staticmethod
     async def cancel_leg(leg_id: UUID, data: CancelLegRequest, current_user: User, db: AsyncSession) -> VesselActivityLeg:
-        if current_user.role != UserRole.bunker_manager:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can cancel a receiving vessel")
+        if not is_operation_manager(current_user):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager or Ops Supervisor can cancel a receiving vessel")
 
         leg = await VesselActivityService._get_leg_or_404(leg_id, db)
         activity = await VesselActivityService._get_or_404(leg.vessel_activity_id, db)
@@ -1730,8 +1731,8 @@ class VesselActivityService:
 
         is_correction = activity.loading_received_quantity_litres is not None
         if is_correction:
-            if current_user.role != UserRole.bunker_manager:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager can correct recorded quantities")
+            if not is_operation_manager(current_user):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the Bunker Manager or Ops Supervisor can correct recorded quantities")
             if not data.reason:
                 raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="A reason is required to correct recorded quantities")
 
@@ -1800,10 +1801,10 @@ class VesselActivityService:
 
     @staticmethod
     def _assert_bm(current_user: User, what: str) -> None:
-        if current_user.role != UserRole.bunker_manager:
+        if not is_operation_manager(current_user):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Only the Bunker Manager can correct {what}",
+                detail=f"Only the Bunker Manager or Ops Supervisor can correct {what}",
             )
 
     @staticmethod

@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import require_roles
+from app.dependencies import require_roles, require_operation_manager
 from app.models.user import User
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse
@@ -16,13 +16,13 @@ from app.services.client_notification_service import ClientNotificationService
 
 router = APIRouter(tags=["Client Notifications"])
 
-_bm_only = Depends(require_roles(UserRole.bunker_manager))
+_op_manager = Depends(require_operation_manager())
 
 
 @router.get("/operations/{operation_id}/client-notifications/recipients", response_model=StandardResponse)
 async def list_recipients(
     operation_id: UUID,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Every eligible recipient for this operation — Naval Clearance vessels
@@ -36,7 +36,7 @@ async def list_recipients(
 async def queue_notification(
     operation_id: UUID,
     body: QueueClientNotificationRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Queues recipients for approval — nothing is emailed yet. Every
@@ -52,7 +52,7 @@ async def queue_notification(
 async def approve_notifications(
     operation_id: UUID,
     body: ApprovePendingNotificationsRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Approves queued recipients — still nothing is emailed until Send is
@@ -68,7 +68,7 @@ async def approve_notifications(
 async def send_approved_notifications(
     operation_id: UUID,
     body: SendApprovedNotificationsRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Sends approved recipients — one isolated email per recipient, one
@@ -85,7 +85,7 @@ async def reject_pending_notification(
     operation_id: UUID,
     pending_id: UUID,
     body: RejectPendingNotificationRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Drops a queued or approved recipient — a wrong tick, corrected before it's ever sent."""
@@ -96,7 +96,7 @@ async def reject_pending_notification(
 @router.get("/operations/{operation_id}/client-notifications/pending", response_model=StandardResponse)
 async def list_pending_notifications(
     operation_id: UUID,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Everything awaiting approval or approved but not yet sent."""
@@ -107,7 +107,7 @@ async def list_pending_notifications(
 @router.get("/operations/{operation_id}/client-notifications/log", response_model=StandardResponse)
 async def get_notification_log(
     operation_id: UUID,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     logs = await ClientNotificationService.get_notification_log(operation_id, db)

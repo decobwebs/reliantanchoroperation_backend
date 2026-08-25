@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
-from app.dependencies import require_roles
+from app.dependencies import require_roles, require_operation_manager
 from app.models.user import User
 from app.models.enums import UserRole
 from app.schemas.common import StandardResponse
@@ -110,7 +110,7 @@ async def allocate_pfi(
     operation_id: UUID,
     pfi_id: UUID,
     body: PfiAllocationCreate,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Draw down some of a PFI's volume against this operation. Bunker Manager only."""
@@ -149,7 +149,7 @@ async def list_pfi_allocations(
 async def update_pfi_allocation(
     allocation_id: UUID,
     body: PfiAllocationUpdate,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Edit an allocation's quantity/notes. Requires a reason. Bunker Manager only."""
@@ -164,7 +164,7 @@ async def update_pfi_allocation(
 async def delete_pfi_allocation(
     allocation_id: UUID,
     body: PfiAllocationDeleteRequest,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Remove an allocation, freeing its volume back onto the PFI. Requires a reason. Bunker Manager only."""
