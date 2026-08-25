@@ -15,11 +15,6 @@ router = APIRouter(tags=["Vessel BDNs"])
 
 _submit_roles = Depends(require_roles(UserRole.ops_supervisor, UserRole.cargo_superintendent))
 _review_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent, UserRole.ops_supervisor, UserRole.finance_manager))
-# Approving or rejecting stays with the Bunker Manager alone: the Ops
-# Supervisor is one of the roles that submits these, and must not sign
-# off their own figures. Correcting and deleting are operation-manager
-# actions like any other edit.
-_bm_only = Depends(require_roles(UserRole.bunker_manager))
 _op_manager = Depends(require_operation_manager())
 
 
@@ -111,7 +106,7 @@ async def delete_vessel_bdn(
 @router.post("/vessel-bdns/{bdn_id}/approve", response_model=StandardResponse)
 async def approve_vessel_bdn(
     bdn_id: UUID,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     """Approves this vessel run's BDN. The operation only reaches
@@ -135,7 +130,7 @@ async def approve_vessel_bdn(
 async def reject_vessel_bdn(
     bdn_id: UUID,
     body: VesselBdnRejectRequest,
-    current_user: User = _bm_only,
+    current_user: User = _op_manager,
     db: AsyncSession = Depends(get_db),
 ):
     bdn = await VesselBdnService.reject_vessel_bdn(bdn_id, body.reason, current_user, db)

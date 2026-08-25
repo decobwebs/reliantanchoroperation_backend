@@ -6,12 +6,11 @@ running vessel stages, correcting recorded figures, notifying clients. The
 BM keeps everything outside that boundary to themselves — user admin, the
 fleet and vessel registries, licences, finance, and the document hub.
 
-Two deliberate exclusions inside operations:
-
-  * Approving and rejecting BDNs stays Bunker-Manager-only. The Ops
-    Supervisor is one of the roles that *submits* Truck and Vessel BDNs, so
-    letting them approve would put the same person on both sides of the
-    figures.
+Approving and rejecting BDNs is included, on the BM's explicit instruction.
+Note what that means in practice: the Ops Supervisor is also one of the roles
+that *submits* Truck and Vessel BDNs, so the same person can now submit a set
+of figures and sign them off. Every approval is still recorded against the
+user who made it, so the audit trail shows when that happened.
 
 This module holds no imports beyond the role enum so that routers,
 dependencies and services can all share one definition without importing

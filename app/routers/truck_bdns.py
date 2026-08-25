@@ -96,7 +96,7 @@ async def delete_truck_bdn(
 async def approve_truck_bdn(
     truck_bdn_id: UUID,
     body: TruckBdnApproveRequest = TruckBdnApproveRequest(),
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Approve a Truck BDN. Bunker Manager only."""
@@ -111,7 +111,7 @@ async def approve_truck_bdn(
 async def reject_truck_bdn(
     truck_bdn_id: UUID,
     body: TruckBdnRejectRequest,
-    current_user: User = Depends(require_roles(UserRole.bunker_manager)),
+    current_user: User = Depends(require_operation_manager()),
     db: AsyncSession = Depends(get_db),
 ):
     """Reject a Truck BDN with a reason. Bunker Manager only."""
