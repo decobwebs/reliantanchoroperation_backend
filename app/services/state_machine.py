@@ -74,7 +74,7 @@ TRUCK_ONLY_TRANSITIONS: Dict[str, List[str]] = {
     "payment_confirmed":  ["pending_completion", "invoiced"],     # legacy compat chain only
     "pending_completion": ["bdn_pending", "invoiced", "active"],
     "bdn_pending":        ["bdn_approved", "pending_completion"],
-    "bdn_approved":       ["completed", "invoiced"],
+    "bdn_approved":       ["completed", "invoiced", "bdn_pending"],
     "invoiced":           ["completed"],
     "completed":          ["archived"],
 }
@@ -94,7 +94,7 @@ FULL_OPERATION_TRANSITIONS: Dict[str, List[str]] = {
     "vessel_operations":  ["pending_completion", "bdn_pending"],   # bdn_pending kept as legacy-compat direct path
     "pending_completion": ["vessel_operations", "bdn_pending"],
     "bdn_pending":        ["bdn_approved", "vessel_operations"],
-    "bdn_approved":       ["completed", "invoiced", "pfi_linked", "vessel_operations"],   # pfi_linked = legacy compat
+    "bdn_approved":       ["completed", "invoiced", "pfi_linked", "vessel_operations", "bdn_pending"],   # pfi_linked = legacy compat
     "invoiced":           ["completed"],
     "completed":          ["archived"],
 }
@@ -110,7 +110,7 @@ VESSEL_ONLY_TRANSITIONS: Dict[str, List[str]] = {
     "vessel_operations":  ["pending_completion", "bdn_pending"],   # bdn_pending kept as legacy-compat direct path
     "pending_completion": ["vessel_operations", "bdn_pending"],
     "bdn_pending":        ["bdn_approved", "vessel_operations"],
-    "bdn_approved":       ["completed", "invoiced", "pfi_linked", "vessel_operations"],   # pfi_linked = legacy compat
+    "bdn_approved":       ["completed", "invoiced", "pfi_linked", "vessel_operations", "bdn_pending"],   # pfi_linked = legacy compat
     "invoiced":           ["completed"],
     "completed":          ["archived"],
 }
@@ -170,6 +170,15 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     # vessel_bdn_service.py).
     "pending_completion->bdn_pending":  ["ops_supervisor", "logistics_officer", "cargo_superintendent", "bunker_manager"],
     "bdn_pending->pending_completion":  ["bunker_manager"],            # reject path — resubmit
+    # Another BDN is raised after one was already approved. Routine, not
+    # exceptional: an operation owes one BDN per vessel run / receiving
+    # vessel / truck, and a later one can be submitted (or a new leg
+    # added) after an earlier one cleared. Without this the submission
+    # 422s and the BDN cannot be recorded at all.
+    # Roles are listed explicitly and "system" is deliberately absent:
+    # can_user_transition treats a list containing "system" as open to
+    # every role (see the note there), which is not wanted here.
+    "bdn_approved->bdn_pending":       ["ops_supervisor", "logistics_officer", "cargo_superintendent", "bunker_manager"],
 
     # ── Invoicing (legacy compat only — invoicing no longer gates completion) ──
     "bdn_approved->invoiced":           ["finance_manager"],
@@ -231,6 +240,15 @@ class StateMachine:
             else:
                 return False
 
+        # NOTE: `"system" in allowed_roles` lets EVERY role through, not just
+        # code-triggered calls — callers pass a real user's role, never
+        # "system", so the marker cannot be matched any other way. Five
+        # transitions currently carry it and are therefore open to any role:
+        # tasks_assigned->awaiting_feedback, vessel_operations->
+        # pending_completion, pending_completion->vessel_operations,
+        # bdn_approved->vessel_operations, completed->archived. Tightening
+        # this needs each of those given its real role list first, or
+        # system-triggered flows will start refusing legitimate users.
         return user_role.value in allowed_roles or "system" in allowed_roles
 
     @staticmethod

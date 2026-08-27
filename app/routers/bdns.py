@@ -36,10 +36,11 @@ async def list_bdns(
 async def create_bdn(
     operation_id: UUID,
     body: BdnCreate,
-    current_user: User = Depends(require_roles(UserRole.cargo_superintendent)),
+    current_user: User = Depends(require_roles(UserRole.ops_supervisor, UserRole.cargo_superintendent)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Create a BDN for an operation. Marine Manager only."""
+    """Create a BDN for an operation. Marine Operations or Ops Supervisor —
+    matching who may submit the Truck and Vessel BDNs."""
     bdn = await BdnService.create_bdn(operation_id, body, current_user, db)
 
     # Build out schema with computed fields

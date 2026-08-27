@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, text
+from sqlalchemy import select, func, and_, text, or_
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
@@ -72,15 +72,29 @@ async def list_users(
     per_page: int = Query(20, ge=1, le=100),
     role: Optional[UserRole] = Query(None),
     is_active: Optional[bool] = Query(None),
+    search: Optional[str] = Query(None),
     current_user: User = AdminUser,
     db: AsyncSession = Depends(get_db),
 ):
-    """List all users with optional filters."""
+    """List all users with optional filters.
+
+    `search` matches name, email or phone, case-insensitively — the registry
+    is long enough that scrolling for a person is not workable. Purely
+    additive: callers that omit it get exactly the previous behaviour."""
     conditions = []
     if role:
         conditions.append(User.role == role)
     if is_active is not None:
         conditions.append(User.is_active == is_active)
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        conditions.append(
+            or_(
+                User.full_name.ilike(term),
+                User.email.ilike(term),
+                User.phone.ilike(term),
+            )
+        )
 
     count_stmt = select(func.count()).select_from(User)
     if conditions:

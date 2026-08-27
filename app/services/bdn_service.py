@@ -271,7 +271,22 @@ class BdnService:
         if operation.type == OperationType.full_operation:
             await BdnService._apply_rob_credit(bdn, current_user, db)
 
-        if operation.status != OperationStatus.bdn_approved:
+        # This is the loading BDN — what the barge collected. On a vessel-side
+        # operation it is not the last word: every non-cancelled vessel run /
+        # receiving-vessel leg still owes its own Vessel BDN. Approving this
+        # one used to jump the operation straight to bdn_approved, which then
+        # blocked the outstanding Vessel BDNs from being submitted at all
+        # (RA-2026-0076 reached bdn_approved with 2 legs and no Vessel BDN).
+        # Only clear the gate when nothing on the vessel side is still owed;
+        # an operation with no vessel runs is unaffected.
+        gate_cleared = True
+        if operation.type in (OperationType.vessel_only, OperationType.full_operation):
+            from app.services.vessel_bdn_service import VesselBdnService
+            total, approved_runs = await VesselBdnService._approval_progress(operation.id, db)
+            if total > 0 and approved_runs < total:
+                gate_cleared = False
+
+        if gate_cleared and operation.status != OperationStatus.bdn_approved:
             await _transition_operation(
                 operation, OperationStatus.bdn_approved, current_user, db,
                 reason="BDN approved by bunker manager"
