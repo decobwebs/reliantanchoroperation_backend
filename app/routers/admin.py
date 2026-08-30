@@ -8,7 +8,7 @@ from sqlalchemy import select, func, and_, text, or_
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_roles, get_request_meta
+from app.dependencies import get_current_user, require_roles, get_request_meta, require_operation_manager
 from app.models.user import User
 from app.models.audit import AuditLog, SystemSetting
 from app.models.enums import UserRole
@@ -116,11 +116,15 @@ async def list_users(
 
 @router.get("/clients", response_model=StandardResponse)
 async def list_clients(
-    current_user: User = Depends(require_roles(UserRole.bunker_manager, UserRole.finance_manager, UserRole.cargo_superintendent)),
+    current_user: User = Depends(require_roles(
+        UserRole.bunker_manager, UserRole.finance_manager,
+        UserRole.cargo_superintendent, UserRole.ops_supervisor,
+    )),
     db: AsyncSession = Depends(get_db),
 ):
-    """List active client users — for billing pickers (e.g. standalone invoices)
-    and for Marine selecting clients onto a Naval Clearance.
+    """List active client users — for billing pickers (e.g. standalone invoices),
+    for Marine selecting clients onto a Naval Clearance, and for the Ops
+    Supervisor choosing the client when creating or editing an operation.
 
     Deliberately narrower than /admin/users (which is BM-only): Finance/Marine
     need to choose an existing client, but have no business listing staff/admin
@@ -137,6 +141,40 @@ async def list_clients(
         for c in clients
     ]
     return StandardResponse.ok(data=items, message="Clients retrieved")
+
+
+@router.get("/staff", response_model=StandardResponse)
+async def list_staff(
+    current_user: User = Depends(require_operation_manager()),
+    db: AsyncSession = Depends(get_db),
+):
+    """Active non-client users — the source for every "who does this?" picker
+    on an operation: assigning staff at creation, assigning a task later, and
+    choosing the Marine Operations user for a vessel run.
+
+    Deliberately narrower than /admin/users, which stays Bunker-Manager-only
+    because it is the account-management surface (create, deactivate, delete,
+    resend invites). Choosing a colleague from a list is not account
+    management, and the Ops Supervisor needs it to run an operation at all —
+    same reasoning as /admin/clients above.
+    """
+    result = await db.execute(
+        select(User)
+        .where(and_(User.is_active == True, User.role != UserRole.client))  # noqa: E712
+        .order_by(User.full_name)
+    )
+    staff = result.scalars().all()
+    items = [
+        {
+            "id": str(u.id),
+            "full_name": u.full_name,
+            "email": u.email,
+            "role": u.role.value,
+            "is_active": u.is_active,
+        }
+        for u in staff
+    ]
+    return StandardResponse.ok(data=items, message="Staff retrieved")
 
 
 @router.post("/users", response_model=StandardResponse, status_code=status.HTTP_201_CREATED)
