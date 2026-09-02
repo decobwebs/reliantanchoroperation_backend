@@ -18,11 +18,14 @@ router = APIRouter(tags=["BDNs"])
 async def list_bdns(
     operation_id: UUID,
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent, UserRole.finance_manager)
+        require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent,
+                      UserRole.finance_manager, UserRole.ops_supervisor)
     ),
     db: AsyncSession = Depends(get_db),
 ):
-    """List BDNs for an operation."""
+    """List BDNs for an operation. The Ops Supervisor creates, approves and
+    rejects these, so they have to be able to see them — without this the
+    BDNs tab came back empty behind its own approve buttons."""
     bdns = await BdnService.list_bdns(operation_id, db)
     items = [BdnOut.model_validate(b).model_dump() for b in bdns]
     return StandardResponse.ok(data=items, message="BDNs retrieved")
@@ -55,11 +58,12 @@ async def create_bdn(
 async def get_bdn(
     bdn_id: UUID,
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent)
+        require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent,
+                      UserRole.ops_supervisor)
     ),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get a single BDN by ID."""
+    """Get a single BDN by ID. Same readers as the operation's BDN list."""
     bdn = await BdnService.get_bdn(bdn_id, db)
     return StandardResponse.ok(
         data=BdnOut.model_validate(bdn).model_dump(),

@@ -116,6 +116,17 @@ VESSEL_ONLY_TRANSITIONS: Dict[str, List[str]] = {
 }
 
 # ── Transition permission map ──────────────────────────────────────────────────
+#
+# The Ops Supervisor holds the Bunker Manager's authority over an operation,
+# so they appear beside the BM on the moves that carry an operation through
+# its own pipeline. This has to stay in step with the route guards: a role
+# that may call an endpoint but not make the status change it performs gets a
+# 422 after the work is done, and the whole transaction rolls back — which is
+# exactly what happened when BDN approval was opened here and not below.
+#
+# Deliberately NOT given to the Ops Supervisor, because their endpoints are
+# still Bunker-Manager-only: the truck-readiness feedback loop
+# (awaiting_feedback / feedback_submitted / feedback_rejected).
 
 TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     # Creation & assignment. ops_supervisor is permitted on these three only
@@ -153,23 +164,23 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     # System-triggered when BM adds another vessel after others have already
     # finished (see VesselActivityService.create) — keeps operation status
     # honest without a manual fixup step. BM manual path kept too.
-    "pending_completion->vessel_operations": ["system", "bunker_manager"],
-    "vessel_operations->bdn_pending":   ["bunker_manager", "cargo_superintendent"],
-    "bdn_pending->bdn_approved":        ["bunker_manager"],
-    "bdn_pending->vessel_operations":   ["bunker_manager"],
-    "bdn_approved->vessel_operations":  ["system", "bunker_manager"],
+    "pending_completion->vessel_operations": ["system", "bunker_manager", "ops_supervisor"],
+    "vessel_operations->bdn_pending":   ["bunker_manager", "cargo_superintendent", "ops_supervisor"],
+    "bdn_pending->bdn_approved":        ["bunker_manager", "ops_supervisor"],
+    "bdn_pending->vessel_operations":   ["bunker_manager", "ops_supervisor"],
+    "bdn_approved->vessel_operations":  ["system", "bunker_manager", "ops_supervisor"],
 
     # ── Truck delivery completion — primary path now (finance/payment no longer gates it) ──
     "active->pending_completion":       ["logistics_officer", "ops_supervisor", "bunker_manager"],
     "payment_confirmed->pending_completion": ["logistics_officer", "ops_supervisor", "bunker_manager"],   # legacy compat
-    "pending_completion->active":       ["bunker_manager"],
+    "pending_completion->active":       ["bunker_manager", "ops_supervisor"],
     "pending_completion->invoiced":     ["finance_manager"],           # legacy compat only
     # BDN gate — shared by truck (Truck BDN, submitted by OS/LO) and
     # vessel/full (Vessel BDN, submitted by OS/Marine) — an approved BDN is
     # required before the operation can complete (see truck_bdn_service.py /
     # vessel_bdn_service.py).
     "pending_completion->bdn_pending":  ["ops_supervisor", "logistics_officer", "cargo_superintendent", "bunker_manager"],
-    "bdn_pending->pending_completion":  ["bunker_manager"],            # reject path — resubmit
+    "bdn_pending->pending_completion":  ["bunker_manager", "ops_supervisor"],   # reject path — resubmit
     # Another BDN is raised after one was already approved. Routine, not
     # exceptional: an operation owes one BDN per vessel run / receiving
     # vessel / truck, and a later one can be submitted (or a new leg
@@ -185,12 +196,12 @@ TRANSITION_PERMISSIONS: Dict[str, List[str]] = {
     "payment_confirmed->invoiced":      ["finance_manager"],
 
     # Closure — operation completes directly, independent of Finance's invoice
-    "bdn_approved->completed":          ["bunker_manager"],
-    "invoiced->completed":              ["bunker_manager"],
+    "bdn_approved->completed":          ["bunker_manager", "ops_supervisor"],
+    "invoiced->completed":              ["bunker_manager", "ops_supervisor"],
     "completed->archived":              ["bunker_manager", "system"],
 
     # Emergency cancel from any non-terminal status
-    "ANY->cancelled":                   ["bunker_manager"],
+    "ANY->cancelled":                   ["bunker_manager", "ops_supervisor"],
 }
 
 _TYPE_MAP: Dict[str, Dict[str, List[str]]] = {

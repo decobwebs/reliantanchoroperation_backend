@@ -47,11 +47,18 @@ router = APIRouter(tags=["Trucks"])
 async def list_trucks(
     active_only: bool = Query(True),
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.logistics_officer)
+        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor)
     ),
     db: AsyncSession = Depends(get_db),
 ):
-    """List trucks. Available to BM and Logistics Officer."""
+    """List trucks. BM, Truck Operation and Ops Supervisor.
+
+    The Ops Supervisor could already open a single truck and its profile but
+    not list them, so the Trucks page they are given in the sidebar came back
+    empty with "No trucks registered". Reading the fleet is not fleet
+    management — registering, editing and retiring trucks stay with the BM
+    and Truck Operation.
+    """
     trucks = await TruckService.list_trucks(db, active_only=active_only)
     items = [TruckOut.model_validate(t).model_dump() for t in trucks]
     return StandardResponse.ok(data=items, message="Trucks retrieved")
