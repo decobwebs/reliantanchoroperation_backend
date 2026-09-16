@@ -1,8 +1,10 @@
+import logging
 import uuid
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from sqlalchemy import (
     Column, String, Boolean, DateTime, Date, Text, Numeric, ForeignKey,
-    Enum as SAEnum, UniqueConstraint
+    Enum as SAEnum, UniqueConstraint, event
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
@@ -11,6 +13,8 @@ from app.models.enums import (
     TruckStatus, TruckOpStatus, AuditResult, TruckWaiverStatus, AuditPhase, BdnStatus,
     TruckIssueSeverity, TruckIssueStatus,
 )
+
+logger = logging.getLogger("raoms")
 
 
 class Truck(Base):
@@ -149,6 +153,10 @@ class TruckOperation(Base):
     departed_loading_at = Column(DateTime(timezone=True), nullable=True)   # left loading (loaded)
     transit_start_at = Column(DateTime(timezone=True), nullable=True)      # started transit to discharge
     arrived_discharge_at = Column(DateTime(timezone=True), nullable=True)  # arrived at discharge location
+    # Planned arrival, set by the truck/ops team (migration 066). Nullable and
+    # never backfilled: a truck without a plan is left unmeasured by the
+    # on-time KPI rather than counted late.
+    expected_arrival_at = Column(DateTime(timezone=True), nullable=True)
     transit_end_at = Column(DateTime(timezone=True), nullable=True)        # (alias) arrived at discharge
     discharge_start_at = Column(DateTime(timezone=True), nullable=True)    # discharge began
     discharge_end_at = Column(DateTime(timezone=True), nullable=True)      # discharge complete
@@ -275,3 +283,44 @@ class TruckBdn(Base):
     generator = relationship("User", foreign_keys=[generated_by])
     reviewer = relationship("User", foreign_keys=[reviewed_by])
     invoices = relationship("Invoice", back_populates="truck_bdn")
+
+
+# ── Truck capacity sanity ─────────────────────────────────────────────────
+#
+# `capacity_mt` is named for tonnes but holds LITRES — the same legacy naming
+# as the `quantity_*_mt` columns on TruckOperation. Confirmed by the Bunker
+# Manager on 2026-08-30: everything on the truck side is litres.
+#
+# Read as litres the fleet is consistent: 161 of 164 trucks sit between 10,000
+# and 40,000, which is what a road tanker actually carries. Three do not —
+# 4.2 (tonnes typed into a litres field), 4,000, and 420,000 (a 42,000 truck
+# with one zero too many).
+#
+# The band below flags all three. 4,000 is the arguable one: it could be a
+# genuine small bowser, but among a fleet of 40,000-litre tankers it is far
+# more likely to be 40,000 mistyped, and a warning costs nothing to dismiss.
+#
+# Warn-only, matching the vessel-ROB guard and the PFI price guard. A wrong
+# capacity should be questioned, not allowed to block a truck being registered
+# while someone is trying to get fuel moving.
+_CAPACITY_FLOOR = Decimal("5000")      # litres
+_CAPACITY_CEILING = Decimal("100000")  # litres
+
+
+@event.listens_for(Truck.capacity_mt, "set")
+def _warn_truck_capacity_out_of_range(target, value, oldvalue, initiator):
+    if value is None:
+        return value
+    try:
+        litres = Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return value
+
+    if litres < _CAPACITY_FLOOR or litres > _CAPACITY_CEILING:
+        logger.warning(
+            "Truck capacity out of range: %s set to %s litres — outside "
+            "%s-%s, likely a units error (this column is LITRES, not tonnes)",
+            getattr(target, "truck_number", "?"), litres,
+            _CAPACITY_FLOOR, _CAPACITY_CEILING,
+        )
+    return value

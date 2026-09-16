@@ -226,6 +226,20 @@ app.include_router(kpi.router, prefix=API_PREFIX)
 app.include_router(terminal_receipts.router, prefix=API_PREFIX)
 app.include_router(operation_notifications.router, prefix=API_PREFIX)
 
+# ── KPI module (app/kpi/) ──────────────────────────────────────────────────
+# Bolted on rather than built in, and deliberately fail-safe: if anything in
+# the KPI package fails to import, the KPI endpoints go missing but the rest
+# of the API still starts. Operations staff keep working; only the reporting
+# feature is absent. Everything about KPI mounting lives in app/kpi/mount.py,
+# so this block should never need editing again.
+try:
+    from app.kpi.mount import mount_kpi
+    _kpi_mounted = mount_kpi(app, API_PREFIX)
+    if _kpi_mounted:
+        logger.info("KPI module mounted: %s", ", ".join(_kpi_mounted))
+except Exception as _kpi_exc:  # pragma: no cover - defensive
+    logger.error("KPI module unavailable, API continuing without it: %s", _kpi_exc)
+
 
 @app.get("/", include_in_schema=False)
 async def root():

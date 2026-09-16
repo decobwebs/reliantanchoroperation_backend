@@ -174,16 +174,35 @@ class VesselBdnService:
         # run — never used to fill or default anything the submitter enters.
         # System (not user-entered) timestamps are the comparison baseline
         # for vessel_only too — same spirit as the stage flow's snapshot.
+        # Where these figures live moved (migration 041) and the snapshot was
+        # never repointed, so the comparison columns filled on 1 of 19 live
+        # BDNs. Verified against production: on vessel_activities the legacy
+        # quantity fields are empty on all 28 rows —
+        #   vessel_received_mt        0/28
+        #   quantity_discharged_mt    0/28
+        #   discharged_quantity_litres 0/28
+        # while the loading chain that replaced them is populated —
+        #   loading_received_quantity_litres  4/28
+        # Per-leg discharge is handled by the leg method below, which already
+        # reads the leg correctly; this branch covers the activity flow only.
+        #
+        # `vessel_received_mt` was also the wrong unit for the column it fed:
+        # system_quantity_loaded_litres is litres, and the loading field is
+        # litres too, so this corrects a unit mismatch as well as a dead read.
         if operation.type == OperationType.vessel_only:
             system_product_type = None                                  # no product concept in this flow
-            system_quantity_loaded = None                               # no "loaded" analogue either
+            system_quantity_loaded = activity.loading_received_quantity_litres
             system_quantity_discharged = activity.discharged_quantity_litres
             system_commenced_at = activity.commence_system_at
             system_completed_at = activity.complete_system_at
         else:
             system_product_type = activity.product_type
-            system_quantity_loaded = activity.vessel_received_mt
-            system_quantity_discharged = activity.quantity_discharged_mt
+            system_quantity_loaded = activity.loading_received_quantity_litres
+            # No live source for discharged on the activity flow: discharge is
+            # recorded per leg, and a leg-based BDN takes the leg path instead.
+            # Left unset rather than filled from a dead column, so the Bunker
+            # Manager sees "not recorded" instead of a confident blank zero.
+            system_quantity_discharged = None
             system_commenced_at = activity.stage_commence_discharge_at
             system_completed_at = activity.stage_discharge_completed_at
 

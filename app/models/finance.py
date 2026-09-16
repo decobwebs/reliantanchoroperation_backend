@@ -1,13 +1,17 @@
+import logging
 import uuid
 from datetime import datetime, date
+from decimal import Decimal, InvalidOperation
 from sqlalchemy import (
     Column, String, DateTime, Date, Text, Numeric, ForeignKey, Integer,
-    Enum as SAEnum
+    Enum as SAEnum, event
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from app.database import Base
 from app.models.enums import PfiType, PfiStatus, InvoiceStatus, VoucherStatus, VoucherCategory
+
+logger = logging.getLogger("raoms")
 
 
 class PFI(Base):
@@ -156,3 +160,60 @@ class Voucher(Base):
     pfi = relationship("PFI", back_populates="vouchers")
     recorder = relationship("User", foreign_keys=[recorded_by])
     approver = relationship("User", foreign_keys=[approved_by])
+
+
+# ── PFI price sanity ──────────────────────────────────────────────────────
+#
+# A PFI's amount divided by its litres is the implied price of one litre. On
+# 23 of 47 live records that price is impossible: the lowest implies ₦0.39 a
+# litre, the highest ₦905,000. Two separate mistakes produce this — an amount
+# entered in the wrong unit (or holding a fee rather than the fuel value), and
+# a quantity mistyped by three zeros.
+#
+# It matters because PFIs are the only place the system records what fuel
+# costs, so every naira figure derived anywhere — loss valuations included —
+# inherits the error.
+#
+# Warn-only, matching the vessel-ROB guard above it in this codebase: an
+# out-of-range figure is nearly always a slip, but blocking the write could
+# strand a legitimate correction mid-flow.
+#
+# The band is deliberately WIDE (₦50–₦20,000). Real marine fuel sits around
+# ₦700–₦1,900, so a tighter band would be more useful — but until it is
+# settled whether `amount` holds the total contract value or a unit price,
+# a narrow band would fire on entries that are perfectly valid under the
+# other reading. This band catches both known error patterns and nothing else.
+_PRICE_FLOOR = Decimal("50")
+_PRICE_CEILING = Decimal("20000")
+
+
+def _warn_pfi_price_out_of_range(target) -> None:
+    amount, litres = target.amount, target.quantity_litres
+    if amount is None or litres is None:
+        return
+    try:
+        amt, qty = Decimal(str(amount)), Decimal(str(litres))
+    except (InvalidOperation, ValueError):
+        return
+    if qty <= 0:
+        return
+
+    rate = amt / qty
+    if rate < _PRICE_FLOOR or rate > _PRICE_CEILING:
+        logger.warning(
+            "PFI price out of range: %s implies %s per litre "
+            "(%s over %s litres) — outside %s-%s, likely a units or "
+            "decimal-point error",
+            getattr(target, "pfi_number", "?"), round(rate, 2), amt, qty,
+            _PRICE_FLOOR, _PRICE_CEILING,
+        )
+
+
+@event.listens_for(PFI, "before_insert")
+def _pfi_price_check_on_insert(mapper, connection, target):
+    _warn_pfi_price_out_of_range(target)
+
+
+@event.listens_for(PFI, "before_update")
+def _pfi_price_check_on_update(mapper, connection, target):
+    _warn_pfi_price_out_of_range(target)
