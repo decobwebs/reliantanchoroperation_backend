@@ -792,6 +792,36 @@ class VesselActivityService:
         VesselStage.discharge_completed: "Discharge Completed",
     }
 
+    # Approved wording for the automatic client stage emails. Subject and first
+    # line are the same sentence. {vessel} is the client's receiving vessel.
+    _STAGE_EMAIL_SENTENCES = {
+        VesselStage.cast_off: "Vessel cast off for delivery to {vessel} on Operation {op}",
+        VesselStage.approach: "Vessel approaching {vessel} on Operation {op}",
+        VesselStage.alongside: "Vessel alongside {vessel} on Operation {op}",
+        VesselStage.hse_check: "Safety checks under way alongside {vessel} on Operation {op}",
+        VesselStage.commence_discharge: "Discharge commenced into {vessel} on Operation {op}",
+        VesselStage.discharge_completed: "Discharge completed into {vessel} on Operation {op}",
+    }
+
+    @staticmethod
+    async def _client_vessel_name(activity: VesselActivity, db: AsyncSession) -> str:
+        """The client's receiving vessel as entered at Cast Off, or "" when it
+        is unknown.
+
+        Also "" when the name entered is our own vessel's name. The Cast Off
+        form used to pre-fill that box with our vessel, so some runs saved it
+        as the client's (RA-2026-0071 and RA-2026-0073). Treating that as
+        unknown keeps our vessel's name out of client emails without
+        rewriting those records.
+        """
+        name = (activity.cast_off_client_vessel_name or "").strip()
+        if not name or not activity.vessel_id:
+            return name
+        ours = await db.scalar(select(Vessel.vessel_name).where(Vessel.id == activity.vessel_id))
+        if ours and ours.strip().casefold() == name.casefold():
+            return ""
+        return name
+
     @staticmethod
     async def _notify_clients_of_stage(
         activity: VesselActivity, stage: VesselStage, current_user: User, db: AsyncSession,
@@ -818,15 +848,28 @@ class VesselActivityService:
             if not operation:
                 return
 
-            label = VesselActivityService._STAGE_LABELS.get(stage, stage.value.replace("_", " ").title())
-            vessel_name = activity.cast_off_client_vessel_name or getattr(activity, "vessel_name", None) or "your vessel"
+            import html as _html
+
+            # The vessel named here is the CLIENT's — the one receiving product.
+            # Our own vessel is the one that casts off, comes alongside and
+            # discharges. The old wording ("Your vessel X has reached
+            # Alongside") read as if the client's vessel had moved, and when no
+            # client vessel was entered it fell back to our own vessel's name
+            # and called that the client's.
+            client_vessel = await VesselActivityService._client_vessel_name(activity, db)
+            op_no = operation.operation_number
             recipient_name = activity.cast_off_client_name or None
 
-            subject = f"{label} — {vessel_name} ({operation.operation_number})"
-            body = (
-                f"Your vessel <strong>{vessel_name}</strong> has reached "
-                f"<strong>{label}</strong> on operation {operation.operation_number}."
-            )
+            sentence = VesselActivityService._STAGE_EMAIL_SENTENCES.get(stage)
+            if sentence is None:
+                label = VesselActivityService._STAGE_LABELS.get(stage, stage.value.replace("_", " ").title())
+                sentence = label + " — {vessel} on Operation {op}"
+
+            subject = sentence.format(vessel=client_vessel or "your vessel", op=op_no)
+            body = sentence.format(
+                vessel=f"<strong>{_html.escape(client_vessel)}</strong>" if client_vessel else "your vessel",
+                op=op_no,
+            ) + "."
 
             for email in emails:
                 if not email:

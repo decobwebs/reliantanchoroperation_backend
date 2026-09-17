@@ -10,6 +10,7 @@ from fastapi import HTTPException, status
 from app.models.operation import Operation
 from app.models.licence import NavalClearanceVessel
 from app.models.bdn import VesselActivity
+from app.models.vessel import Vessel
 from app.models.notification_log import ClientNotificationLog, PendingClientNotification
 from app.models.audit import AuditLog
 from app.models.user import User
@@ -47,8 +48,19 @@ async def _get_cast_off_recipients(operation_id: UUID, db: AsyncSession) -> List
     vessel runs — the second recipient source, alongside Naval Clearance
     vessels. One dict per email, flattened out of each run's list."""
     result = await db.execute(select(VesselActivity).where(VesselActivity.operation_id == operation_id))
+    activities = list(result.scalars().all())
+    # Our own vessels' names, so one saved by mistake as the client's vessel
+    # is never shown to a client as theirs.
+    vessel_ids = {a.vessel_id for a in activities if a.vessel_id}
+    ours = {}
+    if vessel_ids:
+        rows = await db.execute(select(Vessel.id, Vessel.vessel_name).where(Vessel.id.in_(vessel_ids)))
+        ours = {vid: (vname or "").strip().casefold() for vid, vname in rows.all()}
     recipients = []
-    for activity in result.scalars().all():
+    for activity in activities:
+        client_vessel = (activity.cast_off_client_vessel_name or "").strip()
+        if client_vessel and ours.get(activity.vessel_id) == client_vessel.casefold():
+            client_vessel = ""
         for email in (activity.cast_off_client_emails or []):
             if not email:
                 continue
@@ -58,7 +70,7 @@ async def _get_cast_off_recipients(operation_id: UUID, db: AsyncSession) -> List
                 "client_id": None,
                 "client_name": activity.cast_off_client_name,
                 "client_email": email,
-                "vessel_name": activity.cast_off_client_vessel_name or "—",
+                "vessel_name": client_vessel or "—",
                 "imo_number": None,
                 "current_eta": None,
             })
@@ -111,21 +123,34 @@ class ClientNotificationService:
         eta_at: Optional[datetime], custom_message: Optional[str],
     ) -> tuple[str, str]:
         """Isolated, single-recipient content — only this vessel's own
-        details, never anything about another client on the same clearance."""
+        details, never anything about another client on the same clearance.
+
+        With no known vessel name the recipient list carries "—". That used to
+        be printed as the name ("Delivery to — is complete"); it now reads
+        "your vessel" and the subject drops the name."""
+        import html as _html
+
+        name = (vessel_name or "").strip()
+        if name in ("", "—"):
+            name = ""
+        op_no = operation.operation_number
+        in_subject = f"{name} ({op_no})" if name else op_no
+        in_body = f"<strong>{_html.escape(name)}</strong>" if name else "your vessel"
+
         if notification_type == "eta_change":
-            subject = f"Updated ETA — {vessel_name} ({operation.operation_number})"
-            body = f"The estimated time of arrival for your vessel <strong>{vessel_name}</strong> has been updated" + (
+            subject = f"Updated ETA — {in_subject}"
+            body = f"The estimated time of arrival for {'your vessel ' + in_body if name else 'your vessel'} has been updated" + (
                 f" to <strong>{eta_at.strftime('%d %b %Y, %H:%M')} UTC</strong>." if eta_at else "."
             )
         elif notification_type == "completion":
-            subject = f"Delivery Completed — {vessel_name} ({operation.operation_number})"
-            body = f"Delivery to <strong>{vessel_name}</strong> for operation {operation.operation_number} is complete."
+            subject = f"Delivery Completed — {in_subject}"
+            body = f"Delivery to {in_body} for operation {op_no} is complete."
         elif notification_type == "stage_update":
-            subject = f"Delivery Update — {vessel_name} ({operation.operation_number})"
-            body = custom_message or f"There is an update on the delivery to <strong>{vessel_name}</strong>."
+            subject = f"Delivery Update — {in_subject}"
+            body = custom_message or f"There is an update on the delivery to {in_body}."
         else:
-            subject = f"Update — {vessel_name} ({operation.operation_number})"
-            body = custom_message or f"There is an update regarding <strong>{vessel_name}</strong>."
+            subject = f"Update — {in_subject}"
+            body = custom_message or f"There is an update regarding {in_body}."
 
         if custom_message and notification_type != "stage_update":
             body += f"<br/><br/>{custom_message}"
