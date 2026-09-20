@@ -35,6 +35,10 @@ class Operation(Base):
     discharge_location = Column(String(255), nullable=True)
     trucks_required = Column(Integer, nullable=True)
     notes = Column(Text, nullable=True)
+    # NMDPRA report columns G and T. One value per operation, repeated on
+    # every truck row of that batch, matching the regulator's own sheets.
+    certificate_of_quality = Column(String(200), nullable=True)
+    certificate_of_completion = Column(String(200), nullable=True)
     paused_at = Column(DateTime(timezone=True), nullable=True)
     paused_reason = Column(Text, nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)

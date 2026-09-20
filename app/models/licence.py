@@ -73,6 +73,10 @@ class Bfl(Base):
     quantity_litres = Column(Numeric(14, 2), nullable=False)
     vessel = Column(String(200), nullable=True)
     expiry_date = Column(Date, nullable=False)
+    # NMDPRA report columns C and D — when this licence was submitted to
+    # the regulator and when it came back approved.
+    submitted_date = Column(Date, nullable=True)
+    approved_date = Column(Date, nullable=True)
     is_active = Column(Boolean, default=True, nullable=False)
     created_by = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)

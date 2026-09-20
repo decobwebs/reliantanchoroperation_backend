@@ -144,6 +144,9 @@ class UpdateOperationRequest(BaseModel):
     currency: Optional[str] = None
     vessel_id: Optional[UUID] = None
     source_type: Optional[VesselSourceType] = None
+    # NMDPRA report columns G and T.
+    certificate_of_quality: Optional[str] = None
+    certificate_of_completion: Optional[str] = None
     reason: Optional[str] = None  # why this edit was made — surfaced in the Activity tab
 
 
@@ -230,6 +233,8 @@ class OperationOut(BaseModel):
     created_by: UUID
     actual_volume_mt: Optional[Decimal] = None
     notes: Optional[str] = None
+    certificate_of_quality: Optional[str] = None
+    certificate_of_completion: Optional[str] = None
     paused_at: Optional[datetime] = None
     paused_reason: Optional[str] = None
     completed_at: Optional[datetime] = None

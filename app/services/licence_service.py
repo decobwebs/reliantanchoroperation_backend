@@ -262,6 +262,7 @@ class BflService:
         bfl = Bfl(
             bfl_number=data.bfl_number, ppdl_id=ppdl.id, product_type=data.product_type,
             quantity_litres=data.quantity_litres, vessel=data.vessel, expiry_date=data.expiry_date,
+            submitted_date=data.submitted_date, approved_date=data.approved_date,
             created_by=current_user.id,
         )
         db.add(bfl)

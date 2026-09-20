@@ -101,6 +101,9 @@ class BflCreate(BaseModel):
     quantity_litres: Decimal
     vessel: Optional[str] = None
     expiry_date: date
+    # NMDPRA report columns C and D — kept with the licence they describe.
+    submitted_date: Optional[date] = None
+    approved_date: Optional[date] = None
 
     @field_validator("bfl_number", "product_type", "vessel", mode="before")
     @classmethod
@@ -119,6 +122,9 @@ class BflUpdate(BaseModel):
     quantity_litres: Optional[Decimal] = None
     vessel: Optional[str] = None
     expiry_date: Optional[date] = None
+    # NMDPRA report columns C and D — kept with the licence they describe.
+    submitted_date: Optional[date] = None
+    approved_date: Optional[date] = None
     reason: str
 
     @field_validator("vessel", "reason", mode="before")
@@ -168,6 +174,9 @@ class BflOut(BaseModel):
     remaining_litres: Optional[Decimal] = None
     vessel: Optional[str] = None
     expiry_date: date
+    # NMDPRA report columns C and D — kept with the licence they describe.
+    submitted_date: Optional[date] = None
+    approved_date: Optional[date] = None
     is_active: bool
     created_by: UUID
     created_at: datetime
