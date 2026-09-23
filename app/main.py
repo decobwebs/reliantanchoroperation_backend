@@ -25,7 +25,7 @@ if _sentry_dsn:
     )
 
 from app.config import settings
-from app.routers import health, auth, operations, admin, tasks, trucks, vessels, bdns, truck_bdns, notifications, pfis, documents, analytics, portal, invoices, vouchers, vessel_activities, licences, vessel_bdns, client_notifications, kpi, terminal_receipts, operation_notifications, nmdpra_reports
+from app.routers import health, auth, operations, admin, tasks, trucks, vessels, bdns, truck_bdns, notifications, pfis, documents, analytics, portal, invoices, vouchers, vessel_activities, licences, vessel_bdns, client_notifications, kpi, terminal_receipts, operation_notifications, nmdpra_reports, push
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.audit_log import AuditLogMiddleware
@@ -55,6 +55,8 @@ def _validate_config() -> None:
         warnings.append("DATABASE_URL is not set")
     if not settings.RESEND_API_KEY:
         warnings.append("RESEND_API_KEY not set — transactional emails are disabled")
+    if not settings.VAPID_PRIVATE_KEY:
+        warnings.append("VAPID_PRIVATE_KEY not set — web push notifications are disabled")
     for w in warnings:
         logger.warning("CONFIG: %s", w)
     if warnings:
@@ -226,6 +228,7 @@ app.include_router(kpi.router, prefix=API_PREFIX)
 app.include_router(terminal_receipts.router, prefix=API_PREFIX)
 app.include_router(operation_notifications.router, prefix=API_PREFIX)
 app.include_router(nmdpra_reports.router, prefix=API_PREFIX)
+app.include_router(push.router, prefix=API_PREFIX)
 
 # ── KPI module (app/kpi/) ──────────────────────────────────────────────────
 # Bolted on rather than built in, and deliberately fail-safe: if anything in

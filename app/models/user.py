@@ -34,4 +34,5 @@ class User(Base):
     task_assignments_received = relationship("TaskAssignment", foreign_keys="TaskAssignment.assigned_to", back_populates="assignee")
     task_assignments_given = relationship("TaskAssignment", foreign_keys="TaskAssignment.assigned_by", back_populates="assigner")
     notifications = relationship("Notification", back_populates="user")
+    push_subscriptions = relationship("PushSubscription", back_populates="user", cascade="all, delete-orphan")
     audit_logs = relationship("AuditLog", back_populates="user")

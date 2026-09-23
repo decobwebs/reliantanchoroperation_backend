@@ -39,6 +39,14 @@ async def notify(
       4. TWILIO_* credentials are configured in .env
     """
     active_channels = channels or ["in_app"]
+    # Push rides every notification. `delivery_channels` records what a
+    # notification was ROUTED to, not what succeeded — the same meaning
+    # "whatsapp" already carries here (recorded even when the user has no
+    # phone on file). Recording actual delivery would need a per-recipient
+    # subscription lookup inside this request, which is exactly what
+    # push_service is built to avoid — see its module docstring.
+    if "push" not in active_channels:
+        active_channels = [*active_channels, "push"]
 
     notif = Notification(
         user_id=user_id,
@@ -51,6 +59,19 @@ async def notify(
         delivery_channels=active_channels,
     )
     db.add(notif)
+
+    # ── Web push ──────────────────────────────────────────────────────────────
+    # Staged only — push_service's after_commit listener is what actually
+    # releases it, so a transaction that gets rolled back can never have
+    # pushed. See push_service.py for why (BDN-000027).
+    from app.services.push_service import enqueue as push_enqueue
+    push_enqueue(db, user_id, {
+        "title": title[:80],
+        "body": message[:200],
+        "url": action_url or (f"/operations/{operation_id}" if operation_id else "/notifications"),
+        "tag": f"{type_}:{operation_id or 'x'}",
+        "priority": priority,
+    })
 
     # ── WhatsApp dispatch ──────────────────────────────────────────────────────
     if "whatsapp" in active_channels and wa_template:

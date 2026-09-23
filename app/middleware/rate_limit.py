@@ -23,6 +23,10 @@ _lock = asyncio.Lock()
 RATE_LIMITS: dict = {
     "/auth/login":    (10, 60),
     "/auth/register": (5,  60),
+    # Unauthenticated (see app/routers/push.py) — a service worker calls this
+    # with no access token, so it can't be gated by user identity like the
+    # rest of the API. Capped generously above any real device's rate.
+    "/push/rotate":   (30, 60),
 }
 
 

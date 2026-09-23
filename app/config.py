@@ -47,6 +47,20 @@ class Settings(BaseSettings):
     TWILIO_AUTH_TOKEN: str = ""
     TWILIO_WHATSAPP_FROM: str = "whatsapp:+14155238886"  # Twilio sandbox default
 
+    # Web push (VAPID) — optional; graceful degradation if missing, exactly like
+    # RESEND_API_KEY and TWILIO_* above. Generate ONCE with:
+    #     npx web-push generate-vapid-keys
+    # The keypair is permanent. Rotating it silently invalidates every browser
+    # subscription ever made — which is why push_subscriptions stores the key id
+    # it was created under, so stale rows are pruned instead of retried forever.
+    VAPID_PUBLIC_KEY: str = ""
+    VAPID_PRIVATE_KEY: str = ""
+    VAPID_SUBJECT: str = "mailto:ops@reliantbunkerops.com"
+    # How long a push service should hold an undelivered message for a phone
+    # that is off or out of signal. A day: an operational alert older than that
+    # has been overtaken by events.
+    PUSH_TTL_SECONDS: int = 86400
+
     # App settings — default to production so a missing FLASK_ENV never fails open
     # (public /docs, verbose error strings). Local dev sets FLASK_ENV=development.
     FLASK_ENV: str = "production"

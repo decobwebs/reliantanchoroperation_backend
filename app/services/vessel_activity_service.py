@@ -893,6 +893,41 @@ class VesselActivityService:
                     sent_by=current_user.id,
                     thread_key=str(operation.id),
                 ))
+
+            # ── Push/in-app for portal clients ──────────────────────────────
+            # Clients get NO in-app notification today — only this email, sent
+            # to whatever free-text address was entered at Cast Off, which
+            # isn't linked to a User row (this method logs client_id=None
+            # above). Bridge it: any of those addresses that happens to match
+            # an active client account also gets notify()'d, which is what
+            # makes it show in their portal bell AND reach them as a push —
+            # with no new delivery code. A client whose email isn't a portal
+            # account is unaffected and keeps getting only the email, as
+            # today. The email above is untouched either way — still one
+            # call, one email, no CC/BCC, never raised past this try block.
+            lowered = {e.strip().lower() for e in emails if e}
+            if lowered:
+                client_users = await db.execute(
+                    select(User).where(
+                        User.role == UserRole.client,
+                        User.is_active == True,  # noqa: E712
+                        func.lower(User.email).in_(lowered),
+                    )
+                )
+                from app.services.notification_service import notify
+                for client_user in client_users.scalars().all():
+                    await notify(
+                        db=db,
+                        user_id=client_user.id,
+                        type_="milestone",
+                        title=f"Operation {op_no} — {VesselActivityService._STAGE_LABELS.get(stage, stage.value.replace('_', ' ').title())}",
+                        message=subject + ".",
+                        priority="normal",
+                        operation_id=operation.id,
+                        action_url=f"/portal/operations/{operation.id}",
+                        channels=["in_app"],
+                    )
+
             await db.commit()
         except Exception:
             logger.exception(
