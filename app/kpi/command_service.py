@@ -435,6 +435,7 @@ class CommandCenterService:
             JOIN operations o ON o.id = tr.operation_id
             WHERE o.deleted_at IS NULL
               AND o.status::text NOT IN ('completed','cancelled','archived')
+              AND tr.status::text <> 'cancelled'
               AND tr.quantity_loaded_mt IS NOT NULL
               AND tr.quantity_discharged_mt IS NOT NULL
               AND abs(tr.quantity_loaded_mt - tr.quantity_discharged_mt) > :cap
@@ -619,9 +620,11 @@ class CommandCenterService:
                   AND created_at >= :ls AND created_at <= :le) AS mt_last,
               (SELECT sum(quantity_discharged_mt) FROM truck_operations
                  WHERE quantity_discharged_mt IS NOT NULL
+                   AND status::text <> 'cancelled'
                    AND created_at >= :ts) AS l_this,
               (SELECT sum(quantity_discharged_mt) FROM truck_operations
                  WHERE quantity_discharged_mt IS NOT NULL
+                   AND status::text <> 'cancelled'
                    AND created_at >= :ls AND created_at <= :le) AS l_last,
               (SELECT json_agg(row_to_json(x)) FROM (
                    SELECT COALESCE(product_type,'Unspecified') AS product_type,
@@ -687,6 +690,7 @@ class CommandCenterService:
                         FROM truck_operations tr
                         JOIN operations o ON o.id = tr.operation_id
                         WHERE o.deleted_at IS NULL
+                          AND tr.status::text <> 'cancelled'
                           AND tr.quantity_loaded_mt IS NOT NULL
                           AND tr.quantity_discharged_mt IS NOT NULL
                           AND tr.created_at >= :ts
@@ -699,6 +703,7 @@ class CommandCenterService:
             FROM truck_operations
             WHERE quantity_loaded_mt IS NOT NULL
               AND quantity_discharged_mt IS NOT NULL
+              AND status::text <> 'cancelled'
               AND created_at >= :ts
         """)
         try:
@@ -798,6 +803,7 @@ class CommandCenterService:
                    ) AS over_cap
             FROM truck_operations
             WHERE vendor_name IS NOT NULL AND btrim(vendor_name) <> ''
+              AND status::text <> 'cancelled'
               AND quantity_loaded_mt IS NOT NULL
               AND quantity_discharged_mt IS NOT NULL
             GROUP BY vendor_name
@@ -837,7 +843,8 @@ class CommandCenterService:
                    ) AS over_cap
             FROM truck_operations tr
             JOIN trucks t ON t.id = tr.truck_id
-            WHERE tr.quantity_loaded_mt IS NOT NULL
+            WHERE tr.status::text <> 'cancelled'
+              AND tr.quantity_loaded_mt IS NOT NULL
               AND tr.quantity_discharged_mt IS NOT NULL
             GROUP BY t.id, t.truck_number
             HAVING count(*) >= 2

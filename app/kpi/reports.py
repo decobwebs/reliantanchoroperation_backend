@@ -64,6 +64,7 @@ _Q_TRUCK_FIGURES = text("""
              FILTER (WHERE discharge_end_at >= discharge_start_at) AS avg_discharge_h
     FROM truck_operations
     WHERE logged_by = :uid AND created_at >= :s AND created_at < :e
+      AND status::text <> 'cancelled'
 """)
 
 _Q_MARINE_FIGURES = text("""

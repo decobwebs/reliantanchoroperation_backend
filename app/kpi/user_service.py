@@ -157,15 +157,18 @@ _Q_TRUCKS = text("""
                          AND arrived_discharge_at <= expected_arrival_at) AS ontime_ok
     FROM truck_operations
     WHERE logged_by IS NOT NULL AND created_at >= :s AND created_at < :e
+      AND status::text <> 'cancelled'
     GROUP BY logged_by
 """)
 
 _Q_AUDITS = text("""
-    SELECT conducted_by AS user_id, count(*) AS n,
-           count(*) FILTER (WHERE result = 'satisfactory') AS ok
-    FROM truck_safety_audits
-    WHERE conducted_by IS NOT NULL AND conducted_at >= :s AND conducted_at < :e
-    GROUP BY conducted_by
+    SELECT a.conducted_by AS user_id, count(*) AS n,
+           count(*) FILTER (WHERE a.result = 'satisfactory') AS ok
+    FROM truck_safety_audits a
+    JOIN truck_operations tr ON tr.id = a.truck_op_id
+    WHERE a.conducted_by IS NOT NULL AND a.conducted_at >= :s AND a.conducted_at < :e
+      AND tr.status::text <> 'cancelled'
+    GROUP BY a.conducted_by
 """)
 
 _Q_TRUCK_BDNS = text("""
@@ -291,6 +294,7 @@ _Q_OPS = text("""
         FROM operations o
         JOIN truck_operations tr ON tr.operation_id = o.id
         WHERE o.deleted_at IS NULL AND o.created_at >= :s AND o.created_at < :e
+          AND tr.status::text <> 'cancelled'
           AND tr.quantity_loaded_mt IS NOT NULL
           AND tr.quantity_discharged_mt IS NOT NULL
         GROUP BY o.id, o.created_by

@@ -42,7 +42,7 @@ from app.kpi.schemas import (
 from app.models.bdn import BDN, VesselActivity, VesselActivityLeg
 from app.models.enums import (
     AuditResult, BdnStatus, FeedbackStatus, OperationStatus, OperationType,
-    UserRole, VesselActivityStatus, role_label,
+    TruckOpStatus, UserRole, VesselActivityStatus, role_label,
 )
 from app.models.finance import Invoice, PfiAllocation, Voucher
 from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, TruckFeedback
@@ -179,15 +179,24 @@ async def _gather(operation: Operation, assignments: Sequence[TaskAssignment],
                   db: AsyncSession) -> _Data:
     op_id = operation.id
 
+    # Cancelled trucks were removed from the job, so they must not count
+    # towards anyone's score — the same rule vessel runs and legs follow below.
     truck_ops = (await db.execute(
-        select(TruckOperation).where(TruckOperation.operation_id == op_id)
+        select(TruckOperation).where(
+            TruckOperation.operation_id == op_id,
+            TruckOperation.status != TruckOpStatus.cancelled,
+        )
     )).scalars().all()
 
-    # TruckSafetyAudit carries operation_id directly, so this needs no
-    # dependency on the truck rows above.
-    audits = (await db.execute(
-        select(TruckSafetyAudit).where(TruckSafetyAudit.operation_id == op_id)
-    )).scalars().all()
+    # Only audits on trucks still on the job — a failed audit on a removed
+    # truck must not count as an incident either.
+    live_ids = {t.id for t in truck_ops}
+    audits = [
+        a for a in (await db.execute(
+            select(TruckSafetyAudit).where(TruckSafetyAudit.operation_id == op_id)
+        )).scalars().all()
+        if a.truck_op_id in live_ids
+    ]
 
     activities = (await db.execute(
         select(VesselActivity).where(
