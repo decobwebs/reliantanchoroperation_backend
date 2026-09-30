@@ -14,6 +14,7 @@ from app.models.user import User
 from app.models.enums import UserRole, BdnStatus, OperationStatus
 from app.schemas.truck_bdn import TruckBdnCreate, TruckBdnUpdate
 from app.services.notification_service import notify
+from app.services.bdn_notify import active_user, active_users, notify_bdn_changed, notify_if_active, reviewers, REVIEWER_ROLES
 from app.services.audit_diff import capture_diff
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.services.email_service import email_truck_bdn_submitted, email_bdn_approved
@@ -187,10 +188,8 @@ class TruckBdnService:
 
         # Notify + email Bunker Manager (needs to approve) and Finance Manager
         # (heads-up — will need to invoice once approved).
-        recipients_result = await db.execute(
-            select(User).where(User.role.in_([UserRole.bunker_manager, UserRole.finance_manager]))
-        )
-        recipients = recipients_result.scalars().all()
+        # Reviewers (Bunker Manager, Ops Supervisor) and Finance — active only.
+        recipients = await active_users(db, (*REVIEWER_ROLES, UserRole.finance_manager))
         for recipient in recipients:
             await notify(
                 db=db,
@@ -198,9 +197,9 @@ class TruckBdnService:
                 type_="bdn_ready",
                 title="Truck BDN Ready for Review",
                 message=f"Truck BDN {truck_bdn_number} for operation {operation.operation_number} is ready for review",
-                priority="high" if recipient.role == UserRole.bunker_manager else "normal",
+                priority="high" if recipient.role in REVIEWER_ROLES else "normal",
                 operation_id=operation_id,
-                action_url=f"/truck-bdns/{truck_bdn.id}",
+                action_url=f"/operations/{truck_bdn.operation_id}",
                 channels=["in_app", "whatsapp"],
                 wa_template="bdn_submitted",
                 wa_kwargs={
@@ -287,6 +286,10 @@ class TruckBdnService:
             changes=changes,
             reason=data.reason,
         ))
+        await notify_bdn_changed(
+            db, kind="Truck BDN", bdn_number=truck_bdn.truck_bdn_number, operation_id=truck_bdn.operation_id,
+            submitter_id=truck_bdn.generated_by, actor=current_user, change="edited", reason=data.reason,
+        )
 
         await db.flush()
         await db.refresh(truck_bdn)
@@ -308,6 +311,10 @@ class TruckBdnService:
             entity_type="truck_bdn", entity_id=truck_bdn.id,
             changes={"truck_bdn_number": truck_bdn.truck_bdn_number, "status_at_deletion": truck_bdn.status.value},
         ))
+        await notify_bdn_changed(
+            db, kind="Truck BDN", bdn_number=truck_bdn.truck_bdn_number, operation_id=truck_bdn.operation_id,
+            submitter_id=truck_bdn.generated_by, actor=current_user, change="deleted",
+        )
         await db.execute(delete(AuditLog).where(
             AuditLog.entity_type == "truck_bdn", AuditLog.entity_id == truck_bdn.id, AuditLog.action != "DELETE_TRUCK_BDN"
         ))
@@ -340,8 +347,7 @@ class TruckBdnService:
             )
 
         # Notify Finance Manager
-        fm_result = await db.execute(select(User).where(User.role == UserRole.finance_manager))
-        for fm in fm_result.scalars().all():
+        for fm in await active_users(db, (UserRole.finance_manager,)):
             await notify(
                 db=db,
                 user_id=fm.id,
@@ -350,19 +356,19 @@ class TruckBdnService:
                 message=f"Truck BDN {truck_bdn.truck_bdn_number} for operation {operation.operation_number} has been approved. Invoice can now be generated.",
                 priority="normal",
                 operation_id=truck_bdn.operation_id,
-                action_url=f"/truck-bdns/{truck_bdn_id}",
+                action_url=f"/operations/{truck_bdn.operation_id}",
             )
 
         # Notify the submitter
-        await notify(
+        await notify_if_active(
             db=db,
             user_id=truck_bdn.generated_by,
             type_="approved",
             title="Your Truck BDN Has Been Approved",
-            message=f"Truck BDN {truck_bdn.truck_bdn_number} has been approved by the bunker manager",
+            message=f"Truck BDN {truck_bdn.truck_bdn_number} has been approved by {current_user.full_name}",
             priority="normal",
             operation_id=truck_bdn.operation_id,
-            action_url=f"/truck-bdns/{truck_bdn_id}",
+            action_url=f"/operations/{truck_bdn.operation_id}",
             channels=["in_app", "whatsapp"],
             wa_template="bdn_approved",
             wa_kwargs={
@@ -381,10 +387,10 @@ class TruckBdnService:
         ))
 
         _to = []
-        _sub = await db.get(User, truck_bdn.generated_by)
+        _sub = await active_user(db, truck_bdn.generated_by)
         if _sub:
             _to.append((_sub.email, _sub.full_name))
-        _fms = (await db.execute(select(User).where(User.role == UserRole.finance_manager))).scalars().all()
+        _fms = await active_users(db, (UserRole.finance_manager,))
         _to += [(u.email, u.full_name) for u in _fms]
 
         await db.flush()
@@ -442,7 +448,7 @@ class TruckBdnService:
             reason=f"Truck BDN rejected: {reason}"
         )
 
-        await notify(
+        await notify_if_active(
             db=db,
             user_id=truck_bdn.generated_by,
             type_="rejected",
@@ -450,7 +456,7 @@ class TruckBdnService:
             message=f"Truck BDN {truck_bdn.truck_bdn_number} has been rejected. Reason: {reason}",
             priority="high",
             operation_id=truck_bdn.operation_id,
-            action_url=f"/truck-bdns/{truck_bdn_id}",
+            action_url=f"/operations/{truck_bdn.operation_id}",
             channels=["in_app", "whatsapp"],
             wa_template="bdn_rejected",
             wa_kwargs={

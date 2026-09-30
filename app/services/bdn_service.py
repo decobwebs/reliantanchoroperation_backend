@@ -16,6 +16,7 @@ from app.models.user import User
 from app.models.enums import UserRole, BdnStatus, OperationStatus, OperationType, TruckOpStatus, RobEntryType
 from app.schemas.bdn import BdnCreate, BdnUpdate
 from app.services.notification_service import notify
+from app.services.bdn_notify import active_user, active_users, notify_bdn_changed, notify_if_active, reviewers, REVIEWER_ROLES
 from app.services.email_service import email_bdn_approved, email_vessel_bdn_submitted
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.utils.number_generator import generate_bdn_number
@@ -156,11 +157,9 @@ class BdnService:
                 reason="BDN created by marine manager"
             )
 
-        # Notify BM
-        bm_result = await db.execute(
-            select(User).where(User.role == UserRole.bunker_manager)
-        )
-        bm_users = bm_result.scalars().all()
+        # Everyone who can approve it — Bunker Manager and Ops Supervisor,
+        # active accounts only (see bdn_notify).
+        bm_users = await reviewers(db)
         for bm in bm_users:
             await notify(
                 db=db,
@@ -170,7 +169,7 @@ class BdnService:
                 message=f"BDN {bdn_number} for operation {operation.operation_number} is ready for your review",
                 priority="high",
                 operation_id=operation_id,
-                action_url=f"/bdns/{bdn.id}",
+                action_url=f"/operations/{bdn.operation_id}",
                 channels=["in_app", "whatsapp"],
                 wa_template="bdn_submitted",
                 wa_kwargs={
@@ -293,10 +292,7 @@ class BdnService:
             )
 
         # Notify Finance Manager
-        fm_result = await db.execute(
-            select(User).where(User.role == UserRole.finance_manager)
-        )
-        fm_users = fm_result.scalars().all()
+        fm_users = await active_users(db, (UserRole.finance_manager,))
         for fm in fm_users:
             await notify(
                 db=db,
@@ -306,19 +302,19 @@ class BdnService:
                 message=f"BDN {bdn.bdn_number} for operation {operation.operation_number} has been approved. Invoice can now be generated.",
                 priority="normal",
                 operation_id=bdn.operation_id,
-                action_url=f"/bdns/{bdn_id}",
+                action_url=f"/operations/{bdn.operation_id}",
             )
 
         # Notify Marine Manager (generator)
-        await notify(
+        await notify_if_active(
             db=db,
             user_id=bdn.generated_by,
             type_="approved",
             title="Your BDN Has Been Approved",
-            message=f"BDN {bdn.bdn_number} has been approved by the bunker manager",
+            message=f"BDN {bdn.bdn_number} has been approved by {current_user.full_name}",
             priority="normal",
             operation_id=bdn.operation_id,
-            action_url=f"/bdns/{bdn_id}",
+            action_url=f"/operations/{bdn.operation_id}",
             channels=["in_app", "whatsapp"],
             wa_template="bdn_approved",
             wa_kwargs={
@@ -331,7 +327,7 @@ class BdnService:
         # a WhatsApp call that is skipped entirely while Twilio is unconfigured,
         # so the submitter had no way to learn the outcome without logging in.
         _approve_to = []
-        _submitter = await db.get(User, bdn.generated_by)
+        _submitter = await active_user(db, bdn.generated_by)
         if _submitter:
             _approve_to.append((_submitter.email, _submitter.full_name))
         for _fm in fm_users:
@@ -411,6 +407,10 @@ class BdnService:
             user_id=current_user.id, operation_id=bdn.operation_id, action="UPDATE_BDN",
             entity_type="bdn", entity_id=bdn.id, changes=changes, reason=data.reason,
         ))
+        await notify_bdn_changed(
+            db, kind="BDN", bdn_number=bdn.bdn_number, operation_id=bdn.operation_id,
+            submitter_id=bdn.generated_by, actor=current_user, change="edited", reason=data.reason,
+        )
         await db.flush()
         await db.refresh(bdn)
         return bdn
@@ -475,6 +475,10 @@ class BdnService:
             changes={"bdn_number": bdn.bdn_number, "status_at_deletion": bdn.status.value,
                      "quantity_delivered_mt": str(bdn.quantity_delivered_mt)},
         ))
+        await notify_bdn_changed(
+            db, kind="BDN", bdn_number=bdn.bdn_number, operation_id=bdn.operation_id,
+            submitter_id=bdn.generated_by, actor=current_user, change="deleted",
+        )
         await db.execute(delete(AuditLog).where(AuditLog.entity_type == "bdn", AuditLog.entity_id == bdn.id, AuditLog.action != "DELETE_BDN"))
         await db.delete(bdn)
         await db.flush()
@@ -515,7 +519,7 @@ class BdnService:
         )
 
         # HIGH priority notification to Marine Manager
-        await notify(
+        await notify_if_active(
             db=db,
             user_id=bdn.generated_by,
             type_="rejected",
@@ -523,7 +527,7 @@ class BdnService:
             message=f"BDN {bdn.bdn_number} has been rejected. Reason: {reason}",
             priority="high",
             operation_id=bdn.operation_id,
-            action_url=f"/bdns/{bdn_id}",
+            action_url=f"/operations/{bdn.operation_id}",
             channels=["in_app", "whatsapp"],
             wa_template="bdn_rejected",
             wa_kwargs={

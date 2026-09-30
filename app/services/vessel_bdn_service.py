@@ -16,6 +16,7 @@ from app.models.user import User
 from app.models.enums import UserRole, BdnStatus, OperationStatus, VesselActivityStatus, VesselStage, VesselLegStage, OperationType, RobEntryType
 from app.schemas.vessel_bdn import VesselBdnCreate, VesselBdnUpdate
 from app.services.notification_service import notify
+from app.services.bdn_notify import active_user, active_users, notify_bdn_changed, notify_if_active, reviewers, REVIEWER_ROLES
 from app.services.audit_diff import capture_diff
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.services.email_service import email_vessel_bdn_submitted, email_bdn_approved
@@ -257,16 +258,14 @@ class VesselBdnService:
         # Notify Bunker Manager (needs to approve) and Finance Manager (heads-up).
         # notify() writes in-app rows so it belongs inside the transaction; the
         # email does NOT — recipients are collected here and mailed after commit.
-        recipients_result = await db.execute(
-            select(User).where(User.role.in_([UserRole.bunker_manager, UserRole.finance_manager]))
-        )
+        # Reviewers (Bunker Manager, Ops Supervisor) and Finance — active only.
         email_recipients: List[tuple] = []
-        for recipient in recipients_result.scalars().all():
+        for recipient in await active_users(db, (*REVIEWER_ROLES, UserRole.finance_manager)):
             await notify(
                 db=db, user_id=recipient.id, type_="bdn_ready",
                 title="Vessel BDN Ready for Review",
                 message=f"Vessel BDN {bdn_number} for operation {operation.operation_number} (activity {activity.activity_number}) is ready for review",
-                priority="high" if recipient.role == UserRole.bunker_manager else "normal",
+                priority="high" if recipient.role in REVIEWER_ROLES else "normal",
                 operation_id=operation.id, action_url=f"/operations/{operation.id}",
                 channels=["in_app", "whatsapp"], wa_template="bdn_submitted",
                 wa_kwargs={"operation_number": operation.operation_number, "bdn_number": bdn_number, "quantity": str(data.discharge_mt_vacuum)},
@@ -400,17 +399,15 @@ class VesselBdnService:
         if operation.status != OperationStatus.bdn_pending:
             await _transition_operation(operation, OperationStatus.bdn_pending, current_user, db, reason="Vessel BDN submitted")
 
-        recipients_result = await db.execute(
-            select(User).where(User.role.in_([UserRole.bunker_manager, UserRole.finance_manager]))
-        )
+        # Reviewers (Bunker Manager, Ops Supervisor) and Finance — active only.
         email_recipients: List[tuple] = []
-        for recipient in recipients_result.scalars().all():
+        for recipient in await active_users(db, (*REVIEWER_ROLES, UserRole.finance_manager)):
             await notify(
                 db=db, user_id=recipient.id, type_="bdn_ready",
                 title="Vessel BDN Ready for Review",
                 message=f"Vessel BDN {bdn_number} for operation {operation.operation_number} "
                         f"(receiving vessel {leg.receiving_vessel_name}) is ready for review",
-                priority="high" if recipient.role == UserRole.bunker_manager else "normal",
+                priority="high" if recipient.role in REVIEWER_ROLES else "normal",
                 operation_id=operation.id, action_url=f"/operations/{operation.id}",
                 channels=["in_app", "whatsapp"], wa_template="bdn_submitted",
                 wa_kwargs={"operation_number": operation.operation_number, "bdn_number": bdn_number, "quantity": str(data.discharge_mt_vacuum)},
@@ -504,6 +501,10 @@ class VesselBdnService:
             user_id=current_user.id, operation_id=bdn.operation_id, action="UPDATE_VESSEL_BDN",
             entity_type="vessel_bdn", entity_id=bdn.id, changes=changes, reason=data.reason,
         ))
+        await notify_bdn_changed(
+            db, kind="Vessel BDN", bdn_number=bdn.bdn_number, operation_id=bdn.operation_id,
+            submitter_id=bdn.generated_by, actor=current_user, change="edited", reason=data.reason,
+        )
         await db.flush()
         await db.refresh(bdn)
         return bdn
@@ -654,8 +655,7 @@ class VesselBdnService:
         if gate_cleared and operation.status != OperationStatus.bdn_approved:
             await _transition_operation(operation, OperationStatus.bdn_approved, current_user, db, reason="All vessel run BDNs approved")
 
-        fm_result = await db.execute(select(User).where(User.role == UserRole.finance_manager))
-        for fm in fm_result.scalars().all():
+        for fm in await active_users(db, (UserRole.finance_manager,)):
             await notify(
                 db=db, user_id=fm.id, type_="approved",
                 title="Vessel BDN Approved" + (" — Invoice Can Be Generated" if gate_cleared else ""),
@@ -664,10 +664,10 @@ class VesselBdnService:
                 priority="normal", operation_id=operation.id, action_url=f"/operations/{operation.id}",
             )
 
-        await notify(
+        await notify_if_active(
             db=db, user_id=bdn.generated_by, type_="approved",
             title="Your Vessel BDN Has Been Approved",
-            message=f"Vessel BDN {bdn.bdn_number} has been approved by the bunker manager",
+            message=f"Vessel BDN {bdn.bdn_number} has been approved by {current_user.full_name}",
             priority="normal", operation_id=operation.id, action_url=f"/operations/{operation.id}",
             channels=["in_app", "whatsapp"], wa_template="bdn_approved",
             wa_kwargs={"operation_number": operation.operation_number, "bdn_number": bdn.bdn_number},
@@ -682,10 +682,10 @@ class VesselBdnService:
         # Approval reached nobody by email before this — only an in-app row and
         # a WhatsApp call skipped while Twilio is unconfigured.
         _to = []
-        _sub = await db.get(User, bdn.generated_by)
+        _sub = await active_user(db, bdn.generated_by)
         if _sub:
             _to.append((_sub.email, _sub.full_name))
-        _fms = (await db.execute(select(User).where(User.role == UserRole.finance_manager))).scalars().all()
+        _fms = await active_users(db, (UserRole.finance_manager,))
         _to += [(u.email, u.full_name) for u in _fms]
 
         await db.flush()
@@ -724,7 +724,7 @@ class VesselBdnService:
         operation = await _get_operation_or_404(bdn.operation_id, db)
         await _transition_operation(operation, OperationStatus.vessel_operations, current_user, db, reason=f"Vessel BDN rejected: {reason}")
 
-        await notify(
+        await notify_if_active(
             db=db, user_id=bdn.generated_by, type_="rejected",
             title="Vessel BDN Rejected",
             message=f"Vessel BDN {bdn.bdn_number} has been rejected. Reason: {reason}",
@@ -761,6 +761,10 @@ class VesselBdnService:
             changes={"bdn_number": bdn.bdn_number, "status_at_deletion": bdn.status.value,
                      "discharge_mt_vacuum": str(bdn.discharge_mt_vacuum)},
         ))
+        await notify_bdn_changed(
+            db, kind="Vessel BDN", bdn_number=bdn.bdn_number, operation_id=bdn.operation_id,
+            submitter_id=bdn.generated_by, actor=current_user, change="deleted",
+        )
         await db.execute(delete(AuditLog).where(
             AuditLog.entity_type == "vessel_bdn", AuditLog.entity_id == bdn.id, AuditLog.action != "DELETE_VESSEL_BDN"
         ))
