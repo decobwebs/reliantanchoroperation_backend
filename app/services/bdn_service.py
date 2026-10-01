@@ -51,10 +51,6 @@ async def _transition_operation(
     db: AsyncSession,
     reason: str = "",
 ) -> None:
-    # Extra delivery after completion: the BDN goes through, the operation
-    # stays completed (see vessel_bdn_service._transition_operation).
-    if operation.status == OperationStatus.completed:
-        return
     try:
         StateMachine.validate_transition(
             operation.type, operation.status, to_status, acting_role(current_user)

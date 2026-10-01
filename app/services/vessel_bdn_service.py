@@ -89,12 +89,6 @@ async def _transition_operation(
 ) -> None:
     if operation.status == to_status:
         return
-    # An extra delivery can arrive after the operation was closed (RA-2026-0082
-    # was completed, then a further vessel run discharged). Its BDN is still
-    # submitted, approved or rejected as normal, but the operation stays
-    # completed — reopening it would undo a closure the BM already signed off.
-    if operation.status == OperationStatus.completed:
-        return
     try:
         StateMachine.validate_transition(
             operation.type, operation.status, to_status, acting_role(current_user)
