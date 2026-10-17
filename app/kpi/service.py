@@ -41,7 +41,7 @@ from app.kpi.schemas import (
 )
 from app.models.bdn import BDN, VesselActivity, VesselActivityLeg
 from app.models.enums import (
-    AuditResult, BdnStatus, FeedbackStatus, OperationStatus, OperationType,
+    AuditPhase, AuditResult, BdnStatus, FeedbackStatus, OperationStatus, OperationType,
     TruckOpStatus, UserRole, VesselActivityStatus, role_label,
 )
 from app.models.finance import Invoice, PfiAllocation, Voucher
@@ -397,7 +397,11 @@ def _truck_metrics(d: _Data, op: Operation) -> Dict[str, _Value]:
         got = by_truck.get(t.id, [])
         phases = {a.phase for a in got}
         all_ok = got and all(a.result == AuditResult.satisfactory for a in got)
-        if len(phases) >= 2 and all_ok:
+        # Pre and Post specifically — a third phase (loading, migration 069)
+        # must not let loading+pre pass as "both". A loading audit isn't
+        # required here (no operation before October has one), but if one
+        # was recorded it still has to be satisfactory, via all_ok.
+        if {AuditPhase.pre, AuditPhase.post} <= phases and all_ok:
             good += 1
     out["truck.safety_audit_pct"] = _Value(good / len(trucks) * 100.0, len(trucks))
 
