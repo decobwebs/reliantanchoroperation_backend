@@ -45,7 +45,7 @@ def _encode(o):
 # Tables holding an operation_id, in reverse dependency order — children before
 # parents, so the delete that follows a backup can walk this list top to bottom.
 BY_OPERATION = [
-    "vessel_discharge_events", "terminal_loading_receipts", "client_milestones",
+    "vessel_discharge_events", "terminal_loading_receipts", "sts_collections", "client_milestones",
     "client_notification_logs", "operation_notifications", "notifications",
     "pfi_allocations", "payments", "vouchers", "invoices",
     "truck_safety_audits", "rob_entries",

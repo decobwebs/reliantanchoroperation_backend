@@ -100,6 +100,10 @@ class BDN(Base):
     received_gov = Column(Numeric(14, 2), nullable=True)
     received_gsv = Column(Numeric(14, 2), nullable=True)
     received_mt_vacuum = Column(Numeric(12, 3), nullable=True)
+    # The client's BDR (Bunker Delivery Receipt) figure — what the client
+    # acknowledges receiving, whatever was discharged or received above.
+    # Often known only after the BDN is submitted, so editable later.
+    bdr_quantity_mt = Column(Numeric(12, 3), nullable=True)
 
     # ── Truck-vs-vessel reconciliation (migration 056, Full Operation only) —
     # replaces the retired Start/Receipt/Bunkering/Discharge/Complete

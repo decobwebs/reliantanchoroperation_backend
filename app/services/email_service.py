@@ -427,6 +427,22 @@ def _figures_table(rows: list) -> str:
     )
 
 
+def _quantity_rows(basis: str, gov: str, gsv: str, mt_vacuum: str) -> list:
+    """GOV/GSV/MT(vac) rows, labelled with whose reading they are.
+
+    A Vessel BDN holds two sets of figures: what our barge discharged and
+    what the receiving vessel received. The email states which one it is
+    showing ("Received GOV"), so a forwarded copy can't be read as the
+    other set. A blank basis keeps the plain labels.
+    """
+    prefix = f"{basis} " if basis else ""
+    return [
+        (f"{prefix}GOV", gov),
+        (f"{prefix}GSV", gsv),
+        (f"{prefix}MT(vac)", mt_vacuum),
+    ]
+
+
 async def email_bdn_approved(
     to_email: str,
     recipient_name: str,
@@ -437,6 +453,7 @@ async def email_bdn_approved(
     density: str = "", temperature: str = "", vcf: str = "",
     quantity_litres: str = "",
     vessel_name: str = "", company_name: str = "", receiving_vessel: str = "",
+    basis: str = "", bdr_quantity: str = "",
 ) -> bool:
     """Approval notice.
 
@@ -446,6 +463,8 @@ async def email_bdn_approved(
     truck BDN, where litres are a genuinely different reading from MT(vac),
     and prints under the same "Quantity Discharged" heading the truck
     submission email uses.
+
+    `basis` names whose reading GOV/GSV/MT(vac) are — see _quantity_rows.
     """
     subject = f"BDN Approved — {bdn_number}"
     figures = _figures_table([
@@ -455,9 +474,8 @@ async def email_bdn_approved(
         ("Client", company_name),
         ("Receiving Vessel", receiving_vessel),
         ("Quantity Discharged", f"{quantity_litres} L" if quantity_litres else ""),
-        ("GOV", gov),
-        ("GSV", gsv),
-        ("MT(vac)", mt_vacuum),
+        *_quantity_rows(basis, gov, gsv, mt_vacuum),
+        ("BDR Quantity MT(vac)", bdr_quantity),
         ("Density", density),
         ("Temperature", f"{temperature}°" if temperature else ""),
         ("VCF", vcf),
@@ -524,6 +542,7 @@ async def email_vessel_bdn_submitted(
     gov: str = "", gsv: str = "", mt_vacuum: str = "",
     density: str = "", temperature: str = "", vcf: str = "",
     vessel_name: str = "", company_name: str = "", receiving_vessel: str = "",
+    basis: str = "", bdr_quantity: str = "",
 ) -> bool:
     """Vessel-side figures only — GOV/GSV/MT(vac) plus the quality readings.
 
@@ -540,9 +559,8 @@ async def email_vessel_bdn_submitted(
         ("Vessel", vessel_name),
         ("Client", company_name),
         ("Receiving Vessel", receiving_vessel),
-        ("GOV", gov),
-        ("GSV", gsv),
-        ("MT(vac)", mt_vacuum),
+        *_quantity_rows(basis, gov, gsv, mt_vacuum),
+        ("BDR Quantity MT(vac)", bdr_quantity),
         ("Density", density),
         ("Temperature", f"{temperature}°" if temperature else ""),
         ("VCF", vcf),

@@ -58,4 +58,5 @@ class QuantitySummaryOut(BaseModel):
     contribute, same as any other not-yet-measured reading."""
     truck_loaded_mt: Decimal
     terminal_loaded_mt: Decimal
+    sts_loaded_mt: Decimal = Decimal("0")
     total_loaded_mt: Decimal

@@ -30,6 +30,7 @@ class VesselBdnCreate(BaseModel):
     received_gov: Optional[Decimal] = None
     received_gsv: Optional[Decimal] = None
     received_mt_vacuum: Optional[Decimal] = None
+    bdr_quantity_mt: Optional[Decimal] = None
     # Full Operation only — required there, enforced in the service layer
     # since "required" here depends on the operation's type at submission
     # time, which Pydantic alone can't express. Absent/null for vessel_only.
@@ -57,7 +58,7 @@ class VesselBdnCreate(BaseModel):
             raise ValueError("Must be greater than zero")
         return v
 
-    @field_validator("received_gov", "received_gsv", "received_mt_vacuum", "vessel_received_total_mt")
+    @field_validator("received_gov", "received_gsv", "received_mt_vacuum", "bdr_quantity_mt", "vessel_received_total_mt")
     @classmethod
     def positive_if_given(cls, v: Optional[Decimal]) -> Optional[Decimal]:
         if v is not None and v <= 0:
@@ -87,6 +88,7 @@ class VesselBdnUpdate(BaseModel):
     received_gov: Optional[Decimal] = None
     received_gsv: Optional[Decimal] = None
     received_mt_vacuum: Optional[Decimal] = None
+    bdr_quantity_mt: Optional[Decimal] = None
     vessel_received_total_mt: Optional[Decimal] = None
     notes: Optional[str] = None
     reason: str
@@ -143,6 +145,7 @@ class VesselBdnOut(BaseModel):
     received_gov: Optional[Decimal] = None
     received_gsv: Optional[Decimal] = None
     received_mt_vacuum: Optional[Decimal] = None
+    bdr_quantity_mt: Optional[Decimal] = None
     truck_discharged_total_mt: Optional[Decimal] = None
     vessel_received_total_mt: Optional[Decimal] = None
     truck_variance_mt: Optional[Decimal] = None

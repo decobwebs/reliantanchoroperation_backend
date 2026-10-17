@@ -98,7 +98,8 @@ async def list_active_bfls(
     current_user: User = _marine_bm,
     db: AsyncSession = Depends(get_db),
 ):
-    """Non-expired, active BFLs — the picker for building a Naval Clearance."""
+    """Every BFL that hasn't been deactivated, expired ones included — the
+    picker for building a Naval Clearance."""
     bfls = await BflService.list_bfls(active_only=True, db=db)
     return StandardResponse.ok(data=[BflOut.model_validate(b).model_dump() for b in bfls])
 

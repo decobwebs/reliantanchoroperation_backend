@@ -60,6 +60,32 @@ def _num(v, dp: int) -> str:
         return ""
 
 
+def _quantity_figures(src) -> dict:
+    """GOV/GSV/MT(vac) for a Vessel BDN email — the receiving vessel's
+    figures, not our discharge figures.
+
+    The client signs for what their vessel received, so that is the number
+    staff forward and invoice from; showing our discharge reading invited
+    disputes. `src` is the submitted form or the saved BDN — both carry the
+    same field names. Received readings are optional (older BDNs predate
+    them), so when none were entered the discharge reading is shown instead,
+    labelled "Discharged" so it is never mistaken for the received figure.
+    """
+    if any(v is not None for v in (src.received_gov, src.received_gsv, src.received_mt_vacuum)):
+        return {
+            "gov": _num(src.received_gov, 2),
+            "gsv": _num(src.received_gsv, 2),
+            "mt_vacuum": _num(src.received_mt_vacuum, 3),
+            "basis": "Received",
+        }
+    return {
+        "gov": _num(src.discharge_gov, 2),
+        "gsv": _num(src.discharge_gsv, 2),
+        "mt_vacuum": _num(src.discharge_mt_vacuum, 3),
+        "basis": "Discharged",
+    }
+
+
 async def _send_submitted_emails(
     recipients: List[tuple], operation_number: str, bdn_number: str,
     figures: dict, caller: str,
@@ -247,6 +273,7 @@ class VesselBdnService:
             received_gov=data.received_gov,
             received_gsv=data.received_gsv,
             received_mt_vacuum=data.received_mt_vacuum,
+            bdr_quantity_mt=data.bdr_quantity_mt,
             system_product_type=system_product_type,
             system_quantity_loaded_litres=system_quantity_loaded,
             system_quantity_discharged_litres=system_quantity_discharged,
@@ -301,9 +328,8 @@ class VesselBdnService:
         await _send_submitted_emails(
             email_recipients, operation.operation_number, bdn_number,
             {
-                "gov": _num(data.discharge_gov, 2),
-                "gsv": _num(data.discharge_gsv, 2),
-                "mt_vacuum": _num(data.discharge_mt_vacuum, 3),
+                **_quantity_figures(data),
+                "bdr_quantity": _num(data.bdr_quantity_mt, 3),
                 "density": _num(data.density, 4),
                 "temperature": _num(data.temperature, 1),
                 "vcf": _num(data.vcf, 4),
@@ -392,6 +418,7 @@ class VesselBdnService:
             received_gov=data.received_gov,
             received_gsv=data.received_gsv,
             received_mt_vacuum=data.received_mt_vacuum,
+            bdr_quantity_mt=data.bdr_quantity_mt,
             system_product_type=system_product_type,
             system_quantity_loaded_litres=system_quantity_loaded,
             system_quantity_discharged_litres=system_quantity_discharged,
@@ -442,9 +469,8 @@ class VesselBdnService:
         await _send_submitted_emails(
             email_recipients, operation.operation_number, bdn_number,
             {
-                "gov": _num(data.discharge_gov, 2),
-                "gsv": _num(data.discharge_gsv, 2),
-                "mt_vacuum": _num(data.discharge_mt_vacuum, 3),
+                **_quantity_figures(data),
+                "bdr_quantity": _num(data.bdr_quantity_mt, 3),
                 "density": _num(data.density, 4),
                 "temperature": _num(data.temperature, 1),
                 "vcf": _num(data.vcf, 4),
@@ -703,8 +729,8 @@ class VesselBdnService:
                 await email_bdn_approved(
                     to_email=_email, recipient_name=_name,
                     operation_number=operation.operation_number, bdn_number=bdn.bdn_number,
-                    gov=_num(bdn.discharge_gov, 2), gsv=_num(bdn.discharge_gsv, 2),
-                    mt_vacuum=_num(bdn.discharge_mt_vacuum, 3),
+                    **_quantity_figures(bdn),
+                    bdr_quantity=_num(bdn.bdr_quantity_mt, 3),
                     density=_num(bdn.density, 4), temperature=_num(bdn.temperature, 1),
                     vcf=_num(bdn.vcf, 4),
                     company_name=bdn.company_name or "", receiving_vessel=bdn.receiving_vessel or "",

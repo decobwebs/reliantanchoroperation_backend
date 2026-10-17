@@ -10,6 +10,7 @@ from sqlalchemy.orm import selectinload
 from fastapi import HTTPException, status
 
 from app.models.operation import Operation, OperationStatusHistory, TaskAssignment, OperationProduct, OperationNavalClearance
+from app.models.sts_collection import StsCollection
 from app.models.bdn import VesselActivity, BDN, RobEntry, TerminalLoadingReceipt
 from app.models.vessel import Vessel
 from app.models.truck import TruckOperation
@@ -660,6 +661,15 @@ class OperationService:
         )
         terminal_loaded_mt = Decimal(terminal_result.scalar() or 0)
 
+        # Approved ship-to-ship collections (migration 071) — only approval
+        # credits the barge, so only approved ones count as loaded.
+        sts_result = await db.execute(
+            select(func.coalesce(func.sum(StsCollection.mt_vacuum), 0)).where(
+                and_(StsCollection.operation_id == operation_id, StsCollection.status == "approved")
+            )
+        )
+        sts_loaded_mt = Decimal(sts_result.scalar() or 0)
+
         approved_bdns_result = await db.execute(
             select(BDN.discharge_mt_vacuum, BDN.received_mt_vacuum).where(
                 and_(BDN.operation_id == operation_id, BDN.status == BdnStatus.approved)
@@ -682,7 +692,7 @@ class OperationService:
         tts_variance_mt = Decimal(tts_result.scalar() or 0)
 
         return OperationTotalsOut(
-            total_loaded_mt=truck_loaded_mt + terminal_loaded_mt,
+            total_loaded_mt=truck_loaded_mt + terminal_loaded_mt + sts_loaded_mt,
             total_discharged_mt=total_discharged_mt,
             total_received_mt=total_received_mt,
             vessels_received=vessels_received,

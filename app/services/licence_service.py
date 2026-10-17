@@ -284,7 +284,13 @@ class BflService:
     async def list_bfls(active_only: bool, db: AsyncSession) -> List[Bfl]:
         stmt = select(Bfl).options(selectinload(Bfl.ppdl)).order_by(Bfl.created_at.desc())
         if active_only:
-            stmt = stmt.where(and_(Bfl.is_active == True, Bfl.expiry_date >= date.today()))  # noqa: E712
+            # Not deactivated — expiry is deliberately NOT a filter. A Naval
+            # Clearance is often raised against a BFL from earlier in the year
+            # whose date has passed but which still has litres left (every BFL
+            # had expired by October and the picker came up empty). Expiry is
+            # shown beside each BFL in the picker instead, the same way
+            # clearance validity is display-only, never a block.
+            stmt = stmt.where(Bfl.is_active == True)  # noqa: E712
         result = await db.execute(stmt)
         bfls = result.scalars().all()
         for b in bfls:

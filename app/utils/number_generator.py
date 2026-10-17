@@ -48,6 +48,12 @@ async def generate_truck_bdn_number(db: AsyncSession) -> str:
     return f"TBDN-{n:06d}"
 
 
+async def generate_sts_receipt_number(db: AsyncSession) -> str:
+    """Generate a globally sequential ship-to-ship receipt BDN number like SBDN-000001."""
+    n = await _next_sequence(db, "seq_sts_receipt_global", "Global ship-to-ship receipt BDN sequence counter")
+    return f"SBDN-{n:06d}"
+
+
 async def generate_pfi_number(db: AsyncSession) -> str:
     """Generate a yearly sequential PFI number like PFI-2026-0001."""
     year = datetime.utcnow().year

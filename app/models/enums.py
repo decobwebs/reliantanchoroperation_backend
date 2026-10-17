@@ -146,6 +146,9 @@ class TruckWaiverStatus(str, enum.Enum):
 
 
 class AuditPhase(str, enum.Enum):
+    # loading: truck inspection at the depot before it loads (migration 069).
+    # pre / post: the jetty checks before and after discharge into the barge.
+    loading = "loading"
     pre = "pre"
     post = "post"
 

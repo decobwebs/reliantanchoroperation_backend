@@ -19,6 +19,7 @@ from app.models.licence import (
 )
 from app.models.notification_log import VesselEta, ClientNotificationLog, PendingClientNotification, OperationNotification, OperationNotificationRecipient
 from app.models.push_subscription import PushSubscription
+from app.models.sts_collection import StsCollection
 
 __all__ = [
     "UserRole", "OperationType", "OperationStatus", "TaskType", "TaskStatus",
@@ -36,4 +37,5 @@ __all__ = [
     "NavalClearanceLoadingLocation", "NavalClearanceVessel",
     "VesselEta", "ClientNotificationLog", "PendingClientNotification", "OperationNotification", "OperationNotificationRecipient",
     "PushSubscription",
+    "StsCollection",
 ]

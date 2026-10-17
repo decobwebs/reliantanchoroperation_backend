@@ -11,11 +11,23 @@ Dry run (default — changes nothing):
 Execute:
     ... same command ... --confirm DELETE
 
+Undo the operations' effect on vessel ROB as well (optional):
+    ... --reverse-rob --actor someone@reliantanchor.com
+
+    Takes the net of the operations' rob_entries off each vessel's
+    current_rob_mt, in the same transaction as the delete — the same
+    delete-and-subtract the app itself does when a BDN is deleted
+    (vessel_bdn_service._reverse_rob_entry). The adjustment is applied to the
+    live value (current - net), never overwritten with a figure read earlier,
+    so ROB changes staff make meanwhile are kept. Each vessel adjusted gets an
+    audit_logs row under --actor, since the operation's own audit rows go too.
+
 Deletes children before parents in one transaction, so a failure anywhere
 rolls the whole thing back and nothing is half-removed.
 """
 import json
 import sys
+import uuid
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
@@ -24,7 +36,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Children first. Mirrors BY_OPERATION in backup_operations.py — keep in step.
 DELETE_ORDER = [
-    "vessel_discharge_events", "terminal_loading_receipts", "client_milestones",
+    "vessel_discharge_events", "terminal_loading_receipts", "sts_collections", "client_milestones",
     "client_notification_logs", "operation_notifications", "notifications",
     "pfi_allocations", "payments", "vouchers", "invoices",
     "truck_safety_audits", "rob_entries",
@@ -52,7 +64,49 @@ def _db_url() -> str:
     raise SystemExit("SYNC_DATABASE_URL not found in .env")
 
 
-def main(numbers: list[str], backup_dir: Path, execute: bool) -> None:
+def _reverse_rob(c, op_ids, numbers, actor_email: str, execute: bool) -> None:
+    """Take the operations' net ROB effect off each vessel. Runs inside the
+    caller's transaction, before rob_entries are deleted."""
+    actor = c.execute(text("select id from users where email = :e and is_active"), {"e": actor_email}).scalar()
+    if not actor:
+        raise SystemExit(f"ABORT — no active user with email {actor_email}")
+    nets = list(c.execute(
+        text("select vessel_id, sum(quantity_mt) as net from rob_entries "
+             "where operation_id = any(:ids) group by vessel_id"),
+        {"ids": op_ids},
+    ))
+    if not nets:
+        print("ROB: these operations never changed a vessel's ROB - nothing to reverse\n")
+        return
+    print("ROB REVERSAL")
+    for r in nets:
+        # FOR UPDATE: staff may be recording on this vessel right now; hold the
+        # row until commit so nothing lands between the read and the write.
+        v = c.execute(text("select vessel_name, current_rob_mt from vessels where id = :v for update"),
+                      {"v": r.vessel_id}).one()
+        after = v.current_rob_mt - r.net
+        print(f"  {v.vessel_name}: {v.current_rob_mt} - ({r.net}) = {after}")
+        if execute:
+            c.execute(text("update vessels set current_rob_mt = current_rob_mt - :net, updated_at = now() "
+                           "where id = :v"), {"net": r.net, "v": r.vessel_id})
+            c.execute(text(
+                "insert into audit_logs (id, user_id, operation_id, action, entity_type, entity_id, changes, reason, created_at) "
+                "values (:id, :u, NULL, 'REVERSE_ROB_FOR_DELETED_OPERATION', 'vessel', :v, cast(:ch as jsonb), :reason, now())"
+            ), {
+                "id": str(uuid.uuid4()), "u": actor, "v": r.vessel_id,
+                "ch": json.dumps({
+                    "operations": numbers,
+                    "current_rob_mt": {"from": str(v.current_rob_mt), "to": str(after)},
+                    "reversed_net_mt": str(r.net),
+                }),
+                "reason": f"Operation(s) {', '.join(numbers)} deleted on management instruction; "
+                          f"their ROB effect is undone. Direct correction by system admin",
+            })
+    print()
+
+
+def main(numbers: list[str], backup_dir: Path, execute: bool,
+         reverse_rob: bool = False, actor_email: str = "") -> None:
     bfile = backup_dir / "backup.json"
     if not bfile.exists():
         raise SystemExit(f"ABORT — no backup.json in {backup_dir}")
@@ -83,6 +137,9 @@ def main(numbers: list[str], backup_dir: Path, execute: bool) -> None:
             raise SystemExit(f"ABORT — revisions outside the set depend on these: "
                              f"{[r.operation_number for r in orphans]}")
 
+        if reverse_rob:
+            _reverse_rob(c, op_ids, numbers, actor_email, execute)
+
         va_ids = [r.id for r in c.execute(
             text("select id from vessel_activities where operation_id = any(:ids)"), {"ids": op_ids}
         )]
@@ -90,6 +147,9 @@ def main(numbers: list[str], backup_dir: Path, execute: bool) -> None:
         total = 0
         print(f"{'TABLE':<32} ROWS")
         for table in DELETE_ORDER:
+            # A table added by a migration not yet run here has nothing to delete.
+            if c.execute(text("select to_regclass(:t)"), {"t": table}).scalar() is None:
+                continue
             n = c.execute(text(f"select count(*) from {table} where operation_id = any(:ids)"),
                           {"ids": op_ids}).scalar() or 0
             if n:
@@ -147,6 +207,16 @@ if __name__ == "__main__":
         execute = args[j + 1] == "DELETE"
         del args[j:j + 2]
     del args[i:i + 2]
+    reverse_rob = "--reverse-rob" in args
+    if reverse_rob:
+        args.remove("--reverse-rob")
+    actor_email = ""
+    if "--actor" in args:
+        k = args.index("--actor")
+        actor_email = args[k + 1]
+        del args[k:k + 2]
+    if reverse_rob and not actor_email:
+        raise SystemExit("--reverse-rob needs --actor <email> to sign the audit record")
     if not args:
         raise SystemExit("no operation numbers given")
-    main(args, backup_dir, execute)
+    main(args, backup_dir, execute, reverse_rob, actor_email)
