@@ -3,6 +3,7 @@ from uuid import UUID
 import mimetypes
 from datetime import datetime
 from uuid import uuid4
+from app.utils.filenames import display_name, storage_key_name
 
 from fastapi import APIRouter, Depends, Query, Request, UploadFile, File, status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -296,10 +297,9 @@ async def upload_truck_photo(
             detail="Only JPEG, PNG, and WebP images are allowed for truck photos",
         )
 
-    safe_name = (file.filename or "photo").replace("..", "").replace("/", "_").replace("\\", "_")
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     unique_id = str(uuid4())[:8]
-    storage_path = f"{truck_id}/{timestamp}_{unique_id}_{safe_name}"
+    storage_path = f"{truck_id}/{timestamp}_{unique_id}_{storage_key_name(file.filename, 'photo')}"
 
     photo_url = await _upload_to_supabase(content, storage_path, mime_type, bucket=TRUCK_PHOTO_BUCKET)
 
@@ -346,10 +346,9 @@ async def upload_truck_document(
             detail="Only PDF files are allowed for truck documents",
         )
 
-    safe_name = (file.filename or doc_type).replace("..", "").replace("/", "_").replace("\\", "_")
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
     unique_id = str(uuid4())[:8]
-    storage_path = f"{truck_id}/{doc_type}/{timestamp}_{unique_id}_{safe_name}"
+    storage_path = f"{truck_id}/{doc_type}/{timestamp}_{unique_id}_{storage_key_name(file.filename, doc_type)}"
 
     doc_url = await _upload_to_supabase(content, storage_path, mime_type, bucket=TRUCK_DOCS_BUCKET)
 

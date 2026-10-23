@@ -2,6 +2,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 from uuid import UUID, uuid4
+from app.utils.filenames import display_name, storage_key_name
 import mimetypes
 from urllib.parse import quote
 
@@ -256,10 +257,12 @@ class DocumentService:
             )
 
         # Sanitise filename and build storage path
-        safe_name = (file.filename or "document").replace("..", "").replace("/", "_").replace("\\", "_")
+        # The name shown back to people stays as uploaded; the storage key uses a
+        # cleaned copy, because storage rejects brackets and similar characters.
+        safe_name = display_name(file.filename, "document")
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         unique_id = str(uuid4())[:8]
-        storage_path = f"{operation_id}/{timestamp}_{unique_id}_{safe_name}"
+        storage_path = f"{operation_id}/{timestamp}_{unique_id}_{storage_key_name(file.filename, 'document')}"
 
         # Upload to Supabase Storage
         file_url = await _upload_to_supabase(content, storage_path, mime_type)

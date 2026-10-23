@@ -2,6 +2,7 @@ from typing import List, Optional
 from datetime import date, datetime
 from decimal import Decimal
 from uuid import UUID, uuid4
+from app.utils.filenames import display_name, storage_key_name
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, and_, func
@@ -542,9 +543,8 @@ class NavalClearanceService:
     @staticmethod
     async def upload_document(nc_id: UUID, file_bytes: bytes, filename: str, content_type: str, current_user: User, db: AsyncSession) -> NavalClearance:
         nc = await _get_naval_clearance_or_404(nc_id, db)
-        safe_name = (filename or "document").replace("..", "").replace("/", "_").replace("\\", "_")
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        storage_path = f"naval-clearances/{nc_id}/{timestamp}_{str(uuid4())[:8]}_{safe_name}"
+        storage_path = f"naval-clearances/{nc_id}/{timestamp}_{str(uuid4())[:8]}_{storage_key_name(filename, 'document')}"
         url = await _upload_to_supabase(file_bytes, storage_path, content_type)
         nc.document_url = url
         db.add(AuditLog(
