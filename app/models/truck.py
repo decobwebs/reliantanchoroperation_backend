@@ -34,7 +34,11 @@ class Truck(Base):
     chassis_number = Column(String(100), nullable=True)
     truck_licence_url = Column(Text, nullable=True)
     calibration_cert_url = Column(Text, nullable=True)
+    # Only Maintenance / Out of Service are meaningful here now — where a truck
+    # is on a job is worked out from its jobs (see services/truck_availability).
     status = Column(SAEnum(TruckStatus, name="truck_status"), default=TruckStatus.available, nullable=False)
+    # "company" or "contractor"; blank until someone sets it (migration 072).
+    ownership = Column(String(20), nullable=True)
     current_location = Column(Text, nullable=True)
     gps_lat = Column(Numeric(10, 7), nullable=True)
     gps_lng = Column(Numeric(10, 7), nullable=True)

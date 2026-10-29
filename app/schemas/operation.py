@@ -67,6 +67,10 @@ class CreateOperationRequest(BaseModel):
     pfi_allocations: Optional[List[OperationPfiAllocationCreate]] = None
     # One-step: include task assignments to auto-advance past draft
     assignments: Optional[List[InlineTaskAssignment]] = None
+    # Trucks picked straight from the fleet register, put on the job at once
+    # without waiting for a readiness report. The readiness report still
+    # works for any trucks added later. Not for vessel-only operations.
+    truck_ids: Optional[List[UUID]] = None
 
     @field_validator("products")
     @classmethod
@@ -86,6 +90,8 @@ class CreateOperationRequest(BaseModel):
             raise ValueError("source_type is required for vessel-only operations")
         if self.type != OperationType.vessel_only and self.source_type is not None:
             raise ValueError("source_type only applies to vessel-only operations")
+        if self.type == OperationType.vessel_only and self.truck_ids:
+            raise ValueError("A vessel-only operation has no trucks")
         return self
 
 

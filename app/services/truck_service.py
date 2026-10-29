@@ -32,6 +32,7 @@ from app.schemas.truck import (
 from app.services.notification_service import notify
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.services.audit_diff import capture_diff
+from app.services.truck_availability import find_by_plate
 from app.models.operation import OperationStatusHistory
 from app.models.truck import TruckWaiver
 from app.models.enums import TruckWaiverStatus, AuditPhase
@@ -228,19 +229,19 @@ class TruckService:
         current_user: User,
         db: AsyncSession,
     ) -> Truck:
-        # Check for duplicate truck number
-        existing = await db.execute(
-            select(Truck).where(Truck.truck_number == data.truck_number)
-        )
-        if existing.scalar_one_or_none():
+        # Duplicate check ignores spacing, case and punctuation, so "DMS 117 XA"
+        # finds an existing "DMS117XA" instead of registering it a second time.
+        existing = await find_by_plate(db, data.truck_number)
+        if existing:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"Truck number '{data.truck_number}' already exists",
+                detail=f"This truck is already registered as '{existing.truck_number}'",
             )
 
         truck = Truck(
             truck_number=data.truck_number,
             capacity_mt=data.capacity_mt,
+            ownership=data.ownership,
             chassis_number=data.chassis_number,
             current_location=data.current_location,
             notes=data.notes,
@@ -274,6 +275,14 @@ class TruckService:
         truck = result.scalar_one_or_none()
         if not truck:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Truck not found")
+
+        if data.truck_number and data.truck_number != truck.truck_number:
+            clash = await find_by_plate(db, data.truck_number, exclude_id=truck.id)
+            if clash:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Another truck is already registered as '{clash.truck_number}'",
+                )
 
         update_data = data.model_dump(exclude_unset=True, exclude={"reason"})
         changes = capture_diff(truck, update_data)

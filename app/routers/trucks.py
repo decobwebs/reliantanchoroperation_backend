@@ -33,10 +33,26 @@ from app.schemas.truck import (
     TruckIssueCreate, TruckIssueResolveRequest,
 )
 from app.services.truck_service import TruckService, TruckLoadingQuantityService
+from app.services.truck_availability import LiveAssignment, availability, live_assignments
 from app.services.document_service import _upload_to_supabase, MAX_FILE_SIZE_BYTES
 from app.config import settings
 
 router = APIRouter(tags=["Trucks"])
+
+
+def _with_availability(truck, assignment: Optional[LiveAssignment]) -> dict:
+    """A truck as the API returns it: its record plus what it is doing now."""
+    out = TruckOut.model_validate(truck)
+    out.availability = availability(truck, assignment)
+    if assignment is not None:
+        out.current_operation_id = assignment.operation_id
+        out.current_operation_number = assignment.operation_number
+    return out.model_dump()
+
+
+async def _truck_out(truck, db: AsyncSession) -> dict:
+    live = await live_assignments(db, [truck.id])
+    return _with_availability(truck, live.get(truck.id))
 
 
 # ── Truck Registry ─────────────────────────────────────────────────────────────
@@ -61,7 +77,8 @@ async def list_trucks(
     and Truck Operation.
     """
     trucks = await TruckService.list_trucks(db, active_only=active_only)
-    items = [TruckOut.model_validate(t).model_dump() for t in trucks]
+    live = await live_assignments(db)
+    items = [_with_availability(t, live.get(t.id)) for t in trucks]
     return StandardResponse.ok(data=items, message="Trucks retrieved")
 
 
@@ -78,7 +95,7 @@ async def create_truck(
     """Register a new truck. BM (Fleet Library) or Logistics Officer (inline while sourcing)."""
     truck = await TruckService.create_truck(body, current_user, db)
     return StandardResponse.ok(
-        data=TruckOut.model_validate(truck).model_dump(),
+        data=await _truck_out(truck, db),
         message=f"Truck {truck.truck_number} created",
     )
 
@@ -161,7 +178,7 @@ async def get_truck(
 ):
     """Get single truck detail."""
     truck = await TruckService.get_truck(truck_id, db)
-    return StandardResponse.ok(data=TruckOut.model_validate(truck).model_dump(), message="Truck retrieved")
+    return StandardResponse.ok(data=await _truck_out(truck, db), message="Truck retrieved")
 
 
 @router.get(
@@ -177,7 +194,7 @@ async def get_truck_profile(
 ):
     """Full truck profile with stats and operation history."""
     profile = await TruckService.get_truck_profile(truck_id, db)
-    truck_out = TruckOut.model_validate(profile["truck"]).model_dump()
+    truck_out = await _truck_out(profile["truck"], db)
     return StandardResponse.ok(
         data={
             "truck": truck_out,
@@ -262,7 +279,7 @@ async def update_truck(
     """Update truck details. BM or Logistics Officer."""
     truck = await TruckService.update_truck(truck_id, body, current_user, db)
     return StandardResponse.ok(
-        data=TruckOut.model_validate(truck).model_dump(),
+        data=await _truck_out(truck, db),
         message="Truck updated",
     )
 
@@ -307,7 +324,7 @@ async def upload_truck_photo(
         truck_id, TruckUpdate(photo_url=photo_url), current_user, db
     )
     return StandardResponse.ok(
-        data=TruckOut.model_validate(truck).model_dump(),
+        data=await _truck_out(truck, db),
         message="Truck photo uploaded",
     )
 
@@ -356,7 +373,7 @@ async def upload_truck_document(
         truck_id, TruckUpdate(**{DOC_TYPE_FIELDS[doc_type]: doc_url}), current_user, db
     )
     return StandardResponse.ok(
-        data=TruckOut.model_validate(truck).model_dump(),
+        data=await _truck_out(truck, db),
         message=f"Truck {doc_type.replace('_', ' ')} uploaded",
     )
 

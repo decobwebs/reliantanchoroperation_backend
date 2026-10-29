@@ -11,6 +11,7 @@ from app.models.vessel import Vessel
 from app.models.bdn import RobEntry, BDN
 from app.models.finance import PFI, Payment
 from app.models.enums import OperationStatus, TruckStatus, BdnStatus
+from app.services.truck_availability import availability, live_assignments
 from app.schemas.analytics import (
     AnalyticsDashboard, OperationsOverview, StatusCount,
     TruckStats, VesselStats, RevenueItem,
@@ -94,22 +95,15 @@ class AnalyticsService:
 
         # ── Trucks ──────────────────────────────────────────────────────────────
 
-        truck_total = (await db.execute(select(func.count()).select_from(Truck))).scalar_one()
-        truck_avail = (
-            await db.execute(
-                select(func.count()).select_from(Truck).where(Truck.status == TruckStatus.available)
-            )
-        ).scalar_one()
-        truck_transit = (
-            await db.execute(
-                select(func.count()).select_from(Truck).where(Truck.status == TruckStatus.in_transit)
-            )
-        ).scalar_one()
-        truck_disch = (
-            await db.execute(
-                select(func.count()).select_from(Truck).where(Truck.status == TruckStatus.discharging)
-            )
-        ).scalar_one()
+        # Read from each truck's live job, not trucks.status, which nothing
+        # updates once a truck is registered (see services/truck_availability).
+        fleet = (await db.execute(select(Truck).where(Truck.is_active == True))).scalars().all()  # noqa: E712
+        live = await live_assignments(db)
+        now = [availability(t, live.get(t.id)) for t in fleet]
+        truck_total = len(fleet)
+        truck_avail = now.count(TruckStatus.available)
+        truck_transit = now.count(TruckStatus.in_transit)
+        truck_disch = now.count(TruckStatus.discharging)
         truck_ops_count = (
             await db.execute(select(func.count()).select_from(TruckOperation))
         ).scalar_one()

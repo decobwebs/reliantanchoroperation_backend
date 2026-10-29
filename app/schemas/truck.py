@@ -1,4 +1,4 @@
-from typing import Optional, Any, List, Dict
+from typing import Optional, Any, List, Dict, Literal
 from datetime import datetime
 from uuid import UUID
 from decimal import Decimal
@@ -11,9 +11,23 @@ from app.models.enums import (
 
 # ── Truck Registry ─────────────────────────────────────────────────────────────
 
+TruckOwnership = Literal["company", "contractor"]
+
+# The only statuses a person sets by hand. Assigned / In Transit / Discharging
+# are worked out from the truck's jobs (services/truck_availability), so
+# setting them here would be ignored.
+_MANUAL_STATUSES = (TruckStatus.available, TruckStatus.maintenance, TruckStatus.out_of_service)
+
+
+def _clean_plate(v):
+    from app.services.truck_availability import clean_plate
+    return clean_plate(v) if isinstance(v, str) else v
+
+
 class TruckCreate(BaseModel):
     truck_number: str
     capacity_mt: Decimal
+    ownership: Optional[TruckOwnership] = None
     chassis_number: Optional[str] = None
     current_location: Optional[str] = None
     photo_url: Optional[str] = None
@@ -22,7 +36,14 @@ class TruckCreate(BaseModel):
     @field_validator("truck_number", mode="before")
     @classmethod
     def strip_truck_number(cls, v: str) -> str:
-        return v.strip()
+        return _clean_plate(v)
+
+    @field_validator("truck_number")
+    @classmethod
+    def truck_number_required(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Plate number is required")
+        return v
 
     @field_validator("chassis_number", "current_location", "notes", "photo_url", mode="before")
     @classmethod
@@ -33,6 +54,7 @@ class TruckCreate(BaseModel):
 class TruckUpdate(BaseModel):
     truck_number: Optional[str] = None
     capacity_mt: Optional[Decimal] = None
+    ownership: Optional[TruckOwnership] = None
     chassis_number: Optional[str] = None
     current_location: Optional[str] = None
     status: Optional[TruckStatus] = None
@@ -41,10 +63,25 @@ class TruckUpdate(BaseModel):
     is_active: Optional[bool] = None
     reason: Optional[str] = None  # required by the router for edit-audit-trail
 
-    @field_validator("truck_number", "chassis_number", "current_location", "notes", "photo_url", mode="before")
+    @field_validator("truck_number", mode="before")
+    @classmethod
+    def clean_truck_number(cls, v: Optional[str]) -> Optional[str]:
+        return _clean_plate(v) if v else v
+
+    @field_validator("chassis_number", "current_location", "notes", "photo_url", mode="before")
     @classmethod
     def strip_strings(cls, v: Optional[str]) -> Optional[str]:
         return v.strip() if v else v
+
+    @field_validator("status")
+    @classmethod
+    def manual_status_only(cls, v: Optional[TruckStatus]) -> Optional[TruckStatus]:
+        if v is not None and v not in _MANUAL_STATUSES:
+            raise ValueError(
+                "Only Available, Maintenance or Out of Service can be set by hand — "
+                "Assigned, In Transit and Discharging follow the truck's jobs"
+            )
+        return v
 
 
 class TruckOut(BaseModel):
@@ -56,7 +93,15 @@ class TruckOut(BaseModel):
     chassis_number: Optional[str] = None
     truck_licence_url: Optional[str] = None
     calibration_cert_url: Optional[str] = None
+    # The hand-set status (Available / Maintenance / Out of Service).
     status: TruckStatus
+    # What the truck is doing right now — the hand-set status if it is
+    # Maintenance or Out of Service, otherwise read from its live job.
+    # Filled by truck_out(); defaults to `status` when built without it.
+    availability: Optional[TruckStatus] = None
+    current_operation_id: Optional[UUID] = None
+    current_operation_number: Optional[str] = None
+    ownership: Optional[str] = None
     current_location: Optional[str] = None
     gps_lat: Optional[Decimal] = None
     gps_lng: Optional[Decimal] = None
@@ -67,6 +112,12 @@ class TruckOut(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @model_validator(mode="after")
+    def default_availability(self):
+        if self.availability is None:
+            self.availability = self.status
+        return self
 
 
 # ── Truck Profile ──────────────────────────────────────────────────────────────

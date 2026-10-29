@@ -231,10 +231,82 @@ class OperationService:
                 _write_history(db, operation, OperationStatus.tasks_assigned, OperationStatus.awaiting_feedback, current_user.id, "Awaiting truck readiness feedback")
                 operation.status = OperationStatus.awaiting_feedback
 
+        if data.truck_ids:
+            await OperationService._add_trucks_at_creation(operation, data, current_user, db)
+
         operation.updated_at = datetime.utcnow()
         await db.flush()
         await db.refresh(operation, attribute_names=["products", "naval_clearances"])
         return operation
+
+    @staticmethod
+    async def _add_trucks_at_creation(
+        operation: Operation,
+        data: CreateOperationRequest,
+        current_user: User,
+        db: AsyncSession,
+    ) -> None:
+        """Put trucks picked at creation straight onto the job.
+
+        Management's truck module request: the operations team assigns trucks
+        from the register when it creates the job, instead of only through the
+        readiness report. A truck busy on another job is allowed — the UI
+        warns, because a truck often finishes early — but one under
+        Maintenance or Out of Service is refused.
+
+        The rows are logged against the Truck Operation officer assigned on the
+        same form, when there is exactly one, because "trucks you recorded" is
+        what their KPI scores. Otherwise against the creator.
+        """
+        from app.models.truck import Truck
+        from app.services.truck_availability import MANUAL_STATUSES
+
+        truck_ids = list(dict.fromkeys(data.truck_ids))
+        trucks = (await db.execute(select(Truck).where(Truck.id.in_(truck_ids)))).scalars().all()
+        by_id = {t.id: t for t in trucks}
+
+        missing = [str(i) for i in truck_ids if i not in by_id or not by_id[i].is_active]
+        if missing:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or more trucks were not found or are retired")
+        blocked = [t.truck_number for t in trucks if t.status in MANUAL_STATUSES]
+        if blocked:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Under maintenance or out of service: {', '.join(blocked)}",
+            )
+
+        logged_by = current_user.id
+        truck_officers = []
+        for a in data.assignments or []:
+            if a.task_type == TaskType.truck_logistics:
+                officer = await db.get(User, a.assigned_to)
+                if officer and officer.role == UserRole.logistics_officer:
+                    truck_officers.append(officer.id)
+        if len(set(truck_officers)) == 1:
+            logged_by = truck_officers[0]
+
+        destination = data.vessel_id if data.type == OperationType.full_operation else None
+        for truck_id in truck_ids:
+            truck_op = TruckOperation(
+                operation_id=operation.id,
+                truck_id=truck_id,
+                logged_by=logged_by,
+                loading_location=data.loading_location,
+                discharge_location=data.discharge_location,
+                destination_vessel_id=destination,
+                status=TruckOpStatus.pending,
+            )
+            db.add(truck_op)
+            await db.flush()
+            db.add(AuditLog(
+                user_id=current_user.id,
+                operation_id=operation.id,
+                action="ADD_TRUCK_TO_OPERATION",
+                entity_type="truck_operation",
+                entity_id=truck_op.id,
+                changes={"truck_id": str(truck_id), "added_at_creation": "true"},
+            ))
+        await db.flush()
 
     @staticmethod
     async def get_operation(
