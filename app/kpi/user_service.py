@@ -24,15 +24,23 @@ Who owns what, by the record that names them:
     leg reporting lag, figure chains   the parent run's assigned_to
     vessel cargo loss, BDN accuracy    bdns.generated_by
     approval turnaround                reviewed_by on whatever was approved
-    operation-level loss and response  operations.created_by
+    operation-level loss               operations.created_by, plus anyone who
+                                       moved it (operation_status_history)
+    operation-level response           operations.created_by, plus whoever
+                                       took it out of Draft
     voucher turnaround                 vouchers.approved_by
     invoice issuance                   invoices.generated_by
 
-Operation-level metrics go to the operation's creator because somebody has to
-own them and the creator is the manager who set it up. That is the least
-arbitrary choice available, not an obviously right one — it is written into
-the response as `attribution` on every metric so the person can see why a
-number is theirs, and it is the first thing to revisit if the BM disagrees.
+Operation-level metrics originally went to the creator alone. That left the
+Ops Supervisor, who runs operations a Bunker Manager created, with nothing to
+show for it: one of them moved 16 operations 59 times in October 2026 and
+still could not be scored. So an operation now counts for its creator AND for
+everyone who moved it through the pipeline, read from the status history,
+which names a user on every row. The creator keeps their credit. Response
+time is narrower: only the creator and whoever made the first move out of
+Draft, because someone who joined later had no hand in how fast it started.
+The rule is written into the response as `attribution` on every metric so the
+person can see why a number is theirs.
 
 Everything is computed for ALL users at once in about ten grouped queries,
 because the leaderboard needs the same figures as the personal page and the
@@ -73,8 +81,8 @@ ATTRIBUTION: Dict[str, str] = {
     "marine.cargo_loss_pct": "Vessel BDNs you submitted",
     "marine.bdn_first_pass_pct": "Vessel BDNs you submitted",
     "ops.approval_turnaround_hours": "Items you approved or rejected",
-    "ops.operation_loss_pct": "Operations you created",
-    "ops.mobilization_response_hours": "Operations you created",
+    "ops.operation_loss_pct": "Operations you created or moved forward",
+    "ops.mobilization_response_hours": "Operations you created or took out of Draft",
     "finance.voucher_turnaround_hours": "Vouchers you approved",
     "finance.invoice_issuance_hours": "Invoices you raised",
     # Graded, not counted. The grader and their written reason travel with
@@ -286,6 +294,8 @@ _Q_APPROVALS = text("""
     GROUP BY user_id
 """)
 
+# An operation counts for its creator and for everyone who moved it. UNION
+# (not UNION ALL) so a creator who also moved it is counted once per operation.
 _Q_OPS = text("""
     WITH per_op AS (
         SELECT o.id, o.created_by,
@@ -298,31 +308,48 @@ _Q_OPS = text("""
           AND tr.quantity_loaded_mt IS NOT NULL
           AND tr.quantity_discharged_mt IS NOT NULL
         GROUP BY o.id, o.created_by
+    ),
+    owners AS (
+        SELECT id, created_by AS user_id FROM per_op
+        UNION
+        SELECT h.operation_id, h.changed_by
+        FROM operation_status_history h
+        JOIN per_op p ON p.id = h.operation_id
     )
-    SELECT created_by AS user_id,
-           avg(abs(loaded - discharged) / nullif(loaded, 0) * 100.0) AS loss_pct,
+    SELECT ow.user_id,
+           avg(abs(p.loaded - p.discharged) / nullif(p.loaded, 0) * 100.0) AS loss_pct,
            count(*) AS n
-    FROM per_op
-    WHERE loaded > 0
-    GROUP BY created_by
+    FROM owners ow
+    JOIN per_op p ON p.id = ow.id
+    WHERE p.loaded > 0 AND ow.user_id IS NOT NULL
+    GROUP BY ow.user_id
 """)
 
+# Response time counts for the creator and whoever made the first move out of
+# Draft — not for people who only joined later.
 _Q_MOBILIZATION = text("""
     WITH first_move AS (
-        SELECT o.id, o.created_by, o.created_at,
-               min(h.created_at) AS left_draft
+        SELECT DISTINCT ON (o.id)
+               o.id, o.created_by, o.created_at,
+               h.created_at AS left_draft, h.changed_by AS mover
         FROM operations o
         JOIN operation_status_history h ON h.operation_id = o.id
         WHERE o.deleted_at IS NULL AND o.created_at >= :s AND o.created_at < :e
           AND h.to_status::text <> 'draft'
-        GROUP BY o.id, o.created_by, o.created_at
+        ORDER BY o.id, h.created_at
+    ),
+    owners AS (
+        SELECT id, created_by AS user_id FROM first_move
+        UNION
+        SELECT id, mover FROM first_move
     )
-    SELECT created_by AS user_id,
-           avg(EXTRACT(EPOCH FROM (left_draft - created_at))/3600.0) AS hours,
+    SELECT ow.user_id,
+           avg(EXTRACT(EPOCH FROM (f.left_draft - f.created_at))/3600.0) AS hours,
            count(*) AS n
-    FROM first_move
-    WHERE left_draft >= created_at
-    GROUP BY created_by
+    FROM owners ow
+    JOIN first_move f ON f.id = ow.id
+    WHERE f.left_draft >= f.created_at AND ow.user_id IS NOT NULL
+    GROUP BY ow.user_id
 """)
 
 _Q_FINANCE = text("""
