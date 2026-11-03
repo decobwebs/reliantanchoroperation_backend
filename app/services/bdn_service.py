@@ -561,13 +561,17 @@ class BdnService:
         per_page: int,
         db: AsyncSession,
     ) -> Tuple[List[BDN], int]:
-        count_stmt = select(func.count()).select_from(BDN)
+        # BDNs of a deleted operation (a training run, a duplicate) stay out of
+        # the register, the same way the operation itself drops out of lists.
+        live_op = and_(BDN.operation_id == Operation.id, Operation.deleted_at.is_(None))
+        count_stmt = select(func.count()).select_from(BDN).join(Operation, live_op)
         count_result = await db.execute(count_stmt)
         total = count_result.scalar_one()
 
         offset = (page - 1) * per_page
         stmt = (
             select(BDN)
+            .join(Operation, live_op)
             .options(
                 selectinload(BDN.operation),
                 selectinload(BDN.vessel),

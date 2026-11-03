@@ -485,12 +485,15 @@ class TruckBdnService:
         per_page: int,
         db: AsyncSession,
     ) -> Tuple[List[TruckBdn], int]:
-        count_result = await db.execute(select(func.count()).select_from(TruckBdn))
+        # Leave out Truck BDNs whose operation was deleted — see get_all_bdns.
+        live_op = and_(TruckBdn.operation_id == Operation.id, Operation.deleted_at.is_(None))
+        count_result = await db.execute(select(func.count()).select_from(TruckBdn).join(Operation, live_op))
         total = count_result.scalar_one()
 
         offset = (page - 1) * per_page
         stmt = (
             select(TruckBdn)
+            .join(Operation, live_op)
             .order_by(TruckBdn.created_at.desc())
             .offset(offset)
             .limit(per_page)
