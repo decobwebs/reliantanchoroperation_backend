@@ -1,6 +1,6 @@
 """Trend endpoints.
 
-`/kpi/trends/company` is Bunker-Manager-only: it aggregates everybody.
+`/kpi/trends/company` is Bunker Manager and HR only: it aggregates everybody.
 
 `/kpi/trends/me` returns the caller's own history and takes the user id from
 the authenticated session, never from the request — the same rule that governs
@@ -13,19 +13,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.dependencies import get_current_user, require_roles
 from app.kpi.trends import TrendService
-from app.models.enums import UserRole
 from app.models.user import User
+from app.permissions import PERFORMANCE_VIEWER_ROLES
 from app.schemas.common import StandardResponse
 
 router = APIRouter(tags=["KPI"])
 
-_bm_only = Depends(require_roles(UserRole.bunker_manager))
+_viewers = Depends(require_roles(*PERFORMANCE_VIEWER_ROLES))
 
 
 @router.get("/kpi/trends/company", response_model=StandardResponse)
 async def company_trend(
     months: int = Query(6, ge=2, le=24),
-    current_user: User = _bm_only,
+    current_user: User = _viewers,
     db: AsyncSession = Depends(get_db),
 ):
     """Company median score per month, with a series per role."""

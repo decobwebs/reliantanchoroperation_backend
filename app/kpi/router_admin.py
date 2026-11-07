@@ -25,11 +25,13 @@ from app.kpi.snapshots import SnapshotService
 from app.kpi.user_service import current_period
 from app.models.enums import UserRole
 from app.models.user import User
+from app.permissions import PERFORMANCE_VIEWER_ROLES
 from app.schemas.common import StandardResponse
 
 router = APIRouter(tags=["KPI"])
 
 _bm_only = Depends(require_roles(UserRole.bunker_manager))
+_viewers = Depends(require_roles(*PERFORMANCE_VIEWER_ROLES))
 
 _PERIOD = Query(
     None,
@@ -156,11 +158,12 @@ async def my_monthly_report(
 @router.get("/kpi/reports/hr-pack", response_model=StandardResponse)
 async def hr_pack(
     period: Optional[str] = _PERIOD,
-    current_user: User = _bm_only,
+    current_user: User = _viewers,
     db: AsyncSession = Depends(get_db),
 ):
     """Every staff member's figures and evidence for one month, so grading is
-    done from the record rather than from memory."""
+    done from the record rather than from memory. HR may read it; only the
+    BM grades."""
     pack = await ReportService.hr_pack(db, _period_or_now(period))
     return StandardResponse.ok(data=pack)
 

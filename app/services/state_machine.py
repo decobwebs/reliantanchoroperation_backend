@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional
 from app.models.enums import OperationStatus, OperationType, UserRole
+from app.permissions import WATCH_ONLY_ROLES
 
 
 def acting_role(current_user) -> UserRole:
@@ -242,6 +243,9 @@ class StateMachine:
         to_status: OperationStatus,
         user_role: UserRole,
     ) -> bool:
+        if user_role in WATCH_ONLY_ROLES:
+            return False
+
         key = f"{from_status.value}->{to_status.value}"
         allowed_roles = TRANSITION_PERMISSIONS.get(key)
 
@@ -260,6 +264,7 @@ class StateMachine:
         # bdn_approved->vessel_operations, completed->archived. Tightening
         # this needs each of those given its real role list first, or
         # system-triggered flows will start refusing legitimate users.
+        # WATCH_ONLY_ROLES are refused above, before this is reached.
         return user_role.value in allowed_roles or "system" in allowed_roles
 
     @staticmethod

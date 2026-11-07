@@ -16,7 +16,7 @@ router = APIRouter(tags=["Terminal Loading Receipts"])
 _record_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent, UserRole.ops_supervisor, UserRole.marine_operator))
 _view_roles = Depends(require_roles(
     UserRole.bunker_manager, UserRole.cargo_superintendent, UserRole.ops_supervisor,
-    UserRole.marine_operator, UserRole.finance_manager,
+    UserRole.marine_operator, UserRole.finance_manager, UserRole.safety_officer,
 ))
 
 

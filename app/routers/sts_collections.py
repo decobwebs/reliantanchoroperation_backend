@@ -28,7 +28,7 @@ _record_roles = Depends(require_roles(
 ))
 _view_roles = Depends(require_roles(
     UserRole.bunker_manager, UserRole.ops_supervisor, UserRole.cargo_superintendent,
-    UserRole.marine_operator, UserRole.finance_manager,
+    UserRole.marine_operator, UserRole.finance_manager, UserRole.safety_officer,
 ))
 _manager = Depends(require_operation_manager())
 

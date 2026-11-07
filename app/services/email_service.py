@@ -631,3 +631,50 @@ async def email_feedback_rejected(
         [to_email], subject,
         _wrap_email(title="Truck Feedback Rejected", body_html=body),
     )
+
+
+async def email_vessel_incident_reported(
+    to_email: str,
+    recipient_name: str,
+    vessel_name: str,
+    title: str,
+    incident_type: str,
+    severity: str,
+    occurred_at: str,
+    reported_by: str,
+    location: str = "",
+    operation_number: str = "",
+    incident_url: str = "",
+) -> bool:
+    """Sent to the Bunker Manager and Safety Officer the moment an incident is
+    logged. They decide what happens next — the Safety Officer cannot pause
+    an operation (agreed 1 Nov 2026)."""
+    subject = f"{severity} incident on {vessel_name} — {title}"
+    pairs = [
+        ("Vessel", vessel_name),
+        ("What happened", title),
+        ("Type", incident_type),
+        ("Severity", severity),
+        ("When", occurred_at),
+        ("Reported by", reported_by),
+    ]
+    if location:
+        pairs.append(("Where", location))
+    if operation_number:
+        pairs.append(("Operation", operation_number))
+    body = f"""
+      <p style="margin:0 0 14px;">Dear {_esc(recipient_name)},</p>
+      <p style="margin:0 0 14px;">An incident has been logged on
+      <strong>{_esc(vessel_name)}</strong>.</p>
+      {_detail_rows(pairs)}
+    """
+    return await send_email(
+        [to_email], subject,
+        _wrap_email(
+            title="Vessel Incident Logged",
+            body_html=body,
+            cta_label="Open the incident" if incident_url else None,
+            cta_url=incident_url or None,
+            preheader=f"{severity} — {title}",
+        ),
+    )

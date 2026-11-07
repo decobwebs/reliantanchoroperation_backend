@@ -13,7 +13,8 @@ that returns somebody else's scorecard, however it is crafted. Please keep it
 that way: adding a "just for admins" user_id here is exactly how this kind of
 rule quietly dies.
 
-The leaderboard is a separate, Bunker-Manager-only route. It is company-wide
+The leaderboard is a separate route for the Bunker Manager and HR only
+(HR added 1 Nov 2026, read only). It is company-wide
 and sits outside the operation boundary, so the Ops Supervisor does not get
 it — the same reasoning that keeps them out of user admin and finance.
 """
@@ -32,11 +33,12 @@ from app.kpi.schemas_me import (
 from app.kpi.user_service import UserKpiService, current_period, team_median
 from app.models.enums import UserRole, role_label
 from app.models.user import User
+from app.permissions import PERFORMANCE_VIEWER_ROLES
 from app.schemas.common import StandardResponse
 
 router = APIRouter(tags=["KPI"])
 
-_bm_only = Depends(require_roles(UserRole.bunker_manager))
+_viewers = Depends(require_roles(*PERFORMANCE_VIEWER_ROLES))
 
 _PERIOD = Query(
     None,
@@ -120,10 +122,10 @@ async def get_my_scorecard(
 @router.get("/kpi/leaderboard", response_model=StandardResponse)
 async def get_leaderboard(
     period: Optional[str] = _PERIOD,
-    current_user: User = _bm_only,
+    current_user: User = _viewers,
     db: AsyncSession = Depends(get_db),
 ):
-    """Every staff member's score for the month, named. Bunker Manager only.
+    """Every staff member's score for the month, named. Bunker Manager and HR only.
 
     People with nothing recorded are listed with a blank score rather than
     dropped: "no work recorded this month" is itself worth seeing, and

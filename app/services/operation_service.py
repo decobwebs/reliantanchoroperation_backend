@@ -25,6 +25,7 @@ from app.schemas.pfi import PfiAllocationCreate
 from app.services.state_machine import StateMachine, StateMachineError, acting_role
 from app.services.milestone_service import create_milestone_if_applicable
 from app.services.audit_diff import capture_diff
+from app.permissions import OPERATION_VIEWER_ROLES
 from app.utils.number_generator import generate_operation_number
 
 
@@ -365,12 +366,13 @@ class OperationService:
 
     @staticmethod
     def _check_visibility(operation: Operation, user: User) -> None:
-        # Ops Supervisor sits with the BM here: they hold the BM's authority
-        # over every operation, so they are never gated on being assigned to
-        # one. This is what "automatically on every operation" means in
-        # practice — it covers operations created before the rule existed,
-        # which a task-assignment approach never would.
-        if user.role in (UserRole.bunker_manager, UserRole.finance_manager, UserRole.ops_supervisor):
+        # OPERATION_VIEWER_ROLES see every operation. The Safety Officer only
+        # reads (WATCH_ONLY_ROLES). Ops Supervisor sits with the BM here: they
+        # hold the BM's authority over every operation, so they are never
+        # gated on being assigned to one. This is what "automatically on every
+        # operation" means in practice — it covers operations created before
+        # the rule existed, which a task-assignment approach never would.
+        if user.role in OPERATION_VIEWER_ROLES:
             return
         if user.role == UserRole.client:
             if operation.client_id != user.id:
@@ -390,8 +392,8 @@ class OperationService:
         conditions = [Operation.deleted_at.is_(None)]
         if current_user.role == UserRole.client:
             conditions.append(Operation.client_id == current_user.id)
-        elif current_user.role in (UserRole.bunker_manager, UserRole.finance_manager, UserRole.ops_supervisor):
-            pass  # see all operations — Ops Supervisor included, see _check_visibility
+        elif current_user.role in OPERATION_VIEWER_ROLES:
+            pass  # see all operations — Ops Supervisor and Safety Officer included, see _check_visibility
         elif current_user.role in (UserRole.cargo_superintendent, UserRole.marine_operator):
             # Cargo Superintendents see operations via vessel activity assignments
             # (not tasks). Marine Operators aren't operation-scoped via tasks or

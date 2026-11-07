@@ -19,6 +19,7 @@ from app.schemas.user import UserOut, ActAsRequest
 ACT_AS_ELIGIBLE_ROLES = {
     UserRole.ops_supervisor, UserRole.logistics_officer,
     UserRole.cargo_superintendent, UserRole.finance_manager,
+    UserRole.marine_operator, UserRole.safety_officer, UserRole.hr,
 }
 from app.schemas.common import StandardResponse
 from app.services.auth_service import AuthService

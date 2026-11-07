@@ -20,7 +20,8 @@ router = APIRouter(tags=["Truck BDNs"])
 async def list_truck_bdns(
     operation_id: UUID,
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.ops_supervisor, UserRole.logistics_officer, UserRole.finance_manager)
+        require_roles(UserRole.bunker_manager, UserRole.ops_supervisor, UserRole.logistics_officer, UserRole.finance_manager,
+                      UserRole.safety_officer)
     ),
     db: AsyncSession = Depends(get_db),
 ):
@@ -54,7 +55,8 @@ async def create_truck_bdn(
 async def get_truck_bdn(
     truck_bdn_id: UUID,
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.ops_supervisor, UserRole.logistics_officer, UserRole.finance_manager)
+        require_roles(UserRole.bunker_manager, UserRole.ops_supervisor, UserRole.logistics_officer, UserRole.finance_manager,
+                      UserRole.safety_officer)
     ),
     db: AsyncSession = Depends(get_db),
 ):

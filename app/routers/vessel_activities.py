@@ -57,6 +57,9 @@ _marine_only = Depends(require_roles(UserRole.cargo_superintendent))
 # Marine's own actions, plus anyone with operation-manager authority over
 # them — the BM, and now the Ops Supervisor.
 _bm_marine = Depends(require_roles(*OPERATION_MANAGER_ROLES, UserRole.cargo_superintendent))
+# Reading a run, its legs, updates and comments: the above plus the Safety
+# Officer, who watches every run but records nothing on it.
+_viewers = Depends(require_roles(*OPERATION_MANAGER_ROLES, UserRole.cargo_superintendent, UserRole.safety_officer))
 # Stage progression: spec assigns this to "Marine / Ops Supervisor".
 _stage_roles = Depends(require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent, UserRole.ops_supervisor))
 # HSE: no dedicated Safety Officer role exists yet — folds into Ops
@@ -88,7 +91,7 @@ async def create_vessel_activity(
 @router.get("/operations/{operation_id}/vessel-activities", response_model=StandardResponse)
 async def list_vessel_activities(
     operation_id: UUID,
-    current_user: User = _bm_marine,
+    current_user: User = _viewers,
     db: AsyncSession = Depends(get_db),
 ):
     """List all vessel activities for an operation. BM and Marine Manager."""
@@ -115,7 +118,7 @@ async def list_my_vessel_activities(
 @router.get("/vessel-activities/{activity_id}", response_model=StandardResponse)
 async def get_vessel_activity(
     activity_id: UUID,
-    current_user: User = _bm_marine,
+    current_user: User = _viewers,
     db: AsyncSession = Depends(get_db),
 ):
     """Get a single vessel activity by ID. BM and Marine Manager."""
@@ -262,7 +265,7 @@ async def add_comment(
 @router.get("/vessel-activities/{activity_id}/comments", response_model=StandardResponse)
 async def list_comments(
     activity_id: UUID,
-    current_user: User = _bm_marine,
+    current_user: User = _viewers,
     db: AsyncSession = Depends(get_db),
 ):
     comments = await VesselActivityService.list_comments(activity_id, db)
@@ -360,7 +363,7 @@ async def add_vessel_activity_update(
 @router.get("/vessel-activities/{activity_id}/updates", response_model=StandardResponse)
 async def list_vessel_activity_updates(
     activity_id: UUID,
-    current_user: User = _stage_roles,
+    current_user: User = _viewers,
     db: AsyncSession = Depends(get_db),
 ):
     updates = await VesselActivityService.list_updates(activity_id, db)
@@ -443,7 +446,7 @@ async def add_vessel_activity_leg(
 @router.get("/vessel-activities/{activity_id}/legs", response_model=StandardResponse)
 async def list_vessel_activity_legs(
     activity_id: UUID,
-    current_user: User = _stage_roles,
+    current_user: User = _viewers,
     db: AsyncSession = Depends(get_db),
 ):
     legs = await VesselActivityService.list_legs(activity_id, db)

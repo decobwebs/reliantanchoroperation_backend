@@ -18,6 +18,7 @@ from app.schemas.document import DocumentOut, DocumentHubOut
 from app.services.document_service import DocumentService, UnifiedDocItem, create_signed_supabase_url
 from app.services.operation_service import OperationService
 from app.config import settings
+from app.permissions import WATCH_ONLY_ROLES
 
 router = APIRouter(tags=["Documents"])
 
@@ -29,6 +30,23 @@ async def _assert_can_access_operation(operation_id: UUID, current_user: User, d
     staff = their operations) so document access can never leak across clients.
     """
     await OperationService.get_operation(operation_id, current_user, db)
+
+
+# Invoices, payment vouchers and PFIs carry money. The Safety Officer sees an
+# operation's documents but never its finance (Required System Update, item 2).
+FINANCE_DOC_TYPES = (DocType.invoice, DocType.payment_voucher, DocType.pfi)
+
+
+def _hides_finance(current_user: User) -> bool:
+    return current_user.role == UserRole.safety_officer
+
+
+def _refuse_watch_only(current_user: User) -> None:
+    """The Safety Officer can open every operation's documents, but adding to
+    an operation's file is for the people running it."""
+    if current_user.role in WATCH_ONLY_ROLES:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your role can view documents but not add them")
 
 
 @router.post(
@@ -49,6 +67,7 @@ async def upload_document(
     Accepts multipart/form-data. Max 10MB. Allowed: PDF, images, Office docs, CSV, TXT.
     Optionally scoped to a specific vessel_activity_id (e.g. HSE form/signed
     copy uploads, since an operation can have several vessel runs)."""
+    _refuse_watch_only(current_user)
     await _assert_can_access_operation(operation_id, current_user, db)
     doc = await DocumentService.upload_document(
         operation_id, file, document_type, description, current_user, db, vessel_activity_id=vessel_activity_id,
@@ -75,6 +94,7 @@ async def register_document_url(
     db: AsyncSession = Depends(get_db),
 ):
     """Register a document by URL (for when the client handles the upload to storage directly)."""
+    _refuse_watch_only(current_user)
     await _assert_can_access_operation(operation_id, current_user, db)
     # Only accept Supabase storage URLs / bare storage paths — never arbitrary
     # external links (which would be stored verbatim and later clickable in the hub).
@@ -109,6 +129,8 @@ async def list_documents(
         include_deleted = False
 
     docs = await DocumentService.list_documents(operation_id, include_deleted, db)
+    if _hides_finance(current_user):
+        docs = [d for d in docs if d.document_type not in FINANCE_DOC_TYPES]
     items = []
     for d in docs:
         item = DocumentOut.model_validate(d).model_dump()
@@ -243,6 +265,9 @@ async def get_document_download_url(
 
     # Object-level authz: caller must be allowed to see this document's operation.
     await _assert_can_access_operation(doc.operation_id, current_user, db)
+    if _hides_finance(current_user) and doc.document_type in FINANCE_DOC_TYPES:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
 
     meta = get_request_meta(request, current_user)
     audit = AuditLog(

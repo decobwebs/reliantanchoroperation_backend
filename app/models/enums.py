@@ -16,6 +16,12 @@ class UserRole(str, enum.Enum):
     # On-the-ground cargo/marine assistant — manages BFL, Naval Clearance,
     # PPDL, and truck waivers, additively alongside cargo_superintendent.
     marine_operator = "marine_operator"
+    # Required System Update (Oct 2026). Both watch operations and people;
+    # neither ever moves an operation through its pipeline (see
+    # app/permissions.py WATCH_ONLY_ROLES). Not assignable until migration
+    # 073 is confirmed live.
+    safety_officer = "safety_officer"
+    hr = "hr"
 
 
 # What each role is called on screen and in email. The stored values never
@@ -31,6 +37,8 @@ ROLE_LABELS: dict = {
     UserRole.finance_manager: "Finance Manager",
     UserRole.client: "Client",
     UserRole.marine_operator: "Marine Operator",
+    UserRole.safety_officer: "Safety Officer",
+    UserRole.hr: "HR",
 }
 
 

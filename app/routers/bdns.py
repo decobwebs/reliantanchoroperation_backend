@@ -19,7 +19,7 @@ async def list_bdns(
     operation_id: UUID,
     current_user: User = Depends(
         require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent,
-                      UserRole.finance_manager, UserRole.ops_supervisor)
+                      UserRole.finance_manager, UserRole.ops_supervisor, UserRole.safety_officer)
     ),
     db: AsyncSession = Depends(get_db),
 ):
@@ -59,7 +59,7 @@ async def get_bdn(
     bdn_id: UUID,
     current_user: User = Depends(
         require_roles(UserRole.bunker_manager, UserRole.cargo_superintendent,
-                      UserRole.ops_supervisor)
+                      UserRole.ops_supervisor, UserRole.safety_officer)
     ),
     db: AsyncSession = Depends(get_db),
 ):

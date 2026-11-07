@@ -25,6 +25,7 @@ async def list_vessels(
             UserRole.ops_supervisor,
             UserRole.cargo_superintendent,
             UserRole.logistics_officer,
+            UserRole.safety_officer,
         )
     ),
     db: AsyncSession = Depends(get_db),
@@ -120,6 +121,7 @@ async def get_vessel(
             UserRole.bunker_manager,
             UserRole.ops_supervisor,
             UserRole.cargo_superintendent,
+            UserRole.safety_officer,
         )
     ),
     db: AsyncSession = Depends(get_db),
@@ -156,10 +158,13 @@ async def get_vessel_bdns(
             UserRole.bunker_manager,
             UserRole.cargo_superintendent,
             UserRole.ops_supervisor,
+            UserRole.safety_officer,
         )
     ),
     db: AsyncSession = Depends(get_db),
 ):
-    """All BDNs for a vessel with actor names and operation info."""
+    """All BDNs for a vessel with actor names and operation info. The Safety
+    Officer reads these for incident context; the Cargo Ledger stays closed
+    to them because it carries PFI amounts."""
     result = await VesselService.get_vessel_bdns(vessel_id, db)
     return StandardResponse.ok(data=result, message="Vessel BDNs retrieved")

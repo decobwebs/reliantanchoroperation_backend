@@ -558,7 +558,7 @@ class UserKpiService:
         users = (await db.execute(text("""
             SELECT id, full_name, email, role::text AS role
             FROM users
-            WHERE role::text <> 'client' AND is_active
+            WHERE role::text NOT IN ('client', 'safety_officer', 'hr') AND is_active
         """))).mappings().all()
 
         results: List[Dict] = []

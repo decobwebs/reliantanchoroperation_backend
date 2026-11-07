@@ -19,7 +19,8 @@ from app.schemas.operation import (
 from app.schemas.truck import VesselDischargeEventCreate, VesselDischargeEventOut
 from app.services.operation_service import OperationService
 from app.models.audit import AuditLog
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, or_
+from app.permissions import OPERATION_MANAGER_ROLES, is_operation_manager
 from sqlalchemy.orm import joinedload
 
 router = APIRouter(prefix="/operations", tags=["Operations"])
@@ -371,17 +372,26 @@ async def list_vessel_discharge_events(
     )
 
 
+# Audit entries about money. The Safety Officer reads an operation's history
+# but never its finance, so these are left out of what they get.
+FINANCE_ENTITY_TYPES = ("pfi", "pfi_allocation", "invoice", "voucher", "payment")
+
+
 @router.get("/{operation_id}/audit-log", response_model=StandardResponse)
 async def get_operation_audit_log(
     operation_id: UUID,
-    current_user: User = Depends(require_operation_manager()),
+    current_user: User = Depends(require_roles(*OPERATION_MANAGER_ROLES, UserRole.safety_officer)),
     db: AsyncSession = Depends(get_db),
 ):
-    """Return the full audit trail for an operation. Bunker Manager only."""
+    """Return the full audit trail for an operation. BM and Ops Supervisor see
+    all of it; the Safety Officer sees it without the finance entries."""
+    conditions = [AuditLog.operation_id == operation_id]
+    if not is_operation_manager(current_user):
+        conditions.append(or_(AuditLog.entity_type.is_(None), AuditLog.entity_type.notin_(FINANCE_ENTITY_TYPES)))
     result = await db.execute(
         select(AuditLog)
         .options(joinedload(AuditLog.user))
-        .where(AuditLog.operation_id == operation_id)
+        .where(*conditions)
         .order_by(AuditLog.created_at.asc())
     )
     logs = result.scalars().all()

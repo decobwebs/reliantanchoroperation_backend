@@ -64,7 +64,7 @@ async def _truck_out(truck, db: AsyncSession) -> dict:
 async def list_trucks(
     active_only: bool = Query(True),
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor)
+        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor, UserRole.safety_officer)
     ),
     db: AsyncSession = Depends(get_db),
 ):
@@ -172,7 +172,7 @@ async def delete_waiver(
 async def get_truck(
     truck_id: UUID,
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor)
+        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor, UserRole.safety_officer)
     ),
     db: AsyncSession = Depends(get_db),
 ):
@@ -188,7 +188,7 @@ async def get_truck(
 async def get_truck_profile(
     truck_id: UUID,
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor)
+        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor, UserRole.safety_officer)
     ),
     db: AsyncSession = Depends(get_db),
 ):
@@ -238,7 +238,7 @@ async def report_truck_issue(
 async def list_truck_issues(
     truck_id: UUID,
     current_user: User = Depends(
-        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor)
+        require_roles(UserRole.bunker_manager, UserRole.logistics_officer, UserRole.ops_supervisor, UserRole.safety_officer)
     ),
     db: AsyncSession = Depends(get_db),
 ):
