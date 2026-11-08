@@ -42,6 +42,7 @@ def mount_kpi(app, prefix: str) -> List[str]:
         ("kpi.digest", "app.kpi.router_digest", "router"),               # Phase 8
         ("kpi.vendors", "app.kpi.router_vendors", "router"),             # Phase 9
         ("kpi.trends", "app.kpi.router_trends", "router"),               # Phase 10
+        ("kpi.people", "app.kpi.router_people", "router"),               # HR pages
     ]
 
     for label, module_path, attr in routers:
